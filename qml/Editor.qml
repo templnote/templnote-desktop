@@ -36,9 +36,14 @@ Item {
       required property string content
       required property int blockType
       required property int headingLevel
+      required property int index
 
       width: documentView.width
       height: renderer.implicitHeight
+
+      function focusBlock(position) {
+        renderer.focusEditor(position)
+      }
 
       BlockRenderer {
         id: renderer
@@ -57,9 +62,20 @@ Item {
             delegateRoot.blockId,
             renderer.cursorPosition
           )
-          if (newId.length > 0) {
-            console.log("Created new block:", newId)
-          }
+          if (newId.length === 0) return
+
+          const newIndex = delegateRoot.index + 1;
+            //new block should be at index + 1 since items is at index , ez mate, so don't do wtf
+
+          documentView.forceLayout()
+
+          Qt.callLater(function() {
+            const newDelegate = documentView.itemAtIndex(newIndex)
+
+            if (newDelegate) {
+              newDelegate.focusBlock(0)
+            }
+          })
         }
 
       }

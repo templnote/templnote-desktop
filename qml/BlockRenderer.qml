@@ -13,6 +13,11 @@ Rectangle {
   
   signal enterPressed()
 
+  function focusEditor(position) {
+    editor.forceActiveFocus()
+    editor.cursorPosition = position
+  }
+
   width: parent ? parent.width : 600
   implicitHeight: contentColumn.implicitHeight + 24
 
@@ -35,18 +40,20 @@ Rectangle {
       id: editor
 
       width: parent.width
-      text: root.content
 
       color: "#F4F4F5"
       selectionColor: "#4F46E5"
       wrapMode: TextArea.Wrap
 
       font.pixelSize: root.blockType === 1 ? 30 : 16
-      font.weight: root.blockType === 1
-        ? Font.Bold
-        : Font.Normal
+      font.weight: root.blockType === 1 ? Font.Bold : Font.Normal
 
       background: null
+
+      Component.onCompleted: {
+        editor.text = root.content
+      }
+
 
       onEditingFinished: {
         root.model.updateBlockText(root.blockId, text)
