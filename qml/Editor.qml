@@ -5,6 +5,18 @@ Item {
   id: root
 
   required property var model
+  function focusDelegateAt(row, position) {
+    documentView.forceLayout()
+
+    Qt.callLater(function(){
+      const delegate = documentView.itemAtIndex(row)
+
+      if (delegate) {
+        delegate.refreshBlock()
+        delegate.focusBlock(position)
+      }
+    })
+  }
 
   Rectangle {
     anchors.fill: parent
@@ -45,6 +57,10 @@ Item {
         renderer.focusEditor(position)
       }
 
+      function refreshBlock() {
+        renderer.refreshFromModel()
+      }
+
       BlockRenderer {
         id: renderer
 
@@ -65,7 +81,7 @@ Item {
           if (newId.length === 0) return
 
           const newIndex = delegateRoot.index + 1;
-            //new block should be at index + 1 since items is at index , ez mate, so don't do wtf
+          //new block should be at index + 1 since items is at index , ez mate, so don't do wtf
 
           documentView.forceLayout()
 
@@ -78,6 +94,23 @@ Item {
           })
         }
 
+        onBackspacePressed: {
+          const currentIndex = delegateRoot.index
+          const currentText = renderer.editorText
+
+          if (currentIndex === 0)
+            return
+
+          if (currentText.length === 0) {
+            root.model.removeBlock(delegateRoot.blockId)
+            root.focusDelegateAt(currentIndex - 1, -1)
+            return
+          }
+
+          if (root.model.mergeWithPrevious(delegateRoot.blockId)) {
+            root.focusDelegateAt(currentIndex - 1, -1)
+          }
+        }
       }
     }
 

@@ -117,7 +117,18 @@ QString Document::splitBlock(const QString &id, int position) {
 }
 
 bool Document::mergeWithPrevious(const QString &id) {
-  Q_UNUSED(id)
-  return false;
+  const int index = indexOf(id);
+
+  if (index <= 0)
+    return false;
+
+  Block &previous = m_blocks[index - 1];
+  const Block current = m_blocks[index];
+
+  previous.text += current.text;
+
+  m_blocks.removeAt(index);
+
+  return true;
 }
 } // namespace Templnote

@@ -10,13 +10,23 @@ Rectangle {
   required property int headingLevel
   required property var model
   readonly property int cursorPosition: editor.cursorPosition
+  readonly property string editorText: editor.text
   
   signal enterPressed()
+  signal backspacePressed()
 
   function focusEditor(position) {
     editor.forceActiveFocus()
-    editor.cursorPosition = position
-  }
+
+    if (position < 0)
+      editor.cursorPosition = editor.length
+    else
+      editor.cursorPosition = position
+    }
+
+    function refreshFromModel() {
+      editor.text = root.content
+    }
 
   width: parent ? parent.width : 600
   implicitHeight: contentColumn.implicitHeight + 24
@@ -63,6 +73,11 @@ Rectangle {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
           event.accepted = true
           root.enterPressed()
+        }
+
+        if (event.key === Qt.Key_Backspace && editor.cursorPosition === 0) {
+          event.accepted = true
+          root.backspacePressed()
         }
       }
     }

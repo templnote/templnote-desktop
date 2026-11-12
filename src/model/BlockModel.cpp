@@ -154,7 +154,26 @@ QString BlockModel::splitBlock(const QString &id, int position) {
 }
 
 bool BlockModel::mergeWithPrevious(const QString &id) {
-  return m_document.mergeWithPrevious(id);
+  const int row = m_document.indexOf(id);
+
+  if (row <= 0)
+    return false;
+
+  beginRemoveRows({}, row, row);
+
+  const bool success = m_document.mergeWithPrevious(id);
+
+  endRemoveRows();
+
+  if (!success)
+    return false;
+
+  emit dataChanged(index(row - 1), index(row - 1),
+                   {ContentRole, Qt::DisplayRole});
+
+  emit countChanged();
+
+  return true;
 }
 
 bool BlockModel::changeBlockType(const QString &id, int type) {
