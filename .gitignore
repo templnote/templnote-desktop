@@ -1,0 +1,77 @@
+# Build directories
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+compile_commands.json
+CTestTestfile.cmake
+Testing/
+DartConfiguration.tcl
+
+# CMake / Qt generated files
+.qmake.stash
+.qmake.cache
+*.qmlc
+*.jsc
+*.qmltypes
+qmlcache/
+.rcc/
+.qt/
+meta_types/
+qmltypes/
+*_autogen/
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+*.moc
+*.o
+*.obj
+
+# Executables / shared objects
+*.exe
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+*.la
+*.lo
+templnote
+
+# IDE / editor files
+.idea/
+.vscode/
+*.user
+*.user.*
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+.env
+.DS_Store
+
+# Tooling caches
+.cache/
+.clangd/
+.clang-format.tmp
+.ccache/
+.ccls-cache/
+.cache/clangd/
+
+# Test / coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+coverage/
+*.log
