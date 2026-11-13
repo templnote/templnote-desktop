@@ -7,7 +7,7 @@ Rectangle {
   property bool expanded: true
 
   width: expanded ? 240 : 0
-  color: "#191A1D"
+  color: "#e8e8f2"
 
   Behavior on width {
     NumberAnimation {
@@ -23,7 +23,7 @@ Rectangle {
       top: parent.top
       left: parent.left
       right: parent.right
-      topMargin: 72
+      topMargin: 24
       leftMargin: 20
       rightMargin: 16
     }
@@ -32,7 +32,7 @@ Rectangle {
 
     Text {
       text: "EXPLORER"
-      color: "#8B8D94"
+      // color: "#8B8D94"
       font.pixelSize: 12
       font.bold: true
     }
@@ -45,13 +45,13 @@ Rectangle {
 
     Text {
       text: "Documents"
-      color: "#D5D7DB"
+      // color: "#D5D7DB"
       font.pixelSize: 14
     }
 
     Text {
       text: "  Untitled document"
-      color: "#A5A7AD"
+      // color: "#A5A7AD"
       font.pixelSize: 13
     }
   }

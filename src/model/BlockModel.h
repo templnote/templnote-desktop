@@ -41,7 +41,8 @@ public:
 
   Q_INVOKABLE bool updateBlockText(const QString &id, const QString &text);
 
-  Q_INVOKABLE bool changeBlockType(const QString &id, int type);
+  Q_INVOKABLE bool changeBlockType(const QString &id, int type,
+                                   int headdingLevel = 0);
 
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
 

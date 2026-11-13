@@ -3,6 +3,7 @@
 
 #include "Block.h"
 #include "Document.h"
+#include "core/BlockTypes.h"
 
 namespace Templnote {
 const QVector<Block> &Document::blocks() const { return m_blocks; }
@@ -66,13 +67,21 @@ bool Document::updateBlockText(const QString &id, const QString &text) {
   return true;
 }
 
-bool Document::updateBlockType(const QString &id, BlockType type) {
+bool Document::updateBlockType(const QString &id, BlockType type,
+                               int headingLevel) {
   const int index = indexOf(id);
 
   if (index < 0)
     return false;
 
   m_blocks[index].type = type;
+  // keeps headingLevel consistent with the block type
+  if (type == BlockType::Heading) {
+    if (headingLevel < 1 || headingLevel > 6)
+      return false;
+    m_blocks[index].headingLevel = headingLevel;
+  } else
+    m_blocks[index].headingLevel = 0;
 
   return true;
 }

@@ -11,6 +11,9 @@ Rectangle {
   required property var model
   readonly property int cursorPosition: editor.cursorPosition
   readonly property string editorText: editor.text
+
+  property bool transformingShortcut: false
+
   
   signal enterPressed()
   signal backspacePressed()
@@ -31,7 +34,7 @@ Rectangle {
   width: parent ? parent.width : 600
   implicitHeight: contentColumn.implicitHeight + 24
 
-  color: "#191C20"
+  // color: "#191C20"
   radius: 6
 
   Column {
@@ -40,22 +43,16 @@ Rectangle {
     anchors.margins: 12
     spacing: 5
 
-    // Text {
-    //   text: "ID: " + root.blockId
-    //   color: "#8B8B98"
-    //   font.pixelSize: 10
-    // }
-
     TextArea {
       id: editor
 
       width: parent.width
 
-      color: "#F4F4F5"
-      selectionColor: "#4F46E5"
+      // color: "#F4F4F5"
+      // selectionColor: "#4F46E5"
       wrapMode: TextArea.Wrap
 
-      font.pixelSize: root.blockType === 1 ? 30 : 16
+      font.pixelSize: root.blockType === 1 ? Math.max(20, 34 - ((root.headingLevel - 1) * 4)) : 16
       font.weight: root.blockType === 1 ? Font.Bold : Font.Normal
 
       background: null
@@ -64,29 +61,65 @@ Rectangle {
         editor.text = root.content
       }
 
+      onTextChanged: {
+        if (root.transformingShortcut)
+        return
+
+        if (root.blockType !== 0)
+          return
+
+        const headingMatch = /^(#{1,6}) /.exec(text)
+
+        if (!headingMatch)
+          return
+
+        root.transformingShortcut = true
+
+        const headingLevel =
+          headingMatch[1].length
+
+        const headingText =
+          text.substring(headingLevel + 1)
+
+        root.model.changeBlockType(
+          root.blockId,
+          1,
+          headingLevel
+        )
+
+        editor.text = headingText
+        editor.cursorPosition = headingText.length
+
+        root.model.updateBlockText(
+          root.blockId,
+          headingText
+        )
+
+        root.transformingShortcut = false
+      }
+
 
       onEditingFinished: {
         root.model.updateBlockText(root.blockId, text)
       }
 
+
+
       Keys.onPressed: function(event) {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
           event.accepted = true
           root.enterPressed()
+          return
         }
 
         if (event.key === Qt.Key_Backspace && editor.cursorPosition === 0) {
           event.accepted = true
           root.backspacePressed()
+          return
         }
       }
     }
 
-    // Text {
-    //   text: "TYPE: " + root.blockType
-    //   color: "#A78BFA"
-    //   font.pixelSize: 10
-    // }
   }
 
   Component.onCompleted: {

@@ -20,7 +20,7 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    color: "#111315"
+    color: "#f0f0f8"
   }
 
   // Document content
@@ -74,6 +74,15 @@ Item {
         headingLevel: delegateRoot.headingLevel
 
         onEnterPressed: {
+
+          const currentText = renderer.editorText
+          const cursorPosition = renderer.cursorPosition
+          
+          // commit to visible block text before splitting
+          root.model.updateBlockText(
+            delegateRoot.blockId,
+            currentText
+          )
           const newId = root.model.splitBlock(
             delegateRoot.blockId,
             renderer.cursorPosition
@@ -89,6 +98,7 @@ Item {
             const newDelegate = documentView.itemAtIndex(newIndex)
 
             if (newDelegate) {
+              newDelegate.refreshBlock()
               newDelegate.focusBlock(0)
             }
           })
@@ -99,7 +109,12 @@ Item {
           const currentText = renderer.editorText
 
           if (currentIndex === 0)
-            return
+          return
+
+          root.model.updateBlockText(
+            delegateRoot.blockId,
+            currentText
+          )
 
           if (currentText.length === 0) {
             root.model.removeBlock(delegateRoot.blockId)

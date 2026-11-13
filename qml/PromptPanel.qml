@@ -6,8 +6,13 @@ Rectangle {
 
   property bool expanded: true
 
+  width: Math.min(parent ? parent.width - 96 : 600, 600)
   height: expanded ? 72 : 36
-  color: "#1A1C1F"
+  color: "#e8e8f2"
+  topLeftRadius: 8
+  topRightRadius: 8
+  bottomLeftRadius: 0
+  bottomRightRadius: 0
 
   Behavior on height {
     NumberAnimation {
@@ -43,7 +48,7 @@ Rectangle {
     }
 
     text: "Prompt"
-    color: "#777A82"
+    // color: "#777A82"
     font.pixelSize: 13
   }
 
@@ -53,7 +58,7 @@ Rectangle {
     anchors.centerIn: parent
 
     text: "⌃  Prompt"
-    color: "#777A82"
+    // color: "#777A82"
     font.pixelSize: 12
   }
 }

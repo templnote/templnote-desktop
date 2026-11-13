@@ -28,7 +28,7 @@ public:
 
   bool updateBlockText(const QString &id, const QString &text);
 
-  bool updateBlockType(const QString &id, BlockType type);
+  bool updateBlockType(const QString &id, BlockType type, int headingLevel = 0);
 
   bool moveBlock(const QString &id, int destination);
 

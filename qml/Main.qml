@@ -10,7 +10,7 @@ ApplicationWindow {
 
   visible: true
   title: "Templnote"
-  color: "#101112"
+  // color: "#101112"
 
   BlockModel {
     id: blockModel
@@ -51,15 +51,15 @@ ApplicationWindow {
       bottom: parent.bottom
     }
 
+    Rectangle {
+      anchors.fill: parent
+      // color: "#111315"
+    }
+
     Editor {
       id: editor
 
-      anchors {
-        top: parent.top
-        left: parent.left
-        right: parent.right
-        bottom: promptPanel.top
-      }
+      anchors.fill: parent
 
       model: blockModel
     }
@@ -67,9 +67,10 @@ ApplicationWindow {
     PromptPanel {
       id: promptPanel
 
+      z: 1
+
       anchors {
-        left: parent.left
-        right: parent.right
+        horizontalCenter: parent.horizontalCenter
         bottom: parent.bottom
       }
     }

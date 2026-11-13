@@ -5,7 +5,7 @@ Rectangle {
   id: root
 
   width: 56
-  color: "#151618"
+  color: "#fafafd"
 
   signal explorerToggleRequested()
 

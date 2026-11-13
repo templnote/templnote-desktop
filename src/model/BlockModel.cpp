@@ -139,6 +139,12 @@ QString BlockModel::splitBlock(const QString &id, int position) {
   if (row < 0)
     return {};
 
+  const Block *block = m_document.blockAt(row);
+
+  if (!block || position < 0 || position > block->text.size()) {
+    return {};
+  }
+
   beginInsertRows({}, row + 1, row + 1);
 
   const QString newId = m_document.splitBlock(id, position);
@@ -176,7 +182,8 @@ bool BlockModel::mergeWithPrevious(const QString &id) {
   return true;
 }
 
-bool BlockModel::changeBlockType(const QString &id, int type) {
+bool BlockModel::changeBlockType(const QString &id, int type,
+                                 int headingLevel) {
   if (!isValidBlockType(type))
     return false;
 
@@ -185,10 +192,11 @@ bool BlockModel::changeBlockType(const QString &id, int type) {
   if (row < 0)
     return false;
 
-  if (!m_document.updateBlockType(id, static_cast<BlockType>(type))) {
+  if (!m_document.updateBlockType(id, static_cast<BlockType>(type),
+                                  headingLevel)) {
     return false;
   }
-  emit dataChanged(index(row), index(row), {BlockTypeRole});
+  emit dataChanged(index(row), index(row), {BlockTypeRole, HeadingLevelRole});
 
   return true;
 }
