@@ -7,7 +7,7 @@ namespace Templnote {
 enum class BlockType : qint8 {
   Paragraph = 0,
   Heading = 1,
-  BulletList = 2,
+  Bullet = 2,
   NumberedList = 3,
   Todo = 4,
   Quote = 5,

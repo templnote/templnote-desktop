@@ -24,7 +24,14 @@ Rectangle {
   Button {
     id: toggleButton
 
-    text: root.expanded ? "⌄" : "⌃"
+    icon.source: root.expanded ? "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_chevron_double_down_20_filled.svg"
+                               : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_chevron_double_up_20_filled.svg"
+    icon.width: 20
+    icon.height: 20
+    width: 24
+    height: 24
+    padding: 0
+    background: null
 
     anchors {
       top: parent.top
@@ -47,7 +54,7 @@ Rectangle {
       leftMargin: 20
     }
 
-    text: "Prompt"
+    text: "Meow"
     // color: "#777A82"
     font.pixelSize: 13
   }
@@ -57,7 +64,7 @@ Rectangle {
 
     anchors.centerIn: parent
 
-    text: "⌃  Prompt"
+    text: "Prompt"
     // color: "#777A82"
     font.pixelSize: 12
   }

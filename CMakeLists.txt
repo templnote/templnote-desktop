@@ -58,6 +58,25 @@ qt_add_qml_module(templnote
   qml/PromptPanel.qml
   qml/NavigationRail.qml
   qml/FileExplorer.qml
+
+  qml/blocks/TextBlock.qml
+  qml/blocks/ParagraphBlock.qml
+  qml/blocks/HeadingBlock.qml
+  qml/blocks/BulletBlock.qml
+
+  RESOURCES
+  assets/icons/ic_fluent_folder_20_regular.svg
+  assets/icons/ic_fluent_settings_20_regular.svg
+  assets/icons/ic_fluent_person_20_regular.svg
+  assets/icons/ic_fluent_document_add_20_regular.svg
+  assets/icons/ic_fluent_add_20_regular.svg
+  assets/icons/ic_fluent_align_space_evenly_horizontal_20_regular.svg
+  assets/icons/ic_fluent_chevron_double_down_20_filled.svg
+  assets/icons/ic_fluent_chevron_double_up_20_filled.svg
+  assets/icons/ic_fluent_panel_left_20_filled.svg
+  assets/icons/ic_fluent_panel_left_contract_20_filled.svg
+  assets/icons/ic_fluent_panel_left_expand_20_filled.svg
+  assets/icons/ic_fluent_animal_cat_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

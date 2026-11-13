@@ -1,0 +1,8 @@
+import QtQuick
+
+TextBlock {
+  verticalPadding: 12
+  fontPixelSize: Math.max(20, 34 - ((headingLevel - 1) * 4))
+  fontBold: true
+  showBullet: false
+}

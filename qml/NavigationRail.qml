@@ -17,9 +17,14 @@ Rectangle {
     Button {
       id: collapseButton
 
-      text: root.explorerExpanded ? "‹" : "›"
-      width: 40
-      height: 40
+      icon.source: root.explorerExpanded ? "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_panel_left_20_filled.svg"
+                                         : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_panel_left_expand_20_filled.svg"
+      icon.width: 20
+      icon.height: 20
+      width: 24
+      height: 24
+      padding: 0
+      background: null
 
       onClicked: {
         root.explorerToggleRequested()
@@ -27,30 +32,46 @@ Rectangle {
     }
 
     Button {
-      text: "☰"
-      width: 40
-      height: 40
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_align_space_evenly_horizontal_20_regular.svg"
+      icon.width: 20
+      icon.height: 20
+      width: 24
+      height: 24
+      padding: 0
+      background: null
       onClicked: console.log("Navigation menu")
     }
 
     Button {
-      text: "▣"
-      width: 40
-      height: 40
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_folder_20_regular.svg"
+      icon.width: 20
+      icon.height: 20
+      width: 24
+      height: 24
+      padding: 0
+      background: null
       onClicked: console.log("Explorer selected")
     }
 
     Button {
-      text: "⚙"
-      width: 40
-      height: 40
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_settings_20_regular.svg"
+      icon.width: 20
+      icon.height: 20
+      width: 24
+      height: 24
+      padding: 0
+      background: null
       onClicked: console.log("Settings selected")
     }
 
     Button {
-      text: "●"
-      width: 40
-      height: 40
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_person_20_regular.svg"
+      icon.width: 20
+      icon.height: 20
+      width: 24
+      height: 24
+      padding: 0
+      background: null
       onClicked: console.log("Profile selected")
     }
   }

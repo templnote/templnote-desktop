@@ -37,7 +37,7 @@ Item {
     }
 
     model: root.model
-    spacing: 16
+    spacing: 0
     clip: true
 
     delegate: Item {
@@ -48,10 +48,14 @@ Item {
       required property string content
       required property int blockType
       required property int headingLevel
+      required property int nextBlockType
       required property int index
 
+      readonly property bool isBullet: delegateRoot.blockType === 2
+      readonly property bool nextIsBullet: delegateRoot.nextBlockType === 2
+
       width: documentView.width
-      height: renderer.implicitHeight
+      height: renderer.implicitHeight + (delegateRoot.isBullet && delegateRoot.nextIsBullet ? 4 : 16)
 
       function focusBlock(position) {
         renderer.focusEditor(position)
@@ -83,6 +87,14 @@ Item {
             delegateRoot.blockId,
             currentText
           )
+          // for a smoother markdown behaviour
+          if (delegateRoot.blockType === 2 && renderer.editorText.length === 0) {
+            root.model.changeBlockType(
+              delegateRoot.blockId, 0, 0
+            )
+            return
+          }
+
           const newId = root.model.splitBlock(
             delegateRoot.blockId,
             renderer.cursorPosition

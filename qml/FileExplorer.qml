@@ -38,8 +38,16 @@ Rectangle {
     }
 
     Button {
-      text: "＋  New document"
+      text: "New document"
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_document_add_20_regular.svg"
+      icon.width: 20
+      icon.height: 20
       width: parent.width
+      leftPadding: 4
+      rightPadding: 4
+      topPadding: 4
+      bottomPadding: 4
+      background: null
       onClicked: console.log("New document")
     }
 
