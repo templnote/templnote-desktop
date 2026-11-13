@@ -6,8 +6,8 @@ Rectangle {
 
   property bool expanded: true
 
-  width: Math.min(parent ? parent.width - 96 : 600, 600)
-  height: expanded ? 72 : 36
+  width: expanded ? Math.min(parent ? parent.width - 96 : 700, 700) : Math.min(parent ? parent.width - 96 : 200, 200)
+  height: expanded ? 84 : 36
   color: "#e8e8f2"
   topLeftRadius: 8
   topRightRadius: 8
@@ -18,6 +18,84 @@ Rectangle {
     NumberAnimation {
       duration: 180
       easing.type: Easing.OutCubic
+    }
+  }
+
+  Image {
+    id: catIcon
+
+    source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_animal_cat_20_regular.svg"
+    sourceSize.width: 20
+    sourceSize.height: 20
+    fillMode: Image.PreserveAspectFit
+
+    anchors {
+      left: parent.left
+      leftMargin: 10
+      verticalCenter: parent.verticalCenter
+    }
+  }
+
+  Text {
+    visible: !root.expanded
+
+    anchors {
+      left: catIcon.right
+      leftMargin: 5
+      verticalCenter: parent.verticalCenter
+    }
+
+    text: "Meow"
+    // color: "#777A82"
+    font.pixelSize: 13
+  }
+
+  TextField {
+    id: promptInput
+
+    visible: root.expanded
+
+    anchors {
+      left: catIcon.right
+      leftMargin: 10
+      right: sendButton.left
+      rightMargin: 8
+      verticalCenter: parent.verticalCenter
+    }
+
+    height: 64
+    font.pixelSize: 13
+
+    background: Rectangle {
+      radius: 8
+      color: "#f7f7fb"
+      border.color: "#cfcfda"
+      border.width: 1
+    }
+  }
+
+  Button {
+    id: sendButton
+
+    visible: root.expanded
+
+    icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_send_20_color.svg"
+    icon.width: 20
+    icon.height: 20
+    width: 24
+    height: 24
+    padding: 0
+    background: null
+
+    anchors {
+      right: parent.right
+      rightMargin: 10
+      bottom: parent.bottom
+      bottomMargin: 8
+    }
+
+    onClicked: {
+      console.log("Send prompt")
     }
   }
 
@@ -37,35 +115,11 @@ Rectangle {
       top: parent.top
       right: parent.right
       topMargin: 8
-      rightMargin: 12
+      rightMargin: 10
     }
 
     onClicked: {
       root.expanded = !root.expanded
     }
-  }
-
-  Text {
-    visible: root.expanded
-
-    anchors {
-      left: parent.left
-      verticalCenter: parent.verticalCenter
-      leftMargin: 20
-    }
-
-    text: "Meow"
-    // color: "#777A82"
-    font.pixelSize: 13
-  }
-
-  Text {
-    visible: !root.expanded
-
-    anchors.centerIn: parent
-
-    text: "Prompt"
-    // color: "#777A82"
-    font.pixelSize: 12
   }
 }

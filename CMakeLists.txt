@@ -77,6 +77,7 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_panel_left_contract_20_filled.svg
   assets/icons/ic_fluent_panel_left_expand_20_filled.svg
   assets/icons/ic_fluent_animal_cat_20_regular.svg
+  assets/icons/ic_fluent_send_20_color.svg
 )
 
 target_link_libraries(templnote PRIVATE
