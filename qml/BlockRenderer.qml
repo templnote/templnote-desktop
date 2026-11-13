@@ -9,6 +9,7 @@ Item {
   property int blockType: 0
   property string content: ""
   property int headingLevel: 0
+  property int numberIndex: 1
   property var model: null
 
   readonly property var block: loader.item
@@ -91,6 +92,7 @@ Item {
       item.blockType = Qt.binding(function() { return root.blockType })
       item.content = Qt.binding(function() { return root.content })
       item.headingLevel = Qt.binding(function() { return root.headingLevel })
+      item.numberIndex = Qt.binding(function() { return root.numberIndex })
       item.model = Qt.binding(function() { return root.model })
 
       item.enterPressed.connect(root.enterPressed)

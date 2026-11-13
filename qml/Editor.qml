@@ -49,6 +49,7 @@ Item {
       required property int blockType
       required property int headingLevel
       required property int nextBlockType
+      required property int numberIndex
       required property int index
 
       readonly property bool isBullet: delegateRoot.blockType === 2
@@ -79,6 +80,7 @@ Item {
         content: delegateRoot.content
         blockType: delegateRoot.blockType
         headingLevel: delegateRoot.headingLevel
+        numberIndex: delegateRoot.numberIndex
 
         onEnterPressed: {
 

@@ -9,12 +9,13 @@ Item {
   property int blockType: 0
   property string content: ""
   property int headingLevel: 0
+  property int numberIndex: 1
   property var model: null
 
   // Appearance overrides for each concrete block type.
   property bool showBullet: false
   property bool showNumbered: false
-  property string numberPrefix: "1."
+  property string numberPrefix: numberIndex + "."
   property int verticalPadding: 12
   property int horizontalPadding: 12
   property int rowHeight: 0

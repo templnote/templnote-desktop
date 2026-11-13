@@ -57,6 +57,22 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
     return next ? static_cast<int>(next->type) : -1;
   }
 
+  case NumberIndexRole: {
+    if (block->type != BlockType::NumberedList)
+      return 0;
+
+    int num = 1;
+    for (int r = index.row() - 1; r >= 0; --r) {
+      const Block *prev = m_document.blockAt(r);
+      if (prev && prev->type == BlockType::NumberedList) {
+        num++;
+      } else {
+        break;
+      }
+    }
+    return num;
+  }
+
   case Qt::DisplayRole:
     return block->text;
 
@@ -69,7 +85,7 @@ QHash<int, QByteArray> BlockModel::roleNames() const {
   return {{BlockIdRole, "blockId"},           {ParentIdRole, "parentId"},
           {BlockTypeRole, "blockType"},       {ContentRole, "content"},
           {HeadingLevelRole, "headingLevel"}, {MetadataRole, "metadata"},
-          {NextBlockTypeRole, "nextBlockType"}};
+          {NextBlockTypeRole, "nextBlockType"}, {NumberIndexRole, "numberIndex"}};
 }
 
 QString BlockModel::appendBlock(int type, const QString &text) {
@@ -111,6 +127,11 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
   if (success && row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
+  if (success && row + 1 < m_document.count()) {
+    emit dataChanged(index(row + 1), index(m_document.count() - 1),
+                     {NumberIndexRole});
+  }
+
   if (success)
     emit countChanged();
 
@@ -131,6 +152,11 @@ bool BlockModel::removeBlock(const QString &id) {
 
   if (success && row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
+
+  if (success && row < m_document.count()) {
+    emit dataChanged(index(row), index(m_document.count() - 1),
+                     {NumberIndexRole});
+  }
 
   if (success)
     emit countChanged();
@@ -176,6 +202,11 @@ QString BlockModel::splitBlock(const QString &id, int position) {
   emit dataChanged(index(row), index(row),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
 
+  if (row + 2 < m_document.count()) {
+    emit dataChanged(index(row + 2), index(m_document.count() - 1),
+                     {NumberIndexRole});
+  }
+
   return newId;
 }
 
@@ -197,6 +228,11 @@ bool BlockModel::mergeWithPrevious(const QString &id) {
   emit dataChanged(index(row - 1), index(row - 1),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
 
+  if (row - 1 < m_document.count()) {
+    emit dataChanged(index(row - 1), index(m_document.count() - 1),
+                     {NumberIndexRole});
+  }
+
   emit countChanged();
 
   return true;
@@ -216,7 +252,8 @@ bool BlockModel::changeBlockType(const QString &id, int type,
                                   headingLevel)) {
     return false;
   }
-  emit dataChanged(index(row), index(row), {BlockTypeRole, HeadingLevelRole});
+  emit dataChanged(index(row), index(m_document.count() - 1),
+                   {BlockTypeRole, HeadingLevelRole, NumberIndexRole});
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -249,6 +286,9 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
 
     if (first <= last)
       emit dataChanged(index(first), index(last), {NextBlockTypeRole});
+
+    if (first < m_document.count())
+      emit dataChanged(index(first), index(m_document.count() - 1), {NumberIndexRole});
   }
 
   return success;

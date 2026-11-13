@@ -18,7 +18,8 @@ public:
     ContentRole,
     HeadingLevelRole,
     MetadataRole,
-    NextBlockTypeRole
+    NextBlockTypeRole,
+    NumberIndexRole
   };
 
   Q_ENUM(Roles)

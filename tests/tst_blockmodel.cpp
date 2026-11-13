@@ -28,6 +28,7 @@ private slots:
     QCOMPARE(roles.value(BlockModel::HeadingLevelRole),
              QByteArray("headingLevel"));
     QCOMPARE(roles.value(BlockModel::MetadataRole), QByteArray("metadata"));
+    QCOMPARE(roles.value(BlockModel::NumberIndexRole), QByteArray("numberIndex"));
 
     const QModelIndex first = model.index(0, 0);
     QVERIFY(first.isValid());
@@ -79,6 +80,27 @@ private slots:
 
     QVERIFY(model.removeBlock(id));
     QVERIFY(!model.removeBlock(id));
+  }
+
+  void numberedListSequentialIndex() {
+    BlockModel model;
+
+    const QString id1 = model.appendBlock(static_cast<int>(BlockType::NumberedList), "Item 1");
+    const QString id2 = model.appendBlock(static_cast<int>(BlockType::NumberedList), "Item 2");
+    const QString id3 = model.appendBlock(static_cast<int>(BlockType::NumberedList), "Item 3");
+
+    int r1 = model.document().indexOf(id1);
+    int r2 = model.document().indexOf(id2);
+    int r3 = model.document().indexOf(id3);
+
+    QCOMPARE(model.data(model.index(r1), BlockModel::NumberIndexRole).toInt(), 1);
+    QCOMPARE(model.data(model.index(r2), BlockModel::NumberIndexRole).toInt(), 2);
+    QCOMPARE(model.data(model.index(r3), BlockModel::NumberIndexRole).toInt(), 3);
+
+    // Delete middle item, count should auto-adjust
+    QVERIFY(model.removeBlock(id2));
+    r3 = model.document().indexOf(id3);
+    QCOMPARE(model.data(model.index(r3), BlockModel::NumberIndexRole).toInt(), 2);
   }
 };
 
