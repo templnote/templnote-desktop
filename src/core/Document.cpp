@@ -116,8 +116,8 @@ QString Document::splitBlock(const QString &id, int position) {
   const QString remainingText = current.text.mid(position);
   current.text.truncate(position);
 
-  const BlockType newType = current.type == BlockType::Bullet
-                                ? BlockType::Bullet
+  const BlockType newType = (current.type == BlockType::Bullet || current.type == BlockType::NumberedList)
+                                ? current.type
                                 : BlockType::Paragraph;
 
   Block newBlock = Block::create(newType, remainingText);

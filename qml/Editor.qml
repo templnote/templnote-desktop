@@ -53,9 +53,12 @@ Item {
 
       readonly property bool isBullet: delegateRoot.blockType === 2
       readonly property bool nextIsBullet: delegateRoot.nextBlockType === 2
+      readonly property bool isNumbered: delegateRoot.blockType === 3
+      readonly property bool nextIsNumbered: delegateRoot.nextBlockType === 3
+      readonly property bool isCompactList: (isBullet && nextIsBullet) || (isNumbered && nextIsNumbered)
 
       width: documentView.width
-      height: renderer.implicitHeight + (delegateRoot.isBullet && delegateRoot.nextIsBullet ? 4 : 16)
+      height: renderer.implicitHeight + (delegateRoot.isCompactList ? 4 : 16)
 
       function focusBlock(position) {
         renderer.focusEditor(position)
@@ -88,10 +91,10 @@ Item {
             currentText
           )
           // for a smoother markdown behaviour
-          if (delegateRoot.blockType === 2 && renderer.editorText.length === 0) {
-            root.model.changeBlockType(
-              delegateRoot.blockId, 0, 0
-            )
+          if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3) && renderer.editorText.length === 0) {
+            if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
+              root.focusDelegateAt(delegateRoot.index, 0)
+            }
             return
           }
 
@@ -119,18 +122,28 @@ Item {
         onBackspacePressed: {
           const currentIndex = delegateRoot.index
           const currentText = renderer.editorText
+          const currentType = delegateRoot.blockType
 
-          if (currentIndex === 0)
-          return
 
           root.model.updateBlockText(
             delegateRoot.blockId,
             currentText
           )
 
+          if ( currentType === 2 || currentType === 3 ) {
+            if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
+              root.focusDelegateAt(currentIndex, 0)
+            }
+            return
+          }
+
+          if (currentIndex === 0)
+          return
+
           if (currentText.length === 0) {
-            root.model.removeBlock(delegateRoot.blockId)
-            root.focusDelegateAt(currentIndex - 1, -1)
+            if ( root.model.removeBlock(delegateRoot.blockId)) {
+              root.focusDelegateAt(currentIndex - 1, -1)
+            }
             return
           }
 

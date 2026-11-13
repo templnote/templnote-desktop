@@ -13,6 +13,8 @@ Item {
 
   // Appearance overrides for each concrete block type.
   property bool showBullet: false
+  property bool showNumbered: false
+  property string numberPrefix: "1."
   property int verticalPadding: 12
   property int horizontalPadding: 12
   property int rowHeight: 0
@@ -57,7 +59,7 @@ Item {
     anchors.rightMargin: root.horizontalPadding
     anchors.topMargin: root.verticalPadding
     anchors.bottomMargin: root.verticalPadding
-    spacing: root.showBullet ? 0 : 5
+    spacing: (root.showBullet || root.showNumbered) ? 0 : 5
 
     Row {
       width: parent.width
@@ -65,7 +67,7 @@ Item {
       spacing: 0
 
       Item {
-        // The bullet is drawn in its own gutter so the textarea can be
+        // The bullet/number is drawn in its own gutter so the textarea can be
         // offset by the same amount for every block type, keeping the
         // text of all block types aligned.
         id: bulletGutter
@@ -78,6 +80,17 @@ Item {
 
           text: "•"
           font.pixelSize: 22
+
+          horizontalAlignment: Text.AlignHCenter
+          verticalAlignment: Text.AlignVCenter
+        }
+
+        Text {
+          visible: root.showNumbered
+          anchors.centerIn: parent
+
+          text: root.numberPrefix
+          font.pixelSize: 14
 
           horizontalAlignment: Text.AlignHCenter
           verticalAlignment: Text.AlignVCenter
@@ -131,6 +144,31 @@ Item {
               // Changing the type makes the dispatcher reload the block
               // renderer, so focus has to move to the new editor.
               root.focusRequested(bulletText.length)
+              return
+            }
+
+            // paragraph -> numbered list
+            const numberedMatch = /^(\d+)\.\s/.exec(text)
+            if (root.blockType === 0 && numberedMatch) {
+              root.transformingShortcut = true
+
+              const prefixLen = numberedMatch[0].length
+              const numberedText = text.substring(prefixLen)
+
+              root.model.changeBlockType(
+                root.blockId,
+                3,
+                0
+              )
+
+              root.model.updateBlockText(
+                root.blockId,
+                numberedText
+              )
+
+              root.transformingShortcut = false
+
+              root.focusRequested(numberedText.length)
               return
             }
 

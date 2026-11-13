@@ -63,6 +63,7 @@ qt_add_qml_module(templnote
   qml/blocks/ParagraphBlock.qml
   qml/blocks/HeadingBlock.qml
   qml/blocks/BulletBlock.qml
+  qml/blocks/NumberedBlock.qml
 
   RESOURCES
   assets/icons/ic_fluent_folder_20_regular.svg

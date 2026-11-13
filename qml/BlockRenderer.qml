@@ -52,6 +52,8 @@ Item {
       return headingComponent
     case 2: // BlockType::Bullet
       return bulletComponent
+    case 3: // BlockType::NumberedList
+      return numberedComponent
     default: // BlockType::Paragraph, and future types until implemented
       return paragraphComponent
     }
@@ -72,6 +74,11 @@ Item {
   Component {
     id: bulletComponent
     BulletBlock {}
+  }
+
+  Component {
+    id: numberedComponent
+    NumberedBlock {}
   }
 
   Loader {
