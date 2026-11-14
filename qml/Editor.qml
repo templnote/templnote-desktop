@@ -18,6 +18,51 @@ Item {
     })
   }
 
+  function restoreFocusAfterHistory(blockId, oldRow, undo) {
+    documentView.forceLayout()
+
+    Qt.callLater(function() {
+      let row = root.model.indexOfBlock(blockId)
+
+      // The undo/redo may have removed the focused block (for example when
+      // undoing a split). Move to the nearest surviving block in that case.
+      if (row < 0) {
+        const fallback = undo ? oldRow - 1 : oldRow
+        row = Math.max(0, Math.min(fallback, root.model.count - 1))
+      }
+
+      if (row < 0)
+        return
+
+      documentView.positionViewAtIndex(row, ListView.Contain)
+      documentView.forceLayout()
+
+      const delegate = documentView.itemAtIndex(row)
+
+      if (delegate) {
+        delegate.refreshBlock()
+        // Keep the caret at the end of the restored text.
+        delegate.focusBlock(-1)
+      }
+    })
+  }
+
+  function undoFrom(blockId, row) {
+    root.model.undo()
+
+    const targetId = root.model.lastHistoryBlockId()
+    restoreFocusAfterHistory(targetId.length > 0 ? targetId : blockId,
+                             row, true)
+  }
+
+  function redoFrom(blockId, row) {
+    root.model.redo()
+
+    const targetId = root.model.lastHistoryBlockId()
+    restoreFocusAfterHistory(targetId.length > 0 ? targetId : blockId,
+                             row, false)
+  }
+
   Rectangle {
     anchors.fill: parent
     color: Theme.background
@@ -145,6 +190,14 @@ Item {
                 currentText)) {
             root.focusDelegateAt(currentIndex - 1, -1)
           }
+        }
+
+        onUndoRequested: {
+          root.undoFrom(delegateRoot.blockId, delegateRoot.index)
+        }
+
+        onRedoRequested: {
+          root.redoFrom(delegateRoot.blockId, delegateRoot.index)
         }
       }
     }

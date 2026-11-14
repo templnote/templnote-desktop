@@ -18,12 +18,16 @@ Item {
 
   signal enterPressed()
   signal backspacePressed()
+  signal undoRequested()
+  signal redoRequested()
 
   property int pendingFocus: -1
 
   function focusEditor(position) {
-    if (block)
+    if (block && loader.status === Loader.Ready)
       block.focusEditor(position)
+    else
+      requestFocus(position)
   }
 
   function requestFocus(position) {
@@ -98,6 +102,8 @@ Item {
       item.enterPressed.connect(root.enterPressed)
       item.backspacePressed.connect(root.backspacePressed)
       item.focusRequested.connect(root.requestFocus)
+      item.undoRequested.connect(root.undoRequested)
+      item.redoRequested.connect(root.redoRequested)
 
       root.applyPendingFocus()
     }

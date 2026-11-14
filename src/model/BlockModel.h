@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QElapsedTimer>
 #include <QVector>
 #include <qcontainerfwd.h>
 #include <qproperty.h>
@@ -63,6 +64,11 @@ public:
 
   const Document &document() const;
 
+  Q_INVOKABLE int indexOfBlock(const QString &id) const;
+
+  // Block that should receive focus after the last undo/redo.
+  Q_INVOKABLE QString lastHistoryBlockId() const;
+
   // undo redo
   Q_INVOKABLE bool undo();
   bool canUndo() const;
@@ -75,11 +81,36 @@ signals:
   void historyChanged();
 
 private:
-  void saveHistory(const QVector<Block> &before);
-  bool restoreHistory(QVector<QVector<Block>> &from,
-                      QVector<QVector<Block>> &to);
+  struct HistoryEntry {
+    enum class Kind { TextEdit, DocumentEdit };
+
+    Kind kind = Kind::DocumentEdit;
+    QString blockId;
+    QString textBefore;
+    QString textAfter;
+    QString focusBeforeId;
+    QString focusAfterId;
+    QVector<Block> documentBefore;
+    QVector<Block> documentAfter;
+  };
+
+  void saveHistory(const QVector<Block> &before,
+                   const QString &focusBeforeId = {},
+                   const QString &focusAfterId = {});
+  void saveTextHistory(const QString &id, const QString &before,
+                       const QString &after);
+  void closeTextGroup();
+  void applyHistoryEntry(const HistoryEntry &entry, bool undo);
+
   Document m_document;
-  QVector<QVector<Block>> m_undoStack;
-  QVector<QVector<Block>> m_redoStack;
+  QVector<HistoryEntry> m_undoStack;
+  QVector<HistoryEntry> m_redoStack;
+  QString m_lastHistoryBlockId;
+
+  // Consecutive single-character edits in the same block are merged into one
+  // history entry until a word boundary or a short pause is reached.
+  QString m_textGroupBlockId;
+  QElapsedTimer m_textGroupTimer;
+  bool m_textGroupOpen = false;
 };
 } // namespace Templnote

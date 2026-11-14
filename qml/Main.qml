@@ -17,6 +17,21 @@ ApplicationWindow {
     id: blockModel
   }
 
+  Shortcut {
+    sequence: StandardKey.Undo
+    context: Qt.ApplicationShortcut
+    onActivated: {
+      blockModel.undo()
+    }
+  }
+  Shortcut {
+    sequence: StandardKey.Redo
+    context: Qt.ApplicationShortcut
+    onActivated: {
+      blockModel.redo()
+    }
+  }
+
   NavigationRail {
     property bool explorerExpanded: true
     id: navigationRail

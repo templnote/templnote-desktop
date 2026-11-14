@@ -26,10 +26,13 @@ Item {
   readonly property string editorText: editor.text
 
   property bool transformingShortcut: false
+  property bool syncingFromModel: false
 
   signal enterPressed()
   signal backspacePressed()
   signal focusRequested(int position)
+  signal undoRequested()
+  signal redoRequested()
 
   function focusEditor(position) {
     editor.forceActiveFocus()
@@ -47,11 +50,30 @@ Item {
   onContentChanged: {
     // The dispatcher assigns the content after the loader has created
     // this item, so keep the editor in sync with the model.
-    if (editor.text !== root.content)
-      editor.text = root.content
+    if (editor.text === root.content)
+      return
+
+    root.syncingFromModel = true
+    editor.text = root.content
+    // Content changes coming from the model are undo/redo (or other
+    // programmatic updates), so place the caret after the restored text.
+    editor.cursorPosition = editor.length
+    root.syncingFromModel = false
   }
 
   implicitHeight: contentColumn.implicitHeight + root.verticalPadding * 2
+
+  // Clicking the block's padding/gutter should move the caret into this block
+  // instead of leaving focus on the previously edited block.
+  MouseArea {
+    anchors.fill: parent
+    acceptedButtons: Qt.LeftButton
+
+    onClicked: {
+      editor.forceActiveFocus()
+      editor.cursorPosition = editor.length
+    }
+  }
 
   Column {
     id: contentColumn
@@ -127,7 +149,7 @@ Item {
           }
 
           onTextChanged: {
-            if (root.transformingShortcut)
+            if (root.transformingShortcut || root.syncingFromModel)
               return
 
             // paragraph -> bullet
@@ -180,36 +202,41 @@ Item {
               return
             }
 
-            if (root.blockType !== 0)
-              return
-
             // paragraph -> heading
-            const headingMatch = /^(#{1,6}) /.exec(text)
+            if (root.blockType === 0) {
+              const headingMatch = /^(#{1,6}) /.exec(text)
 
-            if (!headingMatch)
-              return
+              if (headingMatch) {
+                root.transformingShortcut = true
 
-            root.transformingShortcut = true
+                const headingLevel = headingMatch[1].length
+                const headingText = text.substring(headingLevel + 1)
 
-            const headingLevel = headingMatch[1].length
-            const headingText = text.substring(headingLevel + 1)
+                root.model.changeBlockType(
+                  root.blockId,
+                  1,
+                  headingLevel
+                )
 
-            root.model.changeBlockType(
-              root.blockId,
-              1,
-              headingLevel
-            )
+                root.model.updateBlockText(
+                  root.blockId,
+                  headingText
+                )
 
-            root.model.updateBlockText(
-              root.blockId,
-              headingText
-            )
+                root.transformingShortcut = false
 
-            root.transformingShortcut = false
+                // Changing the type makes the dispatcher reload the block
+                // renderer, so focus has to move to the new editor.
+                root.focusRequested(headingText.length)
+                return
+              }
+            }
 
-            // Changing the type makes the dispatcher reload the block
-            // renderer, so focus has to move to the new editor.
-            root.focusRequested(headingText.length)
+            // Every normal text change is sent to the model immediately so
+            // undo/redo can operate on characters/words instead of whole
+            // blocks. BlockModel groups consecutive keystrokes for us.
+            if (root.model && root.blockId.length > 0)
+              root.model.updateBlockText(root.blockId, text)
           }
 
           onEditingFinished: {
@@ -217,6 +244,22 @@ Item {
           }
 
           Keys.onPressed: function(event) {
+            // TextArea has its own per-editor undo stack, which would only
+            // undo the block that currently has focus. Intercept the standard
+            // shortcuts and use the document-wide history in BlockModel
+            // instead so undo/redo works across every block.
+            if (event.matches(StandardKey.Undo)) {
+              event.accepted = true
+              root.undoRequested()
+              return
+            }
+
+            if (event.matches(StandardKey.Redo)) {
+              event.accepted = true
+              root.redoRequested()
+              return
+            }
+
             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
               event.accepted = true
               root.enterPressed()

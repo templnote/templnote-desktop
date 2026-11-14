@@ -102,6 +102,143 @@ private slots:
     r3 = model.document().indexOf(id3);
     QCOMPARE(model.data(model.index(r3), BlockModel::NumberIndexRole).toInt(), 2);
   }
+
+  void undoAcrossBlocks() {
+    BlockModel model;
+
+    const QString firstId =
+        model.document().blockAt(0)->id;
+
+    const QString secondId =
+        model.document().blockAt(1)->id;
+
+    QVERIFY(model.updateBlockText(
+        firstId,
+        "First changed"));
+
+    QVERIFY(model.updateBlockText(
+        secondId,
+        "Second changed"));
+
+    QCOMPARE(
+        model.data(
+            model.index(0),
+            BlockModel::ContentRole).toString(),
+        QString("First changed"));
+
+    QCOMPARE(
+        model.data(
+            model.index(1),
+            BlockModel::ContentRole).toString(),
+        QString("Second changed"));
+
+    QVERIFY(model.undo());
+
+    QCOMPARE(
+        model.data(
+            model.index(0),
+            BlockModel::ContentRole).toString(),
+        QString("First changed"));
+
+    QCOMPARE(
+        model.data(
+            model.index(1),
+            BlockModel::ContentRole).toString(),
+        QString("Your local-first writing environment"));
+
+    QVERIFY(model.undo());
+
+    QCOMPARE(
+        model.data(
+            model.index(0),
+            BlockModel::ContentRole).toString(),
+        QString("Welcome to Templnote"));
+  }
+
+  void undoTextCharacterByCharacter() {
+    BlockModel model;
+
+    const QString id = model.document().blockAt(0)->id;
+    const QString original = model.document().blockAt(0)->text;
+
+    QVERIFY(model.updateBlockText(id, original + "!"));
+
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original + "!");
+
+    QVERIFY(model.undo());
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original);
+
+    QVERIFY(model.redo());
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original + "!");
+  }
+
+  void historyReportsBlockToFocus() {
+    BlockModel model;
+
+    const QString firstId = model.document().blockAt(0)->id;
+    const QString secondId = model.document().blockAt(1)->id;
+
+    QVERIFY(model.updateBlockText(firstId, "First changed"));
+    QVERIFY(model.updateBlockText(secondId, "Second changed"));
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.lastHistoryBlockId(), secondId);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.lastHistoryBlockId(), firstId);
+
+    QVERIFY(model.redo());
+    QCOMPARE(model.lastHistoryBlockId(), firstId);
+
+    QVERIFY(model.redo());
+    QCOMPARE(model.lastHistoryBlockId(), secondId);
+  }
+
+  void undoTextWordByWord() {
+    BlockModel model;
+
+    const QString id = model.document().blockAt(0)->id;
+    const QString original = model.document().blockAt(0)->text;
+
+    // Simulate typing one character at a time. BlockModel should group the
+    // characters into word-sized undo steps instead of restoring the whole
+    // block.
+    QString text = original + "first";
+
+    for (int i = original.size() + 1; i <= text.size(); ++i)
+      QVERIFY(model.updateBlockText(id, text.left(i)));
+
+    text += " second";
+
+    for (int i = original.size() + 6; i <= text.size(); ++i)
+      QVERIFY(model.updateBlockText(id, text.left(i)));
+
+    QVERIFY(model.undo());
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original + "first ");
+
+    QVERIFY(model.undo());
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original);
+
+    QVERIFY(model.redo());
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original + "first ");
+
+    QVERIFY(model.redo());
+    QCOMPARE(
+        model.data(model.index(0), BlockModel::ContentRole).toString(),
+        original + "first second");
+  }
 };
 
 QTEST_GUILESS_MAIN(BlockModelTests)

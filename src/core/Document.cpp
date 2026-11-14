@@ -82,6 +82,9 @@ bool Document::updateBlockType(const QString &id, BlockType type,
   m_blocks[index].type = type;
   // keeps headingLevel consistent with the block type
   if (type == BlockType::Heading) {
+    if (headingLevel == 0)
+      headingLevel = 1;
+
     if (headingLevel < 1 || headingLevel > 6)
       return false;
     m_blocks[index].headingLevel = headingLevel;

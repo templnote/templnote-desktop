@@ -4,6 +4,42 @@
 #include <qnamespace.h>
 
 namespace Templnote {
+namespace {
+struct TextDiff {
+  QString removed;
+  QString inserted;
+};
+
+TextDiff diffText(const QString &before, const QString &after) {
+  int prefix = 0;
+  const int maxPrefix = qMin(before.size(), after.size());
+
+  while (prefix < maxPrefix && before[prefix] == after[prefix])
+    ++prefix;
+
+  int suffix = 0;
+
+  while (suffix < before.size() - prefix &&
+         suffix < after.size() - prefix &&
+         before[before.size() - 1 - suffix] ==
+             after[after.size() - 1 - suffix]) {
+    ++suffix;
+  }
+
+  return {before.mid(prefix, before.size() - prefix - suffix),
+          after.mid(prefix, after.size() - prefix - suffix)};
+}
+
+bool containsWhitespace(const QString &text) {
+  for (const QChar character : text) {
+    if (character.isSpace())
+      return true;
+  }
+
+  return false;
+}
+} // namespace
+
 BlockModel::BlockModel(QObject *parent) : QAbstractListModel(parent) {
   m_document.appendBlock(
       Block::create(BlockType::Heading, "Welcome to Templnote"));
@@ -20,10 +56,76 @@ int BlockModel::rowCount(const QModelIndex &parent) const {
 
 bool BlockModel::canUndo() const { return !m_undoStack.isEmpty(); }
 bool BlockModel::canRedo() const { return !m_redoStack.isEmpty(); }
-void BlockModel::saveHistory(const QVector<Block> &before) {
-  m_undoStack.append(before);
+
+void BlockModel::saveHistory(const QVector<Block> &before,
+                             const QString &focusBeforeId,
+                             const QString &focusAfterId) {
+  HistoryEntry entry;
+  entry.kind = HistoryEntry::Kind::DocumentEdit;
+  entry.focusBeforeId = focusBeforeId;
+  entry.focusAfterId = focusAfterId;
+  entry.documentBefore = before;
+  entry.documentAfter = m_document.snapshot();
+
+  m_undoStack.append(entry);
   m_redoStack.clear();
+  closeTextGroup();
+
   emit historyChanged();
+}
+
+void BlockModel::saveTextHistory(const QString &id, const QString &before,
+                                 const QString &after) {
+  const TextDiff diff = diffText(before, after);
+  const int changedCharacters =
+      diff.removed.size() + diff.inserted.size();
+
+  // A normal key press inserts or removes exactly one character. Anything
+  // bigger (paste, replacing a selection, ...) becomes its own history step.
+  const bool isSingleCharacterEdit = changedCharacters == 1;
+  const bool reachedWordBoundary =
+      containsWhitespace(diff.removed) || containsWhitespace(diff.inserted);
+
+  const bool canMerge =
+      m_textGroupOpen && m_textGroupBlockId == id &&
+      m_textGroupTimer.isValid() && m_textGroupTimer.elapsed() < 750 &&
+      isSingleCharacterEdit && !m_undoStack.isEmpty() &&
+      m_undoStack.last().kind == HistoryEntry::Kind::TextEdit &&
+      m_undoStack.last().blockId == id &&
+      m_undoStack.last().textAfter == before;
+
+  if (canMerge) {
+    m_undoStack.last().textAfter = after;
+    m_textGroupTimer.restart();
+  } else {
+    HistoryEntry entry;
+    entry.kind = HistoryEntry::Kind::TextEdit;
+    entry.blockId = id;
+    entry.textBefore = before;
+    entry.textAfter = after;
+    entry.focusBeforeId = id;
+    entry.focusAfterId = id;
+
+    m_undoStack.append(entry);
+    m_redoStack.clear();
+
+    m_textGroupBlockId = id;
+    m_textGroupTimer.start();
+    m_textGroupOpen = true;
+  }
+
+  // The edit that inserts/removes whitespace is kept in the current word.
+  // The next character starts a new undo step.
+  if (reachedWordBoundary)
+    m_textGroupOpen = false;
+
+  emit historyChanged();
+}
+
+void BlockModel::closeTextGroup() {
+  m_textGroupOpen = false;
+  m_textGroupBlockId.clear();
+  m_textGroupTimer.invalidate();
 }
 
 int BlockModel::count() const { return m_document.count(); }
@@ -119,7 +221,8 @@ QString BlockModel::appendBlock(int type, const QString &text) {
 
   endInsertRows();
 
-  saveHistory(before);
+  const QString focusBeforeId = before.isEmpty() ? QString() : before.last().id;
+  saveHistory(before, focusBeforeId, id);
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -138,15 +241,22 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
 
   beginInsertRows({}, row, row);
 
-  const bool success = m_document.insertBlock(
-      row, Block::create(static_cast<BlockType>(type), text));
+  const Block block = Block::create(static_cast<BlockType>(type), text);
+  const QString id = block.id;
+
+  const bool success = m_document.insertBlock(row, block);
 
   endInsertRows();
 
   if (!success)
     return false;
 
-  saveHistory(before);
+  QString focusBeforeId;
+
+  if (!before.isEmpty())
+    focusBeforeId = before[qBound(0, row - 1, before.size() - 1)].id;
+
+  saveHistory(before, focusBeforeId, id);
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -178,7 +288,14 @@ bool BlockModel::removeBlock(const QString &id) {
   if (!success)
     return false;
 
-  saveHistory(before);
+  QString focusAfterId;
+
+  if (m_document.count() > 0) {
+    const int focusRow = qBound(0, row, m_document.count() - 1);
+    focusAfterId = m_document.blockAt(focusRow)->id;
+  }
+
+  saveHistory(before, id, focusAfterId);
 
   if (success && row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -204,12 +321,12 @@ bool BlockModel::updateBlockText(const QString &id, const QString &text) {
   if (!block || block->text == text)
     return true;
 
-  const QVector<Block> before = m_document.snapshot();
+  const QString before = block->text;
 
   if (!m_document.updateBlockText(id, text))
     return false;
 
-  saveHistory(before);
+  saveTextHistory(id, before, text);
 
   emit dataChanged(index(row), index(row), {ContentRole, Qt::DisplayRole});
 
@@ -245,7 +362,7 @@ QString BlockModel::splitBlock(const QString &id, int position,
   if (newId.isEmpty())
     return {};
 
-  saveHistory(before);
+  saveHistory(before, id, newId);
 
   emit dataChanged(index(row), index(row),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
@@ -281,7 +398,8 @@ bool BlockModel::mergeWithPrevious(const QString &id,
   if (!success)
     return false;
 
-  saveHistory(before);
+  const QString focusAfterId = m_document.blockAt(row - 1)->id;
+  saveHistory(before, id, focusAfterId);
 
   emit dataChanged(index(row - 1), index(row - 1),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
@@ -313,7 +431,7 @@ bool BlockModel::changeBlockType(const QString &id, int type,
     return false;
   }
 
-  saveHistory(before);
+  saveHistory(before, id, id);
   emit dataChanged(index(row), index(m_document.count() - 1),
                    {BlockTypeRole, HeadingLevelRole, NumberIndexRole});
 
@@ -359,21 +477,54 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
 
 const Document &BlockModel::document() const { return m_document; }
 
+int BlockModel::indexOfBlock(const QString &id) const {
+  return m_document.indexOf(id);
+}
+
+QString BlockModel::lastHistoryBlockId() const { return m_lastHistoryBlockId; }
+
 // undo redo functionality
+
+void BlockModel::applyHistoryEntry(const HistoryEntry &entry, bool undo) {
+  if (entry.kind == HistoryEntry::Kind::TextEdit) {
+    const int row = m_document.indexOf(entry.blockId);
+
+    if (row < 0)
+      return;
+
+    m_lastHistoryBlockId = entry.blockId;
+
+    const QString &text = undo ? entry.textBefore : entry.textAfter;
+
+    if (m_document.updateBlockText(entry.blockId, text)) {
+      // A text edit only affects one row, so there is no need to reset the
+      // whole model (which would also destroy the editor's focus/cursor).
+      emit dataChanged(index(row), index(row), {ContentRole, Qt::DisplayRole});
+    }
+    return;
+  }
+
+  m_lastHistoryBlockId =
+      undo ? entry.focusBeforeId : entry.focusAfterId;
+
+  beginResetModel();
+  m_document.restore(undo ? entry.documentBefore : entry.documentAfter);
+  endResetModel();
+
+  emit countChanged();
+}
 
 bool BlockModel::undo() {
   if (m_undoStack.isEmpty())
     return false;
 
-  m_redoStack.append(m_document.snapshot());
+  closeTextGroup();
 
-  const QVector<Block> previous = m_undoStack.takeLast();
+  const HistoryEntry entry = m_undoStack.takeLast();
+  m_redoStack.append(entry);
 
-  beginResetModel();
-  m_document.restore(previous);
-  endResetModel();
+  applyHistoryEntry(entry, true);
 
-  emit countChanged();
   emit historyChanged();
   return true;
 }
@@ -382,15 +533,13 @@ bool BlockModel::redo() {
   if (m_redoStack.isEmpty())
     return false;
 
-  m_undoStack.append(m_document.snapshot());
+  closeTextGroup();
 
-  const QVector<Block> next = m_redoStack.takeLast();
+  const HistoryEntry entry = m_redoStack.takeLast();
+  m_undoStack.append(entry);
 
-  beginResetModel();
-  m_document.restore(next);
-  endResetModel();
+  applyHistoryEntry(entry, false);
 
-  emit countChanged();
   emit historyChanged();
   return true;
 }
