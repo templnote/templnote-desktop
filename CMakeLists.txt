@@ -18,6 +18,7 @@ include(CTest)
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core
   Gui
+  Quick
   QuickControls2
   Test)
 
@@ -31,12 +32,18 @@ set_source_files_properties(qml/Theme.qml PROPERTIES
 
 add_library(templnote_core STATIC
   src/core/Block.h
+  src/core/Block.cpp
   src/core/BlockTypes.h
   src/core/Document.h
   src/core/Document.cpp
 
   src/model/BlockModel.cpp
   src/model/BlockModel.h
+
+  src/storage/AppPaths.h
+  src/storage/AppPaths.cpp
+  src/storage/DocumentListModel.h
+  src/storage/DocumentListModel.cpp
 )
 
 target_include_directories(templnote_core PUBLIC
@@ -58,6 +65,7 @@ qt_add_qml_module(templnote
   QML_FILES
   qml/Main.qml
   qml/Theme.qml
+  qml/DocumentHeader.qml
   qml/Editor.qml
   qml/BlockRenderer.qml
   qml/PromptPanel.qml
@@ -101,6 +109,13 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_chat_sparkle_20_regular.svg
   assets/icons/ic_fluent_search_20_regular.svg
   assets/icons/ic_fluent_document_folder_20_regular.svg
+  assets/icons/ic_fluent_library_20_regular.svg
+  assets/icons/ic_fluent_lightbulb_sparkle_20_regular.svg
+  assets/icons/ic_fluent_delete_20_regular.svg
+  assets/icons/ic_fluent_edit_20_regular.svg
+  assets/icons/ic_fluent_chevron_left_20_regular.svg
+  assets/icons/ic_fluent_document_20_regular.svg
+  assets/icons/ic_fluent_folder_add_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

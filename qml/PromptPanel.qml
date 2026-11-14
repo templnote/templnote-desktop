@@ -6,7 +6,6 @@ Rectangle {
 
   property bool expanded: true
 
-  width: expanded ? Math.min(parent ? parent.width - 96 : 700, 700) : Math.min(parent ? parent.width - 96 : 200, 200)
   height: expanded ? 84 : 36
   color: Theme.surface
   border.width: 1

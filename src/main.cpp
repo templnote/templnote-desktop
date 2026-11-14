@@ -5,6 +5,7 @@
 #include <qqmlapplicationengine.h>
 
 #include "model/BlockModel.h"
+#include "storage/DocumentListModel.h"
 
 int main(int argc, char *argv[]) {
   QGuiApplication app(argc, argv);
@@ -13,6 +14,8 @@ int main(int argc, char *argv[]) {
   QGuiApplication::setOrganizationName("Templnote");
 
   qmlRegisterType<Templnote::BlockModel>("Templnote", 1, 0, "BlockModel");
+  qmlRegisterType<Templnote::DocumentListModel>("Templnote", 1, 0,
+                                                "DocumentListModel");
 
   QQmlApplicationEngine engine;
 

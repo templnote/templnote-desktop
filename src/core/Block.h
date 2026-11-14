@@ -2,6 +2,7 @@
 
 #include "BlockTypes.h"
 
+#include <QJsonObject>
 #include <QString>
 #include <QUuid>
 #include <QVariantMap>
@@ -32,5 +33,8 @@ struct Block {
 
     return block;
   }
+
+  QJsonObject toJson() const;
+  static Block fromJson(const QJsonObject &json, bool *ok = nullptr);
 };
 } // namespace Templnote

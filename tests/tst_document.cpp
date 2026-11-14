@@ -1,6 +1,10 @@
 
 #include <QtTest>
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+
 #include "../src/core/Document.h"
 
 using namespace Templnote;
@@ -84,6 +88,130 @@ private slots:
     QCOMPARE(document.blockAt(0)->text, QString("Second"));
 
     QCOMPARE(document.blockAt(1)->text, QString("First"));
+  }
+
+  void jsonRoundTrip() {
+    Document document;
+
+    Block heading = Block::create(BlockType::Heading, "Title");
+    heading.headingLevel = 3;
+    heading.metadata.insert("collapsed", true);
+
+    Block paragraph = Block::create(BlockType::Paragraph, "Hello **world**");
+
+    QVERIFY(document.appendBlock(heading));
+    QVERIFY(document.appendBlock(paragraph));
+
+    Document loaded;
+    QString error;
+    QVERIFY2(loaded.fromJson(document.toJson(), &error), qPrintable(error));
+
+    QCOMPARE(loaded.count(), 2);
+    QCOMPARE(loaded.blockAt(0)->id, heading.id);
+    QCOMPARE(loaded.blockAt(0)->type, BlockType::Heading);
+    QCOMPARE(loaded.blockAt(0)->headingLevel, 3);
+    QCOMPARE(loaded.blockAt(0)->metadata.value("collapsed").toBool(), true);
+    QCOMPARE(loaded.blockAt(1)->id, paragraph.id);
+    QCOMPARE(loaded.blockAt(1)->text, QString("Hello **world**"));
+  }
+
+  void jsonIsHumanReadable() {
+    Document document;
+    QVERIFY(document.appendBlock(Block::create(BlockType::Paragraph, "Hi")));
+
+    const QByteArray data =
+        QJsonDocument(document.toJson()).toJson(QJsonDocument::Indented);
+
+    QVERIFY(data.contains("\"format\": \"templnote\""));
+    QVERIFY(data.contains("\"version\": 1"));
+    QVERIFY(data.contains("\"type\": \"paragraph\""));
+  }
+
+  void jsonPreservesParentIds() {
+    Document document;
+
+    Block parent = Block::create(BlockType::Paragraph, "Parent");
+    Block child = Block::create(BlockType::Paragraph, "Child");
+    child.parentId = parent.id;
+
+    QVERIFY(document.appendBlock(parent));
+    QVERIFY(document.appendBlock(child));
+
+    Document loaded;
+    QVERIFY(loaded.fromJson(document.toJson()));
+    QCOMPARE(loaded.blockAt(1)->parentId, parent.id);
+  }
+
+  void jsonRejectsDuplicateIds() {
+    QJsonObject block{
+        {"id", "same-id"}, {"type", "paragraph"}, {"text", "One"}};
+    QJsonObject duplicate = block;
+    duplicate.insert("text", "Two");
+
+    const QJsonObject json{{"format", "templnote"},
+                           {"version", 1},
+                           {"blocks", QJsonArray{block, duplicate}}};
+
+    Document document;
+    QVERIFY(document.appendBlock(Block::create()));
+
+    QString error;
+    QVERIFY(!document.fromJson(json, &error));
+    QVERIFY(!error.isEmpty());
+    // The failed parse must not touch the open document.
+    QCOMPARE(document.count(), 1);
+  }
+
+  void jsonRejectsBlockWithoutId() {
+    const QJsonObject json{
+        {"format", "templnote"},
+        {"version", 1},
+        {"blocks", QJsonArray{QJsonObject{{"type", "paragraph"},
+                                          {"text", "No id"}}}}};
+
+    Document document;
+    QVERIFY(!document.fromJson(json));
+  }
+
+  void jsonRejectsNewerVersion() {
+    const QJsonObject json{{"format", "templnote"},
+                           {"version", 99},
+                           {"blocks", QJsonArray{}}};
+
+    Document document;
+    QString error;
+    QVERIFY(!document.fromJson(json, &error));
+    QVERIFY(error.contains("newer"));
+  }
+
+  void jsonUnknownBlockTypeFallsBack() {
+    const QJsonObject json{
+        {"format", "templnote"},
+        {"version", 1},
+        {"blocks", QJsonArray{QJsonObject{{"id", "abc"},
+                                          {"type", "future-block"},
+                                          {"text", "Keep me"}}}}};
+
+    Document document;
+    QVERIFY(document.fromJson(json));
+    QCOMPARE(document.count(), 1);
+    QCOMPARE(document.blockAt(0)->type, BlockType::Paragraph);
+    QCOMPARE(document.blockAt(0)->text, QString("Keep me"));
+  }
+
+  void jsonAllowsEmptyDocument() {
+    Document document;
+    QVERIFY(document.appendBlock(Block::create()));
+
+    Document loaded;
+    QVERIFY(loaded.fromJson(document.toJson()));
+
+    Document empty;
+    const QJsonObject json{{"format", "templnote"},
+                           {"version", 1},
+                           {"blocks", QJsonArray{}}};
+    QVERIFY(empty.fromJson(json));
+    QCOMPARE(empty.count(), 0);
   }
 };
 

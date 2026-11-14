@@ -5,7 +5,16 @@ Item {
   id: root
 
   required property var model
-  function focusDelegateAt(row, position) {
+
+  // for a centrally content
+  property real contentWidth: 800
+
+  function focusDelegateAt(row, position, attempt) {
+    const focusAttempt = attempt === undefined ? 0 : attempt
+
+    if (row < 0 || row >= root.model.count)
+      return
+
     documentView.forceLayout()
 
     Qt.callLater(function(){
@@ -14,11 +23,38 @@ Item {
       if (delegate) {
         delegate.refreshBlock()
         delegate.focusBlock(position)
+      } else if (focusAttempt < 10) {
+        // A model reset can take more than one QML turn to create the
+        // delegate. Retry briefly so new-document focus is reliable without
+        // affecting normal editor navigation.
+        root.focusDelegateAt(row, position, focusAttempt + 1)
       }
     })
   }
 
-  function restoreFocusAfterHistory(blockId, oldRow, undo) {
+  function focusFirstBlock() {
+    focusDelegateAt(0, 0)
+  }
+
+  Connections {
+    target: root.model
+
+    function onDocumentCreated() {
+      // The model has finished its reset and save; wait for ListView to
+      // materialize the first delegate, then place the caret at its start.
+      Qt.callLater(function() {
+        root.focusFirstBlock()
+      })
+    }
+
+    function onDocumentLoaded() {
+      Qt.callLater(function() {
+        root.focusFirstBlock()
+      })
+    }
+  }
+
+  function restoreFocusAfterHistory(blockId, oldRow, undo, cursorPosition) {
     documentView.forceLayout()
 
     Qt.callLater(function() {
@@ -41,8 +77,9 @@ Item {
 
       if (delegate) {
         delegate.refreshBlock()
-        // Keep the caret at the end of the restored text.
-        delegate.focusBlock(-1)
+        // Restore the caret to the position associated with the history step.
+        // A negative position means "end of text" (structural steps).
+        delegate.focusBlock(cursorPosition)
       }
     })
   }
@@ -52,7 +89,8 @@ Item {
 
     const targetId = root.model.lastHistoryBlockId()
     restoreFocusAfterHistory(targetId.length > 0 ? targetId : blockId,
-                             row, true)
+                             row, true,
+                             root.model.lastHistoryCursorPosition())
   }
 
   function redoFrom(blockId, row) {
@@ -60,7 +98,37 @@ Item {
 
     const targetId = root.model.lastHistoryBlockId()
     restoreFocusAfterHistory(targetId.length > 0 ? targetId : blockId,
-                             row, false)
+                             row, false,
+                             root.model.lastHistoryCursorPosition())
+  }
+
+  // Global entry points used by application-level shortcuts. Undo/redo still
+  // focuses the block affected by the history step, even when the document
+  // itself did not have focus.
+  function undo() {
+    if (!root.model.canUndo)
+      return
+
+    root.model.undo()
+
+    const targetId = root.model.lastHistoryBlockId()
+
+    if (targetId.length > 0)
+      restoreFocusAfterHistory(targetId, 0, true,
+                               root.model.lastHistoryCursorPosition())
+  }
+
+  function redo() {
+    if (!root.model.canRedo)
+      return
+
+    root.model.redo()
+
+    const targetId = root.model.lastHistoryBlockId()
+
+    if (targetId.length > 0)
+      restoreFocusAfterHistory(targetId, 0, false,
+                               root.model.lastHistoryCursorPosition())
   }
 
   Rectangle {
@@ -73,12 +141,15 @@ Item {
   ListView {
     id: documentView
 
+    width: Math.min(root.contentWidth, parent.width - 48)
+
     anchors {
-      fill: parent
-      leftMargin: 96
-      rightMargin: 96
-      topMargin: 64
-      bottomMargin: 48
+      top: parent.top
+      bottom: parent.bottom
+      horizontalCenter: parent.horizontalCenter
+
+      topMargin: 48
+      bottomMargin: 160
     }
 
     model: root.model
@@ -167,8 +238,8 @@ Item {
           const currentText = renderer.editorText
           const currentType = delegateRoot.blockType
 
-
-          if ( currentType === 2 || currentType === 3 ) {
+          // don't get confused, it first removes the blockType and then removes the block
+          if ( currentText.length === 0 && currentType !== 0 ) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
               root.focusDelegateAt(currentIndex, 0)
             }

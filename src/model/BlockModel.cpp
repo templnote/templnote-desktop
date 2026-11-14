@@ -1,11 +1,24 @@
 #include "BlockModel.h"
-#include <QDebug>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QSaveFile>
+#include <QSet>
+#include <QTextBoundaryFinder>
+#include <utility>
 #include <qcontainerfwd.h>
 #include <qnamespace.h>
+
+#include "../core/BlockTypes.h"
+#include "../storage/AppPaths.h"
 
 namespace Templnote {
 namespace {
 struct TextDiff {
+  int prefix = 0;
   QString removed;
   QString inserted;
 };
@@ -26,7 +39,8 @@ TextDiff diffText(const QString &before, const QString &after) {
     ++suffix;
   }
 
-  return {before.mid(prefix, before.size() - prefix - suffix),
+  return {prefix,
+          before.mid(prefix, before.size() - prefix - suffix),
           after.mid(prefix, after.size() - prefix - suffix)};
 }
 
@@ -37,6 +51,34 @@ bool containsWhitespace(const QString &text) {
   }
 
   return false;
+}
+
+// Returns true when the given edit ends the current word. Whitespace and
+// punctuation are attached to the word before them, while ordinary letters and
+// digits keep the group open. QTextBoundaryFinder handles punctuation and
+// scripts where a simple space check is not enough.
+bool endsWord(const QString &text, const TextDiff &diff) {
+  if (containsWhitespace(diff.removed) || containsWhitespace(diff.inserted))
+    return true;
+
+  if (diff.inserted.isEmpty())
+    return false;
+
+  if (diff.inserted.back().isLetterOrNumber())
+    return false;
+
+  QTextBoundaryFinder finder(QTextBoundaryFinder::Word, text);
+  finder.setPosition(diff.prefix + diff.inserted.size());
+  return finder.isAtBoundary();
+}
+
+int indexOfId(const QVector<Block> &blocks, const QString &id) {
+  for (int i = 0; i < blocks.size(); ++i) {
+    if (blocks[i].id == id)
+      return i;
+  }
+
+  return -1;
 }
 } // namespace
 
@@ -61,14 +103,14 @@ void BlockModel::saveHistory(const QVector<Block> &before,
                              const QString &focusBeforeId,
                              const QString &focusAfterId) {
   HistoryEntry entry;
-  entry.kind = HistoryEntry::Kind::DocumentEdit;
+  entry.kind = HistoryEntry::Kind::StructuralEdit;
   entry.focusBeforeId = focusBeforeId;
   entry.focusAfterId = focusAfterId;
-  entry.documentBefore = before;
-  entry.documentAfter = m_document.snapshot();
+  entry.patch = buildPatch(before, m_document.snapshot());
 
   m_undoStack.append(entry);
   m_redoStack.clear();
+  trimHistory();
   closeTextGroup();
 
   emit historyChanged();
@@ -83,8 +125,7 @@ void BlockModel::saveTextHistory(const QString &id, const QString &before,
   // A normal key press inserts or removes exactly one character. Anything
   // bigger (paste, replacing a selection, ...) becomes its own history step.
   const bool isSingleCharacterEdit = changedCharacters == 1;
-  const bool reachedWordBoundary =
-      containsWhitespace(diff.removed) || containsWhitespace(diff.inserted);
+  const bool reachedWordBoundary = endsWord(after, diff);
 
   const bool canMerge =
       m_textGroupOpen && m_textGroupBlockId == id &&
@@ -114,9 +155,16 @@ void BlockModel::saveTextHistory(const QString &id, const QString &before,
     m_textGroupOpen = true;
   }
 
+  trimHistory();
+
   // The edit that inserts/removes whitespace is kept in the current word.
   // The next character starts a new undo step.
   if (reachedWordBoundary)
+    m_textGroupOpen = false;
+
+  // Multi-character edits (paste, selection replacement, ...) are their own
+  // undo step; typing afterwards starts a fresh group.
+  if (!isSingleCharacterEdit)
     m_textGroupOpen = false;
 
   emit historyChanged();
@@ -126,6 +174,35 @@ void BlockModel::closeTextGroup() {
   m_textGroupOpen = false;
   m_textGroupBlockId.clear();
   m_textGroupTimer.invalidate();
+}
+
+void BlockModel::trimHistory() {
+  while (m_undoStack.size() > kMaxHistoryEntries)
+    m_undoStack.removeFirst();
+}
+
+void BlockModel::invalidateNumberIndices() { m_numberIndicesDirty = true; }
+
+void BlockModel::rebuildNumberIndices() const {
+  const int rows = m_document.count();
+
+  m_numberIndices.resize(rows);
+
+  int number = 0;
+
+  for (int row = 0; row < rows; ++row) {
+    const Block *block = m_document.blockAt(row);
+
+    if (block && block->type == BlockType::NumberedList) {
+      ++number;
+      m_numberIndices[row] = number;
+    } else {
+      number = 0;
+      m_numberIndices[row] = 0;
+    }
+  }
+
+  m_numberIndicesDirty = false;
 }
 
 int BlockModel::count() const { return m_document.count(); }
@@ -138,9 +215,6 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
 
   if (!block)
     return {};
-
-  qDebug() << "Requested row:" << index.row() << "Role:" << role
-           << "Text:" << block->text << "ID:" << block->id;
 
   switch (role) {
   case BlockIdRole:
@@ -172,16 +246,13 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
     if (block->type != BlockType::NumberedList)
       return 0;
 
-    int num = 1;
-    for (int r = index.row() - 1; r >= 0; --r) {
-      const Block *prev = m_document.blockAt(r);
-      if (prev && prev->type == BlockType::NumberedList) {
-        num++;
-      } else {
-        break;
-      }
-    }
-    return num;
+    if (m_numberIndicesDirty)
+      rebuildNumberIndices();
+
+    if (index.row() < m_numberIndices.size())
+      return m_numberIndices[index.row()];
+
+    return 0;
   }
 
   case Qt::DisplayRole:
@@ -211,6 +282,8 @@ QString BlockModel::appendBlock(int type, const QString &text) {
 
   const QVector<Block> before = m_document.snapshot();
 
+  invalidateNumberIndices();
+
   beginInsertRows({}, row, row);
 
   Block block = Block::create(static_cast<BlockType>(type), text);
@@ -227,6 +300,7 @@ QString BlockModel::appendBlock(int type, const QString &text) {
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
+  markModified();
   emit countChanged();
 
   return id;
@@ -238,6 +312,8 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
   }
 
   const QVector<Block> before = m_document.snapshot();
+
+  invalidateNumberIndices();
 
   beginInsertRows({}, row, row);
 
@@ -266,6 +342,7 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
                      {NumberIndexRole});
   }
 
+  markModified();
   emit countChanged();
 
   return true;
@@ -278,6 +355,8 @@ bool BlockModel::removeBlock(const QString &id) {
     return false;
 
   const QVector<Block> before = m_document.snapshot();
+
+  invalidateNumberIndices();
 
   beginRemoveRows({}, row, row);
 
@@ -305,6 +384,7 @@ bool BlockModel::removeBlock(const QString &id) {
                      {NumberIndexRole});
   }
 
+  markModified();
   emit countChanged();
 
   return true;
@@ -330,6 +410,7 @@ bool BlockModel::updateBlockText(const QString &id, const QString &text) {
 
   emit dataChanged(index(row), index(row), {ContentRole, Qt::DisplayRole});
 
+  markModified();
   return true;
 }
 
@@ -353,6 +434,8 @@ QString BlockModel::splitBlock(const QString &id, int position,
     return {};
   }
 
+  invalidateNumberIndices();
+
   beginInsertRows({}, row + 1, row + 1);
 
   const QString newId = m_document.splitBlock(id, position);
@@ -372,6 +455,7 @@ QString BlockModel::splitBlock(const QString &id, int position,
                      {NumberIndexRole});
   }
 
+  markModified();
   return newId;
 }
 
@@ -388,6 +472,8 @@ bool BlockModel::mergeWithPrevious(const QString &id,
       !m_document.updateBlockText(id, editorText)) {
     return false;
   }
+
+  invalidateNumberIndices();
 
   beginRemoveRows({}, row, row);
 
@@ -409,6 +495,7 @@ bool BlockModel::mergeWithPrevious(const QString &id,
                      {NumberIndexRole});
   }
 
+  markModified();
   emit countChanged();
 
   return true;
@@ -426,6 +513,8 @@ bool BlockModel::changeBlockType(const QString &id, int type,
 
   const QVector<Block> before = m_document.snapshot();
 
+  invalidateNumberIndices();
+
   if (!m_document.updateBlockType(id, static_cast<BlockType>(type),
                                   headingLevel)) {
     return false;
@@ -438,6 +527,7 @@ bool BlockModel::changeBlockType(const QString &id, int type,
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
+  markModified();
   return true;
 }
 
@@ -451,6 +541,10 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
   if (source == destination)
     return true;
 
+  const QVector<Block> before = m_document.snapshot();
+
+  invalidateNumberIndices();
+
   if (!beginMoveRows({}, source, source, {},
                      destination > source ? destination + 1 : destination)) {
     return false;
@@ -461,6 +555,8 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
   endMoveRows();
 
   if (success) {
+    saveHistory(before, id, id);
+
     const int first = qMin(source, destination);
     const int last = qMin(m_document.count() - 1, qMax(source, destination));
 
@@ -470,6 +566,8 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
     if (first < m_document.count())
       emit dataChanged(index(first), index(m_document.count() - 1),
                        {NumberIndexRole});
+
+    markModified();
   }
 
   return success;
@@ -483,6 +581,320 @@ int BlockModel::indexOfBlock(const QString &id) const {
 
 QString BlockModel::lastHistoryBlockId() const { return m_lastHistoryBlockId; }
 
+int BlockModel::lastHistoryCursorPosition() const {
+  return m_lastHistoryCursorPosition;
+}
+
+QString BlockModel::currentFilePath() const { return m_currentFilePath; }
+
+QString BlockModel::documentTitle() const {
+  if (m_currentFilePath.isEmpty())
+    return QStringLiteral("Untitled");
+
+  return QFileInfo(m_currentFilePath).completeBaseName();
+}
+
+QString BlockModel::documentFolder() const { return m_documentFolder; }
+
+QDateTime BlockModel::lastModified() const { return m_lastModified; }
+
+bool BlockModel::isModified() const { return m_modified; }
+
+QString BlockModel::lastError() const { return m_lastError; }
+
+void BlockModel::markModified() { setModified(true); }
+
+void BlockModel::setModified(bool modified) {
+  if (m_modified == modified)
+    return;
+
+  m_modified = modified;
+  emit modifiedChanged();
+}
+
+void BlockModel::setLastModified(const QDateTime &modified) {
+  if (m_lastModified == modified)
+    return;
+
+  m_lastModified = modified;
+  emit lastModifiedChanged();
+}
+
+QString BlockModel::folderForPath(const QString &path) {
+  if (path.isEmpty())
+    return {};
+
+  const QString root = QDir::cleanPath(AppPaths::documentsDirectory());
+
+  if (root.isEmpty())
+    return {};
+
+  const QString folder = QFileInfo(path).absolutePath();
+  const QString relative = QDir(root).relativeFilePath(folder);
+
+  // Files outside the Templnote folder, or directly inside it, have no
+  // folder label.
+  if (relative.isEmpty() || relative == QLatin1String(".") ||
+      relative.startsWith(QLatin1String("..")) ||
+      QDir::isAbsolutePath(relative)) {
+    return {};
+  }
+
+  return QDir::cleanPath(relative);
+}
+
+void BlockModel::setCurrentFilePath(const QString &path) {
+  const QString normalized =
+      path.isEmpty() ? QString() : QFileInfo(path).absoluteFilePath();
+
+  if (m_currentFilePath == normalized)
+    return;
+
+  m_currentFilePath = normalized;
+  m_documentFolder = folderForPath(normalized);
+
+  emit currentFilePathChanged();
+  emit documentTitleChanged();
+}
+
+bool BlockModel::setError(const QString &message) {
+  m_lastError = message;
+  emit lastErrorChanged();
+  return false;
+}
+
+bool BlockModel::resetDocument(Document document) {
+  beginResetModel();
+
+  m_document = std::move(document);
+
+  m_undoStack.clear();
+  m_redoStack.clear();
+  closeTextGroup();
+  invalidateNumberIndices();
+  m_lastHistoryBlockId.clear();
+  m_lastHistoryCursorPosition = -1;
+
+  endResetModel();
+
+  emit countChanged();
+  emit historyChanged();
+
+  return true;
+}
+
+bool BlockModel::saveDocument(const QString &path) {
+  QString target = path.trimmed();
+
+  if (target.isEmpty())
+    return setError(QStringLiteral("Cannot save a document without a path."));
+
+  if (!target.endsWith(QStringLiteral(".templnote"), Qt::CaseInsensitive))
+    target += QStringLiteral(".templnote");
+
+  QFileInfo info(target);
+
+  if (info.exists() && info.isDir())
+    return setError(QStringLiteral("The save path is a directory."));
+
+  if (!QDir().mkpath(info.absolutePath()))
+    return setError(QStringLiteral("Could not create the document folder."));
+
+  const QString absolutePath = info.absoluteFilePath();
+
+  QJsonObject json = m_document.toJson();
+  const QDateTime modified = QDateTime::currentDateTimeUtc();
+  const QString now = modified.toString(Qt::ISODate);
+
+  if (m_createdAt.isEmpty())
+    m_createdAt = now;
+
+  json.insert(QStringLiteral("title"),
+              QFileInfo(absolutePath).completeBaseName());
+  json.insert(QStringLiteral("createdAt"), m_createdAt);
+  json.insert(QStringLiteral("modifiedAt"), now);
+
+  const QByteArray data =
+      QJsonDocument(json).toJson(QJsonDocument::Indented);
+
+  // QSaveFile writes to a temporary file and renames it into place, so an
+  // interrupted save can never truncate an existing document.
+  QSaveFile file(absolutePath);
+
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+    return setError(file.errorString());
+
+  if (file.write(data) != data.size()) {
+    file.cancelWriting();
+    return setError(file.errorString());
+  }
+
+  if (!file.commit())
+    return setError(file.errorString());
+
+  setCurrentFilePath(absolutePath);
+  setLastModified(modified.toLocalTime());
+  setModified(false);
+
+  m_lastError.clear();
+  emit lastErrorChanged();
+
+  return true;
+}
+
+bool BlockModel::saveCurrentDocument() {
+  if (m_currentFilePath.isEmpty())
+    return setError(QStringLiteral("This document has not been saved yet."));
+
+  return saveDocument(m_currentFilePath);
+}
+
+bool BlockModel::loadDocument(const QString &path) {
+  QString target = path.trimmed();
+
+  if (target.isEmpty())
+    return setError(QStringLiteral("Cannot open a document without a path."));
+
+  if (!QFileInfo::exists(target) &&
+      !target.endsWith(QStringLiteral(".templnote"), Qt::CaseInsensitive)) {
+    target += QStringLiteral(".templnote");
+  }
+
+  const QFileInfo info(target);
+
+  if (!info.exists() || !info.isFile())
+    return setError(QStringLiteral("The document does not exist."));
+
+  QFile file(info.absoluteFilePath());
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    return setError(file.errorString());
+
+  QJsonParseError parseError{};
+  const QJsonDocument parsed =
+      QJsonDocument::fromJson(file.readAll(), &parseError);
+  file.close();
+
+  if (parseError.error != QJsonParseError::NoError || !parsed.isObject()) {
+    return setError(QStringLiteral("Could not read document: %1")
+                        .arg(parseError.errorString()));
+  }
+
+  Document document;
+  QString documentError;
+
+  if (!document.fromJson(parsed.object(), &documentError))
+    return setError(documentError);
+
+  resetDocument(std::move(document));
+
+  m_createdAt =
+      parsed.object().value(QStringLiteral("createdAt")).toString();
+
+  QDateTime modified = QDateTime::fromString(
+      parsed.object().value(QStringLiteral("modifiedAt")).toString(),
+      Qt::ISODate);
+
+  // Older or hand-written files may not carry modifiedAt.
+  if (!modified.isValid())
+    modified = info.lastModified();
+
+  setCurrentFilePath(info.absoluteFilePath());
+  setLastModified(modified.toLocalTime());
+  setModified(false);
+
+  m_lastError.clear();
+  emit lastErrorChanged();
+  emit documentLoaded();
+
+  return true;
+}
+
+bool BlockModel::createDocument(const QString &path) {
+  Document document;
+  document.appendBlock(Block::create(BlockType::Paragraph));
+
+  resetDocument(std::move(document));
+
+  m_createdAt.clear();
+  setModified(false);
+  setCurrentFilePath({});
+
+  if (!saveDocument(path))
+    return false;
+
+  emit documentCreated();
+  return true;
+}
+
+bool BlockModel::renameDocument(const QString &newBaseName) {
+  if (m_currentFilePath.isEmpty())
+    return setError(QStringLiteral("This document has not been saved yet."));
+
+  QString base = newBaseName.trimmed();
+
+  if (base.endsWith(QStringLiteral(".templnote"), Qt::CaseInsensitive))
+    base.chop(10);
+
+  base = AppPaths::sanitizeFileName(base);
+
+  if (base.isEmpty())
+    base = QStringLiteral("Untitled");
+
+  const QFileInfo currentInfo(m_currentFilePath);
+
+  if (base == currentInfo.completeBaseName()) {
+    m_lastError.clear();
+    emit lastErrorChanged();
+    return true;
+  }
+
+  const QString target =
+      AppPaths::uniqueDocumentPath(currentInfo.absolutePath(), base);
+
+  if (target.isEmpty())
+    return setError(QStringLiteral("Could not build a rename target."));
+
+  if (!QFile::rename(currentInfo.absoluteFilePath(), target))
+    return setError(QStringLiteral("Could not rename the document."));
+
+  setCurrentFilePath(target);
+
+  // Rename is already complete; updating the JSON title is best effort so a
+  // read-only or externally modified file never blocks the rename itself.
+  QFile file(target);
+
+  if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    QJsonParseError parseError{};
+    const QJsonDocument parsed =
+        QJsonDocument::fromJson(file.readAll(), &parseError);
+    file.close();
+
+    if (parseError.error == QJsonParseError::NoError && parsed.isObject()) {
+      QJsonObject json = parsed.object();
+      json.insert(QStringLiteral("title"),
+                  QFileInfo(target).completeBaseName());
+
+      QSaveFile output(target);
+
+      if (output.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        const QByteArray data =
+            QJsonDocument(json).toJson(QJsonDocument::Indented);
+
+        if (output.write(data) == data.size() && output.commit()) {
+          m_lastError.clear();
+          emit lastErrorChanged();
+          return true;
+        }
+      }
+    }
+  }
+
+  setError(QStringLiteral(
+      "The document was renamed, but its title could not be updated."));
+  return true;
+}
+
 // undo redo functionality
 
 void BlockModel::applyHistoryEntry(const HistoryEntry &entry, bool undo) {
@@ -493,6 +905,11 @@ void BlockModel::applyHistoryEntry(const HistoryEntry &entry, bool undo) {
       return;
 
     m_lastHistoryBlockId = entry.blockId;
+
+    const TextDiff diff = diffText(entry.textBefore, entry.textAfter);
+    m_lastHistoryCursorPosition =
+        undo ? diff.prefix + diff.removed.size()
+             : diff.prefix + diff.inserted.size();
 
     const QString &text = undo ? entry.textBefore : entry.textAfter;
 
@@ -507,11 +924,242 @@ void BlockModel::applyHistoryEntry(const HistoryEntry &entry, bool undo) {
   m_lastHistoryBlockId =
       undo ? entry.focusBeforeId : entry.focusAfterId;
 
-  beginResetModel();
-  m_document.restore(undo ? entry.documentBefore : entry.documentAfter);
-  endResetModel();
+  // Structural steps keep the caret at the end of the focused block.
+  m_lastHistoryCursorPosition = -1;
 
-  emit countChanged();
+  applyPatch(entry.patch, undo);
+}
+
+QVector<BlockModel::PatchOp>
+BlockModel::buildPatch(const QVector<Block> &before,
+                       const QVector<Block> &after) {
+  QVector<PatchOp> ops;
+  QVector<Block> working = before;
+
+  // Remove blocks that no longer exist in the target document.
+  QSet<QString> targetIds;
+  targetIds.reserve(after.size());
+
+  for (const Block &block : after)
+    targetIds.insert(block.id);
+
+  int row = 0;
+
+  while (row < working.size()) {
+    if (!targetIds.contains(working[row].id)) {
+      PatchOp op;
+      op.type = PatchOp::Type::Remove;
+      op.from = row;
+      op.block = working[row];
+      ops.append(op);
+      working.removeAt(row);
+    } else {
+      ++row;
+    }
+  }
+
+  // Align block order: move existing blocks and insert new ones.
+  row = 0;
+
+  while (row < working.size()) {
+    if (row >= after.size()) {
+      while (working.size() > row) {
+        PatchOp op;
+        op.type = PatchOp::Type::Remove;
+        op.from = row;
+        op.block = working[row];
+        ops.append(op);
+        working.removeAt(row);
+      }
+      break;
+    }
+
+    if (working[row].id == after[row].id) {
+      ++row;
+      continue;
+    }
+
+    const int existing = indexOfId(working, after[row].id);
+
+    if (existing >= 0) {
+      PatchOp op;
+      op.type = PatchOp::Type::Move;
+      op.from = existing;
+      op.to = row;
+      op.block = working[existing];
+      ops.append(op);
+
+      const Block moved = working.takeAt(existing);
+      working.insert(row, moved);
+    } else {
+      PatchOp op;
+      op.type = PatchOp::Type::Insert;
+      op.to = row;
+      op.block = after[row];
+      ops.append(op);
+      working.insert(row, after[row]);
+    }
+
+    ++row;
+  }
+
+  // Append blocks that only exist in the target.
+  while (working.size() < after.size()) {
+    const int appendRow = working.size();
+
+    PatchOp op;
+    op.type = PatchOp::Type::Insert;
+    op.to = appendRow;
+    op.block = after[appendRow];
+    ops.append(op);
+    working.append(after[appendRow]);
+  }
+
+  // Update text and block properties for blocks present in both documents.
+  for (int r = 0; r < after.size() && r < working.size(); ++r) {
+    const Block &current = working[r];
+    const Block &wanted = after[r];
+
+    if (current.text == wanted.text && current.type == wanted.type &&
+        current.headingLevel == wanted.headingLevel &&
+        current.parentId == wanted.parentId &&
+        current.metadata == wanted.metadata) {
+      continue;
+    }
+
+    PatchOp op;
+    op.type = PatchOp::Type::Update;
+    op.block = wanted;
+    op.beforeBlock = current;
+    ops.append(op);
+  }
+
+  return ops;
+}
+
+void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
+  bool structureChanged = false;
+
+  invalidateNumberIndices();
+
+  if (undo) {
+    for (int i = patch.size() - 1; i >= 0; --i)
+      structureChanged |= applyPatchOp(patch[i], true);
+  } else {
+    for (const PatchOp &op : patch)
+      structureChanged |= applyPatchOp(op, false);
+  }
+
+  if (structureChanged) {
+    if (m_document.count() > 0) {
+      // Neighbour-dependent roles change for every affected row.
+      emit dataChanged(index(0), index(m_document.count() - 1),
+                       {NextBlockTypeRole, NumberIndexRole});
+    }
+
+    emit countChanged();
+  }
+}
+
+bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
+  switch (op.type) {
+  case PatchOp::Type::Insert:
+    if (inverse) {
+      const int row = m_document.indexOf(op.block.id);
+
+      if (row >= 0) {
+        beginRemoveRows({}, row, row);
+        m_document.removeBlock(op.block.id);
+        endRemoveRows();
+        return true;
+      }
+    } else {
+      beginInsertRows({}, op.to, op.to);
+      m_document.insertBlock(op.to, op.block);
+      endInsertRows();
+      return true;
+    }
+    break;
+
+  case PatchOp::Type::Remove:
+    if (inverse) {
+      beginInsertRows({}, op.from, op.from);
+      m_document.insertBlock(op.from, op.block);
+      endInsertRows();
+      return true;
+    }
+
+    if (const int row = m_document.indexOf(op.block.id); row >= 0) {
+      beginRemoveRows({}, row, row);
+      m_document.removeBlock(op.block.id);
+      endRemoveRows();
+      return true;
+    }
+    break;
+
+  case PatchOp::Type::Move: {
+    const int from = m_document.indexOf(op.block.id);
+    const int to = inverse ? op.from : op.to;
+
+    if (from < 0 || from == to || to < 0 || to >= m_document.count())
+      break;
+
+    beginMoveRows({}, from, from, {}, to > from ? to + 1 : to);
+    m_document.moveBlock(op.block.id, to);
+    endMoveRows();
+    return true;
+  }
+
+  case PatchOp::Type::Update: {
+    const Block &wanted = inverse ? op.beforeBlock : op.block;
+    const int row = m_document.indexOf(wanted.id);
+
+    if (row < 0)
+      break;
+
+    const Block *current = m_document.blockAt(row);
+
+    if (!current)
+      break;
+
+    const bool textChanged = current->text != wanted.text;
+    const bool typeChanged = current->type != wanted.type ||
+                             current->headingLevel != wanted.headingLevel;
+
+    QVector<int> roles;
+
+    if (textChanged)
+      roles << ContentRole << Qt::DisplayRole;
+    if (typeChanged)
+      roles << BlockTypeRole << HeadingLevelRole;
+    if (current->parentId != wanted.parentId ||
+        current->metadata != wanted.metadata)
+      roles << ParentIdRole << MetadataRole;
+
+    if (roles.isEmpty())
+      break;
+
+    m_document.setBlock(row, wanted);
+    emit dataChanged(index(row), index(row), roles);
+
+    // Neighbour-dependent roles also change when a block type changes: the
+    // previous block's "next type" and the numbering of following rows.
+    if (typeChanged) {
+      if (row + 1 < m_document.count()) {
+        emit dataChanged(index(row + 1), index(m_document.count() - 1),
+                         {NumberIndexRole});
+      }
+
+      if (row > 0)
+        emit dataChanged(index(row - 1), index(row - 1),
+                         {NextBlockTypeRole});
+    }
+
+    return false;
+  }
+  }
+
+  return false;
 }
 
 bool BlockModel::undo() {
@@ -525,6 +1173,7 @@ bool BlockModel::undo() {
 
   applyHistoryEntry(entry, true);
 
+  markModified();
   emit historyChanged();
   return true;
 }
@@ -540,6 +1189,7 @@ bool BlockModel::redo() {
 
   applyHistoryEntry(entry, false);
 
+  markModified();
   emit historyChanged();
   return true;
 }

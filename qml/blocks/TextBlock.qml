@@ -35,12 +35,25 @@ Item {
   signal redoRequested()
 
   function focusEditor(position) {
+    editor.focus = true
     editor.forceActiveFocus()
 
     if (position < 0)
       editor.cursorPosition = editor.length
     else
       editor.cursorPosition = position
+
+    // A freshly created TextArea can receive focus one event-loop turn after
+    // the delegate is created. Re-apply the caret state after that handoff.
+    Qt.callLater(function() {
+      if (editor.activeFocus) {
+        editor.cursorVisible = true
+        if (position < 0)
+          editor.cursorPosition = editor.length
+        else
+          editor.cursorPosition = position
+      }
+    })
   }
 
   function refreshFromModel() {
@@ -133,6 +146,8 @@ Item {
           anchors.fill: parent
 
           wrapMode: TextArea.Wrap
+          placeholderText: "start typing here"
+          placeholderTextColor: Theme.textFaint
 
           color: Theme.text
           selectionColor: Theme.accent
@@ -237,10 +252,6 @@ Item {
             // blocks. BlockModel groups consecutive keystrokes for us.
             if (root.model && root.blockId.length > 0)
               root.model.updateBlockText(root.blockId, text)
-          }
-
-          onEditingFinished: {
-            root.model.updateBlockText(root.blockId, text)
           }
 
           Keys.onPressed: function(event) {
