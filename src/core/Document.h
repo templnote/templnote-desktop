@@ -11,6 +11,9 @@ public:
   Document() = default;
 
   const QVector<Block> &blocks() const;
+  // this helps in undo redo
+  QVector<Block> snapshot() const;
+  void restore(const QVector<Block> &blocks);
 
   int count() const;
 

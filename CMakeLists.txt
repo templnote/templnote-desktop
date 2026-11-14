@@ -25,6 +25,10 @@ qt_standard_project_setup(REQUIRES 6.5)
 
 qt_policy(SET QTP0004 NEW)
 
+set_source_files_properties(qml/Theme.qml PROPERTIES
+  QT_QML_SINGLETON_TYPE TRUE
+)
+
 add_library(templnote_core STATIC
   src/core/Block.h
   src/core/BlockTypes.h
@@ -53,11 +57,21 @@ qt_add_qml_module(templnote
 
   QML_FILES
   qml/Main.qml
+  qml/Theme.qml
   qml/Editor.qml
   qml/BlockRenderer.qml
   qml/PromptPanel.qml
   qml/NavigationRail.qml
   qml/FileExplorer.qml
+  qml/SettingsWindow.qml
+
+  qml/settings/AppearanceSettings.qml
+  qml/settings/GeneralSettings.qml
+  qml/settings/InterfaceSettings.qml
+  qml/settings/EditorSettings.qml
+  qml/settings/PluginsSettings.qml
+  qml/settings/SettingToggle.qml
+  qml/settings/SettingChoice.qml
 
   qml/blocks/TextBlock.qml
   qml/blocks/ParagraphBlock.qml
@@ -70,6 +84,10 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_settings_20_regular.svg
   assets/icons/ic_fluent_person_20_regular.svg
   assets/icons/ic_fluent_document_add_20_regular.svg
+  assets/icons/ic_fluent_document_folder_20_regular.svg
+  assets/icons/ic_fluent_arrow_sort_20_regular.svg
+  assets/icons/ic_fluent_search_20_regular.svg
+  assets/icons/ic_fluent_chat_sparkle_20_regular.svg
   assets/icons/ic_fluent_add_20_regular.svg
   assets/icons/ic_fluent_align_space_evenly_horizontal_20_regular.svg
   assets/icons/ic_fluent_chevron_double_down_20_filled.svg
@@ -78,7 +96,11 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_panel_left_contract_20_filled.svg
   assets/icons/ic_fluent_panel_left_expand_20_filled.svg
   assets/icons/ic_fluent_animal_cat_20_regular.svg
-  assets/icons/ic_fluent_send_20_color.svg
+  assets/icons/ic_fluent_send_16_regular.svg
+  assets/icons/ic_fluent_arrow_sort_20_regular.svg
+  assets/icons/ic_fluent_chat_sparkle_20_regular.svg
+  assets/icons/ic_fluent_search_20_regular.svg
+  assets/icons/ic_fluent_document_folder_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

@@ -8,6 +8,11 @@
 namespace Templnote {
 const QVector<Block> &Document::blocks() const { return m_blocks; }
 
+// used for the undo redo
+QVector<Block> Document::snapshot() const { return m_blocks; }
+
+void Document::restore(const QVector<Block> &blocks) { m_blocks = blocks; }
+
 int Document::count() const { return m_blocks.size(); }
 
 const Block *Document::blockAt(int index) const {
@@ -116,7 +121,8 @@ QString Document::splitBlock(const QString &id, int position) {
   const QString remainingText = current.text.mid(position);
   current.text.truncate(position);
 
-  const BlockType newType = (current.type == BlockType::Bullet || current.type == BlockType::NumberedList)
+  const BlockType newType = (current.type == BlockType::Bullet ||
+                             current.type == BlockType::NumberedList)
                                 ? current.type
                                 : BlockType::Paragraph;
 

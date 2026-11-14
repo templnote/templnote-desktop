@@ -20,7 +20,7 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    color: "#f0f0f8"
+    color: Theme.background
   }
 
   // Document content
@@ -87,11 +87,6 @@ Item {
           const currentText = renderer.editorText
           const cursorPosition = renderer.cursorPosition
           
-          // commit to visible block text before splitting
-          root.model.updateBlockText(
-            delegateRoot.blockId,
-            currentText
-          )
           // for a smoother markdown behaviour
           if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3) && renderer.editorText.length === 0) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
@@ -102,7 +97,8 @@ Item {
 
           const newId = root.model.splitBlock(
             delegateRoot.blockId,
-            renderer.cursorPosition
+            cursorPosition,
+            currentText
           )
           if (newId.length === 0) return
 
@@ -127,11 +123,6 @@ Item {
           const currentType = delegateRoot.blockType
 
 
-          root.model.updateBlockText(
-            delegateRoot.blockId,
-            currentText
-          )
-
           if ( currentType === 2 || currentType === 3 ) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
               root.focusDelegateAt(currentIndex, 0)
@@ -149,7 +140,9 @@ Item {
             return
           }
 
-          if (root.model.mergeWithPrevious(delegateRoot.blockId)) {
+          if (root.model.mergeWithPrevious(
+                delegateRoot.blockId,
+                currentText)) {
             root.focusDelegateAt(currentIndex - 1, -1)
           }
         }

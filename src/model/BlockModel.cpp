@@ -1,5 +1,6 @@
 #include "BlockModel.h"
 #include <QDebug>
+#include <qcontainerfwd.h>
 #include <qnamespace.h>
 
 namespace Templnote {
@@ -17,8 +18,16 @@ int BlockModel::rowCount(const QModelIndex &parent) const {
   return m_document.count();
 }
 
-int BlockModel::count() const { return m_document.count(); }
+bool BlockModel::canUndo() const { return !m_undoStack.isEmpty(); }
+bool BlockModel::canRedo() const { return !m_redoStack.isEmpty(); }
+void BlockModel::saveHistory(const QVector<Block> &before) {
+  m_undoStack.append(before);
+  m_redoStack.clear();
+  emit historyChanged();
+}
 
+int BlockModel::count() const { return m_document.count(); }
+// text rednering in the editor
 QVariant BlockModel::data(const QModelIndex &index, int role) const {
   if (!index.isValid())
     return {};
@@ -82,10 +91,14 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
 }
 
 QHash<int, QByteArray> BlockModel::roleNames() const {
-  return {{BlockIdRole, "blockId"},           {ParentIdRole, "parentId"},
-          {BlockTypeRole, "blockType"},       {ContentRole, "content"},
-          {HeadingLevelRole, "headingLevel"}, {MetadataRole, "metadata"},
-          {NextBlockTypeRole, "nextBlockType"}, {NumberIndexRole, "numberIndex"}};
+  return {{BlockIdRole, "blockId"},
+          {ParentIdRole, "parentId"},
+          {BlockTypeRole, "blockType"},
+          {ContentRole, "content"},
+          {HeadingLevelRole, "headingLevel"},
+          {MetadataRole, "metadata"},
+          {NextBlockTypeRole, "nextBlockType"},
+          {NumberIndexRole, "numberIndex"}};
 }
 
 QString BlockModel::appendBlock(int type, const QString &text) {
@@ -93,6 +106,8 @@ QString BlockModel::appendBlock(int type, const QString &text) {
     return {};
 
   const int row = m_document.count();
+
+  const QVector<Block> before = m_document.snapshot();
 
   beginInsertRows({}, row, row);
 
@@ -103,6 +118,8 @@ QString BlockModel::appendBlock(int type, const QString &text) {
   m_document.appendBlock(block);
 
   endInsertRows();
+
+  saveHistory(before);
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -117,6 +134,8 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
     return false;
   }
 
+  const QVector<Block> before = m_document.snapshot();
+
   beginInsertRows({}, row, row);
 
   const bool success = m_document.insertBlock(
@@ -124,18 +143,22 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
 
   endInsertRows();
 
-  if (success && row > 0)
+  if (!success)
+    return false;
+
+  saveHistory(before);
+
+  if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
-  if (success && row + 1 < m_document.count()) {
+  if (row + 1 < m_document.count()) {
     emit dataChanged(index(row + 1), index(m_document.count() - 1),
                      {NumberIndexRole});
   }
 
-  if (success)
-    emit countChanged();
+  emit countChanged();
 
-  return success;
+  return true;
 }
 
 bool BlockModel::removeBlock(const QString &id) {
@@ -144,11 +167,18 @@ bool BlockModel::removeBlock(const QString &id) {
   if (row < 0)
     return false;
 
+  const QVector<Block> before = m_document.snapshot();
+
   beginRemoveRows({}, row, row);
 
   const bool success = m_document.removeBlock(id);
 
   endRemoveRows();
+
+  if (!success)
+    return false;
+
+  saveHistory(before);
 
   if (success && row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -158,10 +188,9 @@ bool BlockModel::removeBlock(const QString &id) {
                      {NumberIndexRole});
   }
 
-  if (success)
-    emit countChanged();
+  emit countChanged();
 
-  return success;
+  return true;
 }
 
 bool BlockModel::updateBlockText(const QString &id, const QString &text) {
@@ -170,19 +199,36 @@ bool BlockModel::updateBlockText(const QString &id, const QString &text) {
   if (row < 0)
     return false;
 
+  const Block *block = m_document.blockAt(row);
+
+  if (!block || block->text == text)
+    return true;
+
+  const QVector<Block> before = m_document.snapshot();
+
   if (!m_document.updateBlockText(id, text))
     return false;
+
+  saveHistory(before);
 
   emit dataChanged(index(row), index(row), {ContentRole, Qt::DisplayRole});
 
   return true;
 }
 
-QString BlockModel::splitBlock(const QString &id, int position) {
+QString BlockModel::splitBlock(const QString &id, int position,
+                               const QString &editorText) {
   const int row = m_document.indexOf(id);
 
   if (row < 0)
     return {};
+
+  const QVector<Block> before = m_document.snapshot();
+
+  if (!editorText.isNull() &&
+      !m_document.updateBlockText(id, editorText)) {
+    return {};
+  }
 
   const Block *block = m_document.blockAt(row);
 
@@ -199,6 +245,8 @@ QString BlockModel::splitBlock(const QString &id, int position) {
   if (newId.isEmpty())
     return {};
 
+  saveHistory(before);
+
   emit dataChanged(index(row), index(row),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
 
@@ -210,11 +258,19 @@ QString BlockModel::splitBlock(const QString &id, int position) {
   return newId;
 }
 
-bool BlockModel::mergeWithPrevious(const QString &id) {
+bool BlockModel::mergeWithPrevious(const QString &id,
+                                   const QString &editorText) {
   const int row = m_document.indexOf(id);
 
   if (row <= 0)
     return false;
+
+  const QVector<Block> before = m_document.snapshot();
+
+  if (!editorText.isNull() &&
+      !m_document.updateBlockText(id, editorText)) {
+    return false;
+  }
 
   beginRemoveRows({}, row, row);
 
@@ -224,6 +280,8 @@ bool BlockModel::mergeWithPrevious(const QString &id) {
 
   if (!success)
     return false;
+
+  saveHistory(before);
 
   emit dataChanged(index(row - 1), index(row - 1),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
@@ -248,10 +306,14 @@ bool BlockModel::changeBlockType(const QString &id, int type,
   if (row < 0)
     return false;
 
+  const QVector<Block> before = m_document.snapshot();
+
   if (!m_document.updateBlockType(id, static_cast<BlockType>(type),
                                   headingLevel)) {
     return false;
   }
+
+  saveHistory(before);
   emit dataChanged(index(row), index(m_document.count() - 1),
                    {BlockTypeRole, HeadingLevelRole, NumberIndexRole});
 
@@ -288,12 +350,49 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
       emit dataChanged(index(first), index(last), {NextBlockTypeRole});
 
     if (first < m_document.count())
-      emit dataChanged(index(first), index(m_document.count() - 1), {NumberIndexRole});
+      emit dataChanged(index(first), index(m_document.count() - 1),
+                       {NumberIndexRole});
   }
 
   return success;
 }
 
 const Document &BlockModel::document() const { return m_document; }
+
+// undo redo functionality
+
+bool BlockModel::undo() {
+  if (m_undoStack.isEmpty())
+    return false;
+
+  m_redoStack.append(m_document.snapshot());
+
+  const QVector<Block> previous = m_undoStack.takeLast();
+
+  beginResetModel();
+  m_document.restore(previous);
+  endResetModel();
+
+  emit countChanged();
+  emit historyChanged();
+  return true;
+}
+
+bool BlockModel::redo() {
+  if (m_redoStack.isEmpty())
+    return false;
+
+  m_undoStack.append(m_document.snapshot());
+
+  const QVector<Block> next = m_redoStack.takeLast();
+
+  beginResetModel();
+  m_document.restore(next);
+  endResetModel();
+
+  emit countChanged();
+  emit historyChanged();
+  return true;
+}
 
 } // namespace Templnote

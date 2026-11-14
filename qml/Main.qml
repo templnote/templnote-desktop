@@ -7,10 +7,11 @@ ApplicationWindow {
 
   width: 1100
   height: 760
+  minimumWidth: 900
 
   visible: true
   title: "Templnote"
-  // color: "#101112"
+  color: Theme.background
 
   BlockModel {
     id: blockModel
@@ -29,6 +30,7 @@ ApplicationWindow {
       fileExplorer.expanded = !fileExplorer.expanded
       navigationRail.explorerExpanded = fileExplorer.expanded
     }
+    onSettingsRequested: settingsWindow.open()
   }
 
   FileExplorer {
@@ -53,7 +55,7 @@ ApplicationWindow {
 
     Rectangle {
       anchors.fill: parent
-      // color: "#111315"
+      color: Theme.background
     }
 
     Editor {
@@ -74,5 +76,9 @@ ApplicationWindow {
         bottom: parent.bottom
       }
     }
+  }
+
+  SettingsWindow {
+    id: settingsWindow
   }
 }

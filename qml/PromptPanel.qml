@@ -8,7 +8,9 @@ Rectangle {
 
   width: expanded ? Math.min(parent ? parent.width - 96 : 700, 700) : Math.min(parent ? parent.width - 96 : 200, 200)
   height: expanded ? 84 : 36
-  color: "#e8e8f2"
+  color: Theme.surface
+  border.width: 1
+  border.color: Theme.border
   topLeftRadius: 8
   topRightRadius: 8
   bottomLeftRadius: 0
@@ -21,17 +23,21 @@ Rectangle {
     }
   }
 
-  Image {
+  Button {
     id: catIcon
 
-    source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_animal_cat_20_regular.svg"
-    sourceSize.width: 20
-    sourceSize.height: 20
-    fillMode: Image.PreserveAspectFit
+    icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_animal_cat_20_regular.svg"
+    icon.width: 20
+    icon.height: 20
+    icon.color: Theme.accent
+    width: 24
+    height: 24
+    padding: 0
+    background: null
 
     anchors {
       left: parent.left
-      leftMargin: 10
+      leftMargin: 8
       verticalCenter: parent.verticalCenter
     }
   }
@@ -46,7 +52,7 @@ Rectangle {
     }
 
     text: "Meow"
-    // color: "#777A82"
+    color: Theme.textMuted
     font.pixelSize: 13
   }
 
@@ -65,11 +71,16 @@ Rectangle {
 
     height: 64
     font.pixelSize: 13
+    color: Theme.text
+    placeholderText: "Ask Templnote anything..."
+    placeholderTextColor: Theme.textFaint
+    selectionColor: Theme.accent
+    selectedTextColor: Theme.accentText
 
     background: Rectangle {
       radius: 8
-      color: "#f7f7fb"
-      border.color: "#cfcfda"
+      color: Theme.surfaceAlt
+      border.color: Theme.border
       border.width: 1
     }
   }
@@ -79,9 +90,10 @@ Rectangle {
 
     visible: root.expanded
 
-    icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_send_20_color.svg"
+    icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_send_16_regular.svg"
     icon.width: 20
     icon.height: 20
+    icon.color: Theme.accent
     width: 24
     height: 24
     padding: 0
@@ -106,6 +118,7 @@ Rectangle {
                                : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_chevron_double_up_20_filled.svg"
     icon.width: 20
     icon.height: 20
+    icon.color: Theme.textMuted
     width: 24
     height: 24
     padding: 0

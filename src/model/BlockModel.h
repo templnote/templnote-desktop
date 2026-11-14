@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QAbstractListModel>
-#include <qhashfunctions.h>
+#include <QVector>
+#include <qcontainerfwd.h>
+#include <qproperty.h>
 #include <qtmetamacros.h>
 
 #include "../core/Document.h"
@@ -30,6 +32,10 @@ public:
 
   int count() const;
 
+  Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
+
+  Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
+
   QVariant data(const QModelIndex &index,
                 int role = Qt::DisplayRole) const override;
 
@@ -49,16 +55,31 @@ public:
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
 
   // splits blocks on pressing enter (onPressedEnter)
-  Q_INVOKABLE QString splitBlock(const QString &id, int position);
+  Q_INVOKABLE QString splitBlock(const QString &id, int position,
+                                 const QString &editorText = {});
 
-  Q_INVOKABLE bool mergeWithPrevious(const QString &id);
+  Q_INVOKABLE bool mergeWithPrevious(const QString &id,
+                                     const QString &editorText = {});
 
   const Document &document() const;
 
+  // undo redo
+  Q_INVOKABLE bool undo();
+  bool canUndo() const;
+
+  Q_INVOKABLE bool redo();
+  bool canRedo() const;
+
 signals:
   void countChanged();
+  void historyChanged();
 
 private:
+  void saveHistory(const QVector<Block> &before);
+  bool restoreHistory(QVector<QVector<Block>> &from,
+                      QVector<QVector<Block>> &to);
   Document m_document;
+  QVector<QVector<Block>> m_undoStack;
+  QVector<QVector<Block>> m_redoStack;
 };
 } // namespace Templnote

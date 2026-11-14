@@ -80,6 +80,7 @@ Item {
           anchors.centerIn: parent
 
           text: "•"
+          color: Theme.textMuted
           font.pixelSize: 22
 
           horizontalAlignment: Text.AlignHCenter
@@ -91,6 +92,7 @@ Item {
           anchors.centerIn: parent
 
           text: root.numberPrefix
+          color: Theme.textMuted
           font.pixelSize: 14
 
           horizontalAlignment: Text.AlignHCenter
@@ -109,6 +111,11 @@ Item {
           anchors.fill: parent
 
           wrapMode: TextArea.Wrap
+
+          color: Theme.text
+          selectionColor: Theme.accent
+          selectedTextColor: Theme.accentText
+          selectByMouse: true
 
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
