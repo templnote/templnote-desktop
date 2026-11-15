@@ -7,8 +7,20 @@ Rectangle {
   property int selectedIndex: 0
   readonly property var selectedCommand: filtered.count > 0 ? filtered.get(selectedIndex) : null
   signal commandSelected(var command)
+  readonly property int maxVisibleItems: 6
+  readonly property int itemRowHeight: 30
+  readonly property int itemRowSpacing: 1
+  readonly property int headerHeight: 40
+  readonly property int bottomPadding: 8
+
   width: 240
-  height: Math.min(312, 56 + filtered.count * 42)
+  height: {
+    const visibleCount = Math.min(filtered.count, root.maxVisibleItems)
+    const listHeight = visibleCount > 0
+        ? (visibleCount * root.itemRowHeight) + ((visibleCount - 1) * root.itemRowSpacing)
+        : 0
+    return root.headerHeight + listHeight + root.bottomPadding
+  }
   radius: 8
   color: Theme.surface
   border.color: Theme.border
@@ -22,6 +34,8 @@ Rectangle {
     root.query = text
     rebuild()
     root.selectedIndex = 0
+    if (commandList)
+      commandList.positionViewAtIndex(0, ListView.Beginning)
     root.visible = true
   }
 
@@ -42,7 +56,11 @@ Rectangle {
           command.detail.toLowerCase().indexOf(q) >= 0)
         filtered.append(command)
     }
-    root.height = Math.min(312, 56 + filtered.count * 42)
+    const visibleCount = Math.min(filtered.count, root.maxVisibleItems)
+    const listHeight = visibleCount > 0
+        ? (visibleCount * root.itemRowHeight) + ((visibleCount - 1) * root.itemRowSpacing)
+        : 0
+    root.height = root.headerHeight + listHeight + root.bottomPadding
   }
 
   function selectFirst() {
@@ -54,22 +72,24 @@ Rectangle {
     if (filtered.count === 0)
       return
     root.selectedIndex = (root.selectedIndex + direction + filtered.count) % filtered.count
+    commandList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
   Text { x: 16; y: 12; text: "Insert formatting"; color: Theme.textMuted; font.bold: true }
 
   ListView {
+    id: commandList
     anchors {
       top: parent.top
-      topMargin: 40
+      topMargin: root.headerHeight
       left: parent.left
       leftMargin: 8
       right: parent.right
       rightMargin: 8
       bottom: parent.bottom
-      bottomMargin: 8
+      bottomMargin: root.bottomPadding
     }
-    spacing: 2
+    spacing: root.itemRowSpacing
     model: filtered
     clip: true
     delegate: Rectangle {
@@ -78,11 +98,18 @@ Rectangle {
       readonly property bool selected: index === root.selectedIndex
 
       width: ListView.view.width
-      height: 38
+      height: root.itemRowHeight
       radius: 8
       color: selected
              ? Theme.tint(Theme.accent, 0.16)
              : (mouse.containsMouse ? Theme.surfaceHover : "transparent")
+
+      Behavior on color {
+        ColorAnimation {
+          duration: 150
+          easing.type: Easing.OutQuad
+        }
+      }
 
       Rectangle {
         visible: commandRow.selected

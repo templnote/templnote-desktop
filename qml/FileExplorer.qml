@@ -20,6 +20,7 @@ Rectangle {
   property string searchQuery: ""
   property var searchResults: []
   property int searchIndex: -1
+  property int selectedIndex: -1
 
   readonly property bool searchHasResults: searchResults.length > 0
 
@@ -96,6 +97,73 @@ Rectangle {
 
     root.searchIndex = next
     root.scrollToSearchIndex()
+  }
+
+  function moveSelection(direction) {
+    if (!root.documentList || root.documentList.count === 0)
+      return
+
+    const count = root.documentList.count
+    let next = root.selectedIndex + direction
+
+    if (next < 0)
+      next = count - 1
+    else if (next >= count)
+      next = 0
+
+    root.selectedIndex = next
+    scrollToSelectedIndex()
+  }
+
+  function scrollToSelectedIndex() {
+    Qt.callLater(function() {
+      if (!root.searchVisible && root.selectedIndex >= 0)
+        documentView.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+    })
+  }
+
+  function activateSelection(index) {
+    if (!root.documentList || index < 0 || index >= root.documentList.count)
+      return
+
+    const path = root.documentList.filePathAt(index)
+    if (!path || path.length === 0)
+      return
+
+    const isFolder = root.documentList.data(root.documentList.index(index, 0), 259) // IsFolderRole
+    if (isFolder) {
+      root.documentList.enterFolder(path)
+      root.selectedIndex = 0
+      scrollToSelectedIndex()
+      return
+    }
+
+    if (root.documentModel && root.documentModel.loadDocument(path)) {
+      root.documentList.currentFilePath = path
+    }
+  }
+
+  function enterCurrentFolder() {
+    if (!root.documentList || root.selectedIndex < 0 || root.selectedIndex >= root.documentList.count)
+      return
+
+    const path = root.documentList.filePathAt(root.selectedIndex)
+    const isFolder = root.documentList.data(root.documentList.index(root.selectedIndex, 0), 259)
+    if (isFolder && path) {
+      root.documentList.enterFolder(path)
+      root.selectedIndex = 0
+      scrollToSelectedIndex()
+    }
+  }
+
+  function goUpFolder() {
+    if (!root.documentList)
+      return
+
+    if (root.documentList.goUp()) {
+      root.selectedIndex = 0
+      scrollToSelectedIndex()
+    }
   }
 
   function activateSearch(index) {
@@ -210,6 +278,20 @@ Rectangle {
   Item {
     anchors.fill: parent
     visible: root.expanded
+
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.LeftButton
+      propagateComposedEvents: true
+      onClicked: function(mouse) {
+        if (!searchField.activeFocus) {
+          documentView.forceActiveFocus()
+          if (root.selectedIndex < 0 && root.documentList && root.documentList.count > 0)
+            root.selectedIndex = 0
+        }
+        mouse.accepted = false
+      }
+    }
 
     Column {
       id: header
@@ -569,9 +651,58 @@ Rectangle {
 
       model: root.documentList
       visible: !root.searchVisible
-      spacing: 2
+      spacing: 1
       clip: true
       boundsBehavior: Flickable.StopAtBounds
+      focus: true
+
+      MouseArea {
+        anchors.fill: parent
+        z: -1
+        acceptedButtons: Qt.LeftButton
+        onClicked: {
+          documentView.forceActiveFocus()
+          if (root.selectedIndex < 0 && root.documentList && root.documentList.count > 0)
+            root.selectedIndex = 0
+        }
+      }
+
+      Keys.onUpPressed: function(event) {
+        event.accepted = true
+        root.moveSelection(-1)
+      }
+
+      Keys.onDownPressed: function(event) {
+        event.accepted = true
+        root.moveSelection(1)
+      }
+
+      Keys.onReturnPressed: function(event) {
+        event.accepted = true
+        root.activateSelection(root.selectedIndex)
+      }
+
+      Keys.onEnterPressed: function(event) {
+        event.accepted = true
+        root.activateSelection(root.selectedIndex)
+      }
+
+      Keys.onRightPressed: function(event) {
+        event.accepted = true
+        root.enterCurrentFolder()
+      }
+
+      Keys.onLeftPressed: function(event) {
+        event.accepted = true
+        root.goUpFolder()
+      }
+
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Backspace) {
+          event.accepted = true
+          root.goUpFolder()
+        }
+      }
 
       delegate: Item {
         id: entry
@@ -584,12 +715,15 @@ Rectangle {
         required property string filePath
         required property bool isFolder
         required property bool isCurrent
+        required property int index
+
+        readonly property bool isSelected: entry.index === root.selectedIndex
 
         property bool renamingEntry: root.editingEntryPath === entry.filePath
         property string draftName: entry.name
 
         width: documentView.width
-        height: 34
+        height: 28
 
         onRenamingEntryChanged: {
           if (entry.renamingEntry) {
@@ -606,12 +740,12 @@ Rectangle {
           radius: 8
           color: entry.isCurrent
                  ? Theme.tint(Theme.accent, 0.16)
-                 : entryMouse.containsMouse ? Theme.surfaceHover : "transparent"
+                 : (entry.isSelected || entryMouse.containsMouse) ? Theme.surfaceHover : "transparent"
 
           Behavior on color {
             ColorAnimation {
-              duration: 120
-              easing.type: Easing.OutCubic
+              duration: 150
+              easing.type: Easing.OutQuad
             }
           }
         }
@@ -642,11 +776,14 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
 
             onClicked: function(mouse) {
+              documentView.forceActiveFocus()
+              root.selectedIndex = entry.index
               if (!root.documentList)
                 return
 
               if (entry.isFolder) {
                 root.documentList.enterFolder(entry.filePath)
+                root.selectedIndex = 0
                 return
               }
 
@@ -697,7 +834,7 @@ Rectangle {
               rightMargin: 8
               verticalCenter: parent.verticalCenter
             }
-            visible: entryMouse.containsMouse || renameMouse.containsMouse || deleteMouse.containsMouse
+            visible: entryMouse.containsMouse || entry.isSelected || renameMouse.containsMouse || deleteMouse.containsMouse
             spacing: 4
 
             Rectangle {
@@ -840,7 +977,7 @@ Rectangle {
 
       model: root.searchResults
       visible: root.searchVisible
-      spacing: 2
+      spacing: 1
       clip: true
       boundsBehavior: Flickable.StopAtBounds
 
@@ -851,7 +988,7 @@ Rectangle {
         required property int index
 
         width: searchView.width
-        height: 44
+        height: 34
 
         Rectangle {
           anchors.fill: parent
@@ -862,8 +999,8 @@ Rectangle {
 
           Behavior on color {
             ColorAnimation {
-              duration: 120
-              easing.type: Easing.OutCubic
+              duration: 150
+              easing.type: Easing.OutQuad
             }
           }
         }

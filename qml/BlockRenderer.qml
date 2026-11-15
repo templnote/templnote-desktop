@@ -10,6 +10,7 @@ Item {
   property string content: ""
   property int headingLevel: 0
   property int numberIndex: 1
+  property bool showPlaceholder: false
   property var model: null
 
   readonly property var block: loader.item
@@ -22,7 +23,7 @@ Item {
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
   signal caretMoved(int position)
-  signal commandMenuRequested(string query, real xPosition, real yPosition)
+  signal commandMenuRequested(string query, real xPosition, real yPosition, real cursorHeight)
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
@@ -124,6 +125,7 @@ Item {
       item.content = Qt.binding(function() { return root.content })
       item.headingLevel = Qt.binding(function() { return root.headingLevel })
       item.numberIndex = Qt.binding(function() { return root.numberIndex })
+      item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
       item.searchNavigationActive = Qt.binding(function() { return root.searchNavigationActive })

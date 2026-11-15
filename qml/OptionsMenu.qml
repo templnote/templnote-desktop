@@ -24,10 +24,10 @@ Item {
   // Matches CommandMenu: 240px wide, 42px rows, a 40px header area and 16px
   // below the list. The bottom room keeps the last row clear of the radius.
   readonly property int menuWidth: 180
-  readonly property int itemHeight: 42
+  readonly property int itemHeight: 30
   readonly property int menuTopPadding: 40
   readonly property int menuBottomPadding: 16
-  readonly property int menuMaxHeight: 312
+  readonly property int menuMaxHeight: 260
 
   signal optionTriggered(string key)
 
@@ -203,7 +203,7 @@ Item {
 
       clip: true
       model: root.options
-      spacing: 2
+      spacing: 1
 
       delegate: Rectangle {
         id: optionRow
@@ -219,6 +219,13 @@ Item {
         color: selected
                ? Theme.tint(Theme.accent, 0.16)
                : (optionMouse.containsMouse ? Theme.surfaceHover : "transparent")
+
+        Behavior on color {
+          ColorAnimation {
+            duration: 150
+            easing.type: Easing.OutQuad
+          }
+        }
 
         Rectangle {
           visible: optionRow.selected

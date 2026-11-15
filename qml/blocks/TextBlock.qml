@@ -15,6 +15,7 @@ Item {
   // Appearance overrides for each concrete block type.
   property bool showBullet: false
   property bool showNumbered: false
+  property bool showPlaceholder: false
   property string numberPrefix: numberIndex + "."
   property int verticalPadding: 0
   property int horizontalPadding: 12
@@ -34,7 +35,7 @@ Item {
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
-  signal commandMenuRequested(string query, real xPosition, real yPosition)
+  signal commandMenuRequested(string query, real xPosition, real yPosition, real cursorHeight)
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
@@ -281,7 +282,7 @@ Item {
           anchors.fill: parent
 
           wrapMode: TextArea.Wrap
-          placeholderText: "start typing here"
+          placeholderText: root.showPlaceholder ? "start typing here" : ""
           placeholderTextColor: Theme.textFaint
 
           color: Theme.text
@@ -318,9 +319,11 @@ Item {
             if (root.searchNavigationActive)
               root.searchEditStarted()
 
-            if (root.blockType === 0 && text.startsWith("/") && text.indexOf(" ") < 0)
-              root.commandMenuRequested(text.substring(1), editor.cursorRectangle.x, editor.cursorRectangle.y)
-            else if (root.commandMenuActive)
+            if (root.blockType === 0 && text.startsWith("/") && text.indexOf(" ") < 0) {
+              const slashRect = editor.positionToRectangle(0)
+              const mapped = editor.mapToItem(root, slashRect.x, slashRect.y)
+              root.commandMenuRequested(text.substring(1), mapped.x, mapped.y, slashRect.height)
+            } else if (root.commandMenuActive)
               root.commandMenuDismissed()
 
             // paragraph -> bullet

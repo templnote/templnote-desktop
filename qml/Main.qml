@@ -166,6 +166,7 @@ ApplicationWindow {
       id: editor
       anchors.fill: parent
       contentWidth: workspace.contentWidth
+      bottomReservedSpace: promptPanel.height
       model: blockModel
     }
 

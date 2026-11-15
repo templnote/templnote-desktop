@@ -8,10 +8,11 @@ Item {
 
   // for a centrally content
   property real contentWidth: 800
+  property real bottomReservedSpace: 0
   property var activeCommandDelegate: null
   property bool commandMenuAbove: false
   property real commandMenuAnchorY: 0
-  property real commandMenuGap: 8
+  property real commandMenuGap: 2
 
   // Search state. The find bar owns the query and passes the complete match
   // list here; the delegates only render the matches for their own block.
@@ -293,7 +294,7 @@ Item {
       bottom: parent.bottom
       horizontalCenter: parent.horizontalCenter
 
-      topMargin: root.searchActive ? 96 : 48
+      topMargin: 120
       bottomMargin: 160
     }
 
@@ -366,6 +367,7 @@ Item {
         blockType: delegateRoot.blockType
         headingLevel: delegateRoot.headingLevel
         numberIndex: delegateRoot.numberIndex
+        showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsFor(delegateRoot.blockId)
         searchNavigationActive: root.searchNavigationActive
 
@@ -402,7 +404,7 @@ Item {
           targetDelegate.focusBlockAtX(xPosition)
         }
 
-        onCommandMenuRequested: function(query, xPosition, yPosition) {
+        onCommandMenuRequested: function(query, xPosition, yPosition, cursorHeight) {
           // Subsequent text changes update the filtered commands, but do not
           // re-run placement. This keeps an already-open menu above or below
           // the cursor instead of flipping as its height changes.
@@ -420,10 +422,9 @@ Item {
           )
 
           Qt.callLater(function() {
-            // Build the filtered list first so commandMenu.height reflects the
-            // actual number of commands before collision handling.
             commandMenu.openFor(query)
 
+            // xPosition and yPosition are already in root coordinates of renderer
             const menuPosition = renderer.mapToItem(
               root,
               xPosition,
@@ -431,36 +432,29 @@ Item {
             )
 
             const gap = root.commandMenuGap
-            const belowGap = 0
-            // Include the line's visual height so the flipped menu keeps a
-            // similar breathing space to the below-cursor placement.
-            const cursorHeight = 30
-            const availableBottom = root.height - 96
-            const belowY = menuPosition.y + belowGap
-            const aboveY = menuPosition.y - cursorHeight
-                             - commandMenu.height - gap
+            const actualCursorHeight = cursorHeight > 0 ? cursorHeight : 20
+            const availableBottom = root.height - root.bottomReservedSpace - 1
+            const belowY = menuPosition.y + actualCursorHeight + gap
+            const aboveY = menuPosition.y - gap - commandMenu.height
+
+            let flippedAbove = false
             let menuY = belowY
 
-            // Prefer below the cursor. Flip above it only when the complete
-            // menu fits there; otherwise keep it below rather than clamping
-            // the menu over the active cursor.
-            let flippedAbove = false
+            // Default to below. Flip above when not enough space below to show the full height,
+            // and there is enough space above.
             if (belowY + commandMenu.height > availableBottom && aboveY >= 0) {
               menuY = aboveY
               flippedAbove = true
             }
 
-            if (flippedAbove)
-              menuY = Math.max(0, menuY)
-
+            // Constrain horizontally within visible editor bounds
             commandMenu.x = Math.max(
               8,
-              Math.min(root.width - commandMenu.width - 8,
-                       menuPosition.x)
+              Math.min(root.width - commandMenu.width - 8, menuPosition.x)
             )
 
             root.commandMenuAbove = flippedAbove
-            root.commandMenuAnchorY = menuPosition.y - cursorHeight
+            root.commandMenuAnchorY = menuPosition.y
             commandMenu.y = menuY
             renderer.commandMenuActive = true
           })
@@ -568,6 +562,12 @@ Item {
       height: documentView.height * 0.6
     }
 
+    Component.onCompleted: {
+      console.log("Editor initialized")
+      console.log("Model count:", root.model.count)
+    }
+  }
+
   CommandMenu {
     id: commandMenu
 
@@ -583,12 +583,6 @@ Item {
         root.activeCommandDelegate = null
       }
       visible = false
-    }
-  }
-
-    Component.onCompleted: {
-      console.log("Editor initialized")
-      console.log("Model count:", root.model.count)
     }
   }
 }
