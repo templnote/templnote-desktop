@@ -194,32 +194,63 @@ Item {
         top: parent.top
         topMargin: root.menuTopPadding
         left: parent.left
+        leftMargin: 8
         right: parent.right
+        rightMargin: 8
         bottom: parent.bottom
+        bottomMargin: 8
       }
 
       clip: true
       model: root.options
+      spacing: 2
 
       delegate: Rectangle {
+        id: optionRow
+
         required property int index
         required property var modelData
 
+        readonly property bool selected: index === root.selectedIndex
+
         width: ListView.view.width
         height: root.itemHeight
-        color: index === root.selectedIndex ? Theme.surfaceHover : "transparent"
+        radius: 8
+        color: selected
+               ? Theme.tint(Theme.accent, 0.16)
+               : (optionMouse.containsMouse ? Theme.surfaceHover : "transparent")
+
+        Rectangle {
+          visible: optionRow.selected
+
+          anchors {
+            left: parent.left
+            verticalCenter: parent.verticalCenter
+          }
+
+          width: 3
+          height: 18
+          radius: 2
+          color: Theme.accent
+        }
 
         Text {
-          x: 16
-          anchors.verticalCenter: parent.verticalCenter
+          anchors {
+            left: parent.left
+            leftMargin: 14
+            verticalCenter: parent.verticalCenter
+          }
           text: modelData.label
-          color: Theme.text
+          color: optionRow.selected ? Theme.text : Theme.text
           font.pixelSize: 13
         }
 
         Text {
-          x: 150
-          anchors.verticalCenter: parent.verticalCenter
+          anchors {
+            right: parent.right
+            rightMargin: 14
+            verticalCenter: parent.verticalCenter
+          }
           visible: text.length > 0
           text: modelData.shortcut
           color: Theme.textMuted
@@ -227,6 +258,7 @@ Item {
         }
 
         MouseArea {
+          id: optionMouse
           anchors.fill: parent
           hoverEnabled: true
           cursorShape: Qt.PointingHandCursor

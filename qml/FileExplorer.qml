@@ -616,6 +616,20 @@ Rectangle {
           }
         }
 
+        Rectangle {
+          visible: entry.isCurrent
+
+          anchors {
+            left: parent.left
+            verticalCenter: parent.verticalCenter
+          }
+
+          width: 3
+          height: 18
+          radius: 2
+          color: Theme.accent
+        }
+
         Item {
           anchors.fill: parent
           visible: !entry.renamingEntry
@@ -863,6 +877,20 @@ Rectangle {
           }
         }
 
+        Rectangle {
+          visible: searchEntry.index === root.searchIndex
+
+          anchors {
+            left: parent.left
+            verticalCenter: parent.verticalCenter
+          }
+
+          width: 3
+          height: 18
+          radius: 2
+          color: Theme.accent
+        }
+
         MouseArea {
           id: searchEntryMouse
 
@@ -927,6 +955,66 @@ Rectangle {
     property string entryPath: ""
     property string entryName: ""
     property bool entryIsFolder: false
+
+    topPadding: 6
+    bottomPadding: 6
+    leftPadding: 6
+    rightPadding: 6
+
+    background: Rectangle {
+      implicitWidth: 160
+      radius: 8
+      color: Theme.surface
+      border.width: 1
+      border.color: Theme.border
+    }
+
+    delegate: MenuItem {
+      id: menuItem
+
+      implicitWidth: 160
+      implicitHeight: 34
+
+      contentItem: Item {
+        anchors.fill: parent
+
+        Text {
+          anchors {
+            left: parent.left
+            leftMargin: 14
+            right: parent.right
+            rightMargin: 10
+            verticalCenter: parent.verticalCenter
+          }
+          text: menuItem.text
+          color: menuItem.highlighted ? Theme.text : Theme.textMuted
+          font.pixelSize: 13
+          elide: Text.ElideRight
+        }
+      }
+
+      background: Rectangle {
+        anchors.fill: parent
+        radius: 8
+        color: menuItem.highlighted
+               ? Theme.tint(Theme.accent, 0.16)
+               : "transparent"
+
+        Rectangle {
+          visible: menuItem.highlighted
+
+          anchors {
+            left: parent.left
+            verticalCenter: parent.verticalCenter
+          }
+
+          width: 3
+          height: 18
+          radius: 2
+          color: Theme.accent
+        }
+      }
+    }
 
     MenuItem {
       text: "Rename"

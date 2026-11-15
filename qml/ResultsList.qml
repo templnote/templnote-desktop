@@ -31,11 +31,15 @@ Item {
   ListView {
     id: resultView
 
-    anchors.fill: parent
+    anchors {
+      fill: parent
+      leftMargin: 8
+      rightMargin: 8
+    }
     clip: true
     model: root.resultsModel
     currentIndex: root.selectedIndex
-    spacing: 0
+    spacing: 4
 
     section.property: "documentPath"
     section.criteria: ViewSection.FullString
@@ -47,7 +51,7 @@ Item {
 
       width: resultView.width
       height: 54
-      color: Theme.surface
+      color: "transparent"
 
       Rectangle {
         anchors {
@@ -65,7 +69,7 @@ Item {
           left: parent.left
           right: countLabel.left
           verticalCenter: parent.verticalCenter
-          leftMargin: 14
+          leftMargin: 10
           rightMargin: 12
         }
 
@@ -96,7 +100,7 @@ Item {
 
         anchors {
           right: parent.right
-          rightMargin: 14
+          rightMargin: 10
           verticalCenter: parent.verticalCenter
         }
 
@@ -115,22 +119,26 @@ Item {
       required property string snippet
       required property var snippetRanges
 
+      readonly property bool selected: root.selectedIndex === index
+
       width: resultView.width
       height: snippetText.implicitHeight + 20
-      color: root.selectedIndex === index
-             ? Theme.surfaceHover
-             : (rowMouse.containsMouse ? Theme.surfaceAlt : "transparent")
+      radius: 8
+      color: selected
+             ? Theme.tint(Theme.accent, 0.16)
+             : (rowMouse.containsMouse ? Theme.surfaceHover : "transparent")
 
       Rectangle {
-        visible: root.selectedIndex === index
+        visible: resultRow.selected
 
         anchors {
           left: parent.left
-          top: parent.top
-          bottom: parent.bottom
+          verticalCenter: parent.verticalCenter
         }
 
         width: 3
+        height: 18
+        radius: 2
         color: Theme.accent
       }
 
@@ -150,7 +158,7 @@ Item {
                 resultRow.snippet,
                 resultRow.snippetRanges,
                 highlighter.blendColor(Theme.accent, Theme.surface, 0.30))
-        color: Theme.textMuted
+        color: resultRow.selected ? Theme.text : Theme.textMuted
         font.pixelSize: 13
         wrapMode: Text.Wrap
         maximumLineCount: 3

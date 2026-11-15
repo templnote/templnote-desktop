@@ -59,16 +59,74 @@ Rectangle {
   Text { x: 16; y: 12; text: "Insert formatting"; color: Theme.textMuted; font.bold: true }
 
   ListView {
-    anchors { top: parent.top; topMargin: 40; left: parent.left; right: parent.right; bottom: parent.bottom }
+    anchors {
+      top: parent.top
+      topMargin: 40
+      left: parent.left
+      leftMargin: 8
+      right: parent.right
+      rightMargin: 8
+      bottom: parent.bottom
+      bottomMargin: 8
+    }
+    spacing: 2
     model: filtered
     clip: true
     delegate: Rectangle {
+      id: commandRow
+
+      readonly property bool selected: index === root.selectedIndex
+
       width: ListView.view.width
-      height: 42
-      color: index === root.selectedIndex ? Theme.surfaceHover : "transparent"
-      Text { x: 16; anchors.verticalCenter: parent.verticalCenter; text: model.label; color: Theme.text; font.pixelSize: 13 }
-      Text { x: 150; anchors.verticalCenter: parent.verticalCenter; text: model.shortcut; color: Theme.textMuted; font.pixelSize: 12 }
-      MouseArea { id: mouse; anchors.fill: parent; hoverEnabled: true; onClicked: root.commandSelected(filtered.get(index)) }
+      height: 38
+      radius: 8
+      color: selected
+             ? Theme.tint(Theme.accent, 0.16)
+             : (mouse.containsMouse ? Theme.surfaceHover : "transparent")
+
+      Rectangle {
+        visible: commandRow.selected
+
+        anchors {
+          left: parent.left
+          verticalCenter: parent.verticalCenter
+        }
+
+        width: 3
+        height: 18
+        radius: 2
+        color: Theme.accent
+      }
+
+      Text {
+        anchors {
+          left: parent.left
+          leftMargin: 14
+          verticalCenter: parent.verticalCenter
+        }
+        text: model.label
+        color: commandRow.selected ? Theme.text : Theme.text
+        font.pixelSize: 13
+      }
+
+      Text {
+        anchors {
+          right: parent.right
+          rightMargin: 14
+          verticalCenter: parent.verticalCenter
+        }
+        text: model.shortcut
+        color: Theme.textMuted
+        font.pixelSize: 12
+      }
+
+      MouseArea {
+        id: mouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.commandSelected(filtered.get(index))
+      }
     }
   }
 }
