@@ -20,6 +20,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
   Gui
   Quick
   QuickControls2
+  Sql
   Test)
 
 qt_standard_project_setup(REQUIRES 6.5)
@@ -44,6 +45,11 @@ add_library(templnote_core STATIC
   src/storage/AppPaths.cpp
   src/storage/DocumentListModel.h
   src/storage/DocumentListModel.cpp
+
+  src/search/SearchIndex.h
+  src/search/SearchIndex.cpp
+  src/search/SearchResultsModel.h
+  src/search/SearchResultsModel.cpp
 )
 
 target_include_directories(templnote_core PUBLIC
@@ -52,6 +58,7 @@ target_include_directories(templnote_core PUBLIC
 
 target_link_libraries(templnote_core PUBLIC
   Qt6::Core
+  Qt6::Sql
 )
 
 qt_add_executable(templnote
@@ -69,9 +76,14 @@ qt_add_qml_module(templnote
   qml/Editor.qml
   qml/BlockRenderer.qml
   qml/CommandMenu.qml
+  qml/SearchBar.qml
+  qml/SearchWindow.qml
+  qml/ResultsList.qml
+  qml/ResultPreview.qml
   qml/PromptPanel.qml
   qml/NavigationRail.qml
   qml/FileExplorer.qml
+  qml/OptionsMenu.qml
   qml/SettingsWindow.qml
 
   qml/settings/AppearanceSettings.qml
@@ -87,6 +99,10 @@ qt_add_qml_module(templnote
   qml/blocks/HeadingBlock.qml
   qml/blocks/BulletBlock.qml
   qml/blocks/NumberedBlock.qml
+
+  qml/SearchService/SearchService.qml
+  qml/SearchService/LocalSearchService.qml
+  qml/SearchService/HighlightService.qml
 
   RESOURCES
   assets/icons/ic_fluent_folder_20_regular.svg
@@ -117,6 +133,8 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_chevron_left_20_regular.svg
   assets/icons/ic_fluent_document_20_regular.svg
   assets/icons/ic_fluent_folder_add_20_regular.svg
+  assets/icons/ic_fluent_line_horizontal_3_20_regular.svg
+  assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

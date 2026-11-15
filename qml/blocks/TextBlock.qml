@@ -38,8 +38,20 @@ Item {
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
+  signal caretMoved(int position)
 
   property bool commandMenuActive: false
+
+  // Search highlight ranges for this block: [{ start, length, active }].
+  property var searchHighlights: []
+
+  // Set while the editor is in global-search navigation mode. In that mode
+  // Up/Down cycle matches and Escape removes the highlights.
+  property bool searchNavigationActive: false
+
+  signal searchNavigated(int direction)
+  signal searchDismissed()
+  signal searchEditStarted()
 
   function focusEditor(position) {
     editor.focus = true
@@ -72,6 +84,15 @@ Item {
     editor.cursorVisible = true
   }
 
+  function focusEditorRange(start, end) {
+    editor.focus = true
+    editor.forceActiveFocus()
+
+    editor.cursorPosition = start
+    editor.select(start, end)
+    editor.cursorVisible = true
+  }
+
   function refreshFromModel() {
     editor.text = root.content
   }
@@ -89,6 +110,8 @@ Item {
     editor.cursorPosition = editor.length
     root.syncingFromModel = false
   }
+
+  onSearchHighlightsChanged: searchHighlightsCanvas.requestPaint()
 
   implicitHeight: contentColumn.implicitHeight + root.verticalPadding * 2
 
@@ -157,6 +180,102 @@ Item {
         height: parent.height
         clip: false
 
+        // Painted behind the text. Canvas lets a single match span several
+        // wrapped lines without creating one item per character.
+        Canvas {
+          id: searchHighlightsCanvas
+
+          anchors.fill: parent
+          visible: root.searchHighlights.length > 0
+          onWidthChanged: requestPaint()
+          onHeightChanged: requestPaint()
+          onVisibleChanged: if (visible) requestPaint()
+
+          Connections {
+            target: editor
+
+            function onTextChanged() {
+              if (searchHighlightsCanvas.visible)
+                searchHighlightsCanvas.requestPaint()
+            }
+          }
+
+          Connections {
+            target: Theme
+
+            function onAccentChanged() {
+              if (searchHighlightsCanvas.visible)
+                searchHighlightsCanvas.requestPaint()
+            }
+          }
+
+          onPaint: {
+            const ctx = getContext("2d")
+            ctx.clearRect(0, 0, width, height)
+
+            const highlights = root.searchHighlights
+
+            if (!highlights || highlights.length === 0)
+              return
+
+            for (let h = 0; h < highlights.length; ++h) {
+              const highlight = highlights[h]
+
+              ctx.fillStyle = highlight.active
+                  ? Theme.tint(Theme.accent, 0.40)
+                  : Theme.tint(Theme.accent, 0.16)
+
+              let runLeft = -1
+              let runRight = -1
+              let runTop = 0
+              let runHeight = 0
+
+              function flushRun() {
+                if (runLeft < 0)
+                  return
+
+                ctx.fillRect(runLeft, runTop,
+                             Math.max(1, runRight - runLeft), runHeight)
+                runLeft = -1
+                runRight = -1
+              }
+
+              // positionToRectangle() returns a 1px caret rect, not a full
+              // character cell. Use the next caret position to find the right
+              // edge of each character and merge cells that share a line.
+              for (let i = highlight.start;
+                   i < highlight.start + highlight.length; ++i) {
+                if (editor.text.charAt(i) === "\n")
+                  continue
+
+                const rect = editor.positionToRectangle(i)
+                const nextRect = editor.positionToRectangle(i + 1)
+                const sameLine = Math.abs(nextRect.y - rect.y) < 1
+                const cellRight = sameLine
+                    ? Math.max(rect.x + 1, nextRect.x)
+                    // The final character on a soft-wrapped line extends to
+                    // the right edge of the text area.
+                    : Math.max(rect.x + 1,
+                               editor.width - editor.rightPadding)
+
+                if (runLeft >= 0 && Math.abs(rect.y - runTop) < 1) {
+                  runRight = Math.max(runRight, cellRight)
+                  runHeight = Math.max(runHeight, rect.height)
+                } else {
+                  flushRun()
+
+                  runLeft = rect.x
+                  runRight = cellRight
+                  runTop = rect.y
+                  runHeight = rect.height
+                }
+              }
+
+              flushRun()
+            }
+          }
+        }
+
         TextArea {
           id: editor
           anchors.fill: parent
@@ -175,6 +294,16 @@ Item {
 
           background: null
 
+          onCursorPositionChanged: {
+            if (editor.activeFocus)
+              root.caretMoved(editor.cursorPosition)
+          }
+
+          onActiveFocusChanged: {
+            if (editor.activeFocus)
+              root.caretMoved(editor.cursorPosition)
+          }
+
           Component.onCompleted: {
             editor.text = root.content
           }
@@ -182,6 +311,12 @@ Item {
           onTextChanged: {
             if (root.transformingShortcut || root.syncingFromModel)
               return
+
+            // The first real edit ends the global-search navigation session.
+            // The signal clears the highlight state before the model sees the
+            // new text.
+            if (root.searchNavigationActive)
+              root.searchEditStarted()
 
             if (root.blockType === 0 && text.startsWith("/") && text.indexOf(" ") < 0)
               root.commandMenuRequested(text.substring(1), editor.cursorRectangle.x, editor.cursorRectangle.y)
@@ -293,6 +428,26 @@ Item {
                 return
               }
             }
+            // Global-search navigation keeps focus in the document, so the
+            // block itself has to own the match navigation keys.
+            if (root.searchNavigationActive) {
+              if (event.key === Qt.Key_Escape) {
+                event.accepted = true
+                // Drop the selection the active match left behind while
+                // keeping the caret where it was.
+                editor.deselect()
+                root.searchDismissed()
+                return
+              }
+              if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+                event.accepted = true
+                root.searchNavigated(event.key === Qt.Key_Up ? -1 : 1)
+                return
+              }
+              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                root.searchEditStarted()
+            }
+
             // TextArea has its own per-editor undo stack, which would only
             // undo the block that currently has focus. Intercept the standard
             // shortcuts and use the document-wide history in BlockModel

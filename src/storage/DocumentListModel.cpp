@@ -4,7 +4,9 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -298,6 +300,7 @@ bool DocumentListModel::renameFolder(const QString &path,
   }
 
   refresh();
+  emit pathRenamed(oldPath, newPath);
   return true;
 }
 
@@ -359,6 +362,7 @@ QString DocumentListModel::renameDocument(const QString &path,
   }
 
   refresh();
+  emit pathRenamed(oldPath, newPath);
   return newPath;
 }
 
@@ -420,6 +424,7 @@ bool DocumentListModel::deleteEntry(const QString &path) {
   }
 
   refresh();
+  emit pathRemoved(absolute);
   return true;
 }
 
@@ -437,5 +442,92 @@ QString DocumentListModel::filePathAt(int row) const {
     return {};
 
   return m_entries[row].filePath;
+}
+
+QVariantList DocumentListModel::searchEntries(const QString &query) const {
+  const QString needle = query.trimmed();
+
+  if (needle.isEmpty() || m_rootDirectory.isEmpty())
+    return {};
+
+  QVector<Entry> folders;
+  QVector<Entry> files;
+  QHash<QString, QString> containingPaths;
+
+  QDirIterator iterator(
+      m_rootDirectory,
+      QDir::Dirs | QDir::Files | QDir::Readable | QDir::NoDotAndDotDot,
+      QDirIterator::Subdirectories);
+
+  while (iterator.hasNext()) {
+    iterator.next();
+
+    const QFileInfo info = iterator.fileInfo();
+    const bool isFolder = info.isDir();
+
+    if (!isFolder &&
+        info.suffix().compare(QStringLiteral("templnote"),
+                              Qt::CaseInsensitive) != 0) {
+      continue;
+    }
+
+    // Display the same name the explorer list uses for documents.
+    const QString name =
+        isFolder ? info.fileName() : info.completeBaseName();
+
+    if (!name.contains(needle, Qt::CaseInsensitive))
+      continue;
+
+    const QString absolutePath = QDir::cleanPath(info.absoluteFilePath());
+    QString relativeParent =
+        QDir(m_rootDirectory).relativeFilePath(info.absolutePath());
+
+    if (relativeParent == QStringLiteral("."))
+      relativeParent.clear();
+
+    containingPaths.insert(absolutePath, relativeParent);
+
+    const Entry entry{name, absolutePath, info.lastModified(), isFolder};
+
+    if (isFolder)
+      folders.append(entry);
+    else
+      files.append(entry);
+  }
+
+  const auto lessThan = [](const Entry &left, const Entry &right) {
+    const int byName = left.name.localeAwareCompare(right.name);
+
+    if (byName != 0)
+      return byName < 0;
+
+    return left.filePath.localeAwareCompare(right.filePath) < 0;
+  };
+
+  std::sort(folders.begin(), folders.end(), lessThan);
+  std::sort(files.begin(), files.end(), lessThan);
+
+  QVariantList results;
+  results.reserve(folders.size() + files.size());
+
+  for (const Entry &entry : std::as_const(folders)) {
+    results.append(QVariantMap{
+        {QStringLiteral("name"), entry.name},
+        {QStringLiteral("filePath"), entry.filePath},
+        {QStringLiteral("isFolder"), entry.isFolder},
+        {QStringLiteral("relativePath"), containingPaths.value(entry.filePath)},
+    });
+  }
+
+  for (const Entry &entry : std::as_const(files)) {
+    results.append(QVariantMap{
+        {QStringLiteral("name"), entry.name},
+        {QStringLiteral("filePath"), entry.filePath},
+        {QStringLiteral("isFolder"), entry.isFolder},
+        {QStringLiteral("relativePath"), containingPaths.value(entry.filePath)},
+    });
+  }
+
+  return results;
 }
 } // namespace Templnote

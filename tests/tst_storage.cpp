@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -348,6 +349,80 @@ private slots:
     QVERIFY(QFileInfo::exists(newPath));
     QVERIFY(!QFileInfo::exists(docPath));
     QCOMPARE(model.filePathAt(0), newPath);
+  }
+
+  void searchEntriesFindsNestedFoldersAndFiles() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    const QString root = directory.path();
+    QVERIFY(QDir().mkpath(QDir(root).filePath("Projects/Work")));
+    QVERIFY(QDir().mkpath(QDir(root).filePath("Archive")));
+
+    for (const QString &path :
+         {QDir(root).filePath("Project Plan.templnote"),
+          QDir(root).filePath("Projects/Project Notes.templnote"),
+          QDir(root).filePath("Projects/Work/Project Ideas.templnote"),
+          QDir(root).filePath("Archive/Unrelated.templnote")}) {
+      QFile file(path);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write("{}");
+      file.close();
+    }
+
+    DocumentListModel model(root);
+    QCOMPARE(model.searchEntries(QString()).size(), 0);
+    QCOMPARE(model.searchEntries(QStringLiteral("   ")).size(), 0);
+
+    const QVariantList results = model.searchEntries(QStringLiteral("project"));
+    QCOMPARE(results.size(), 4);
+
+    // Folders come first, then files, each group sorted by name.
+    QCOMPARE(results.at(0).toMap().value("name").toString(),
+             QStringLiteral("Projects"));
+    QVERIFY(results.at(0).toMap().value("isFolder").toBool());
+    QCOMPARE(results.at(0).toMap().value("relativePath").toString(),
+             QString());
+
+    QSet<QString> names;
+    QSet<QString> relativePaths;
+    bool folderSeen = false;
+    bool fileSeen = false;
+
+    for (const QVariant &value : results) {
+      const QVariantMap result = value.toMap();
+      const QString name = result.value("name").toString();
+
+      names.insert(name);
+
+      if (result.value("isFolder").toBool()) {
+        folderSeen = true;
+        QVERIFY(!fileSeen);
+      } else {
+        fileSeen = true;
+        QCOMPARE(result.value("relativePath").toString(),
+                 QDir(root).relativeFilePath(
+                     QFileInfo(result.value("filePath").toString())
+                         .absolutePath()));
+      }
+
+      if (name == QStringLiteral("Project Ideas")) {
+        relativePaths.insert(result.value("relativePath").toString());
+      }
+    }
+
+    QVERIFY(folderSeen);
+    QVERIFY(fileSeen);
+    QVERIFY(names.contains(QStringLiteral("Project Plan")));
+    QVERIFY(names.contains(QStringLiteral("Project Notes")));
+    QVERIFY(names.contains(QStringLiteral("Project Ideas")));
+    QCOMPARE(relativePaths.size(), 1);
+    QCOMPARE(relativePaths.values().first(), QStringLiteral("Projects/Work"));
+    QVERIFY(!names.contains(QStringLiteral("Unrelated")));
+
+    // Matching is case-insensitive and ignores the file extension.
+    QCOMPARE(model.searchEntries(QStringLiteral("PROJECT")).size(), 4);
+    QCOMPARE(model.searchEntries(QStringLiteral("unrelated")).size(), 1);
   }
 };
 

@@ -9,7 +9,7 @@ Rectangle {
   signal commandSelected(var command)
   width: 240
   height: Math.min(312, 56 + filtered.count * 42)
-  radius: 12
+  radius: 8
   color: Theme.surface
   border.color: Theme.border
   border.width: 1
@@ -66,7 +66,7 @@ Rectangle {
       width: ListView.view.width
       height: 42
       color: index === root.selectedIndex ? Theme.surfaceHover : "transparent"
-      Text { x: 16; anchors.verticalCenter: parent.verticalCenter; text: model.label; color: Theme.text; font.pixelSize: 15 }
+      Text { x: 16; anchors.verticalCenter: parent.verticalCenter; text: model.label; color: Theme.text; font.pixelSize: 13 }
       Text { x: 150; anchors.verticalCenter: parent.verticalCenter; text: model.shortcut; color: Theme.textMuted; font.pixelSize: 12 }
       MouseArea { id: mouse; anchors.fill: parent; hoverEnabled: true; onClicked: root.commandSelected(filtered.get(index)) }
     }

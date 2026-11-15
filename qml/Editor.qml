@@ -10,6 +10,147 @@ Item {
   property real contentWidth: 800
   property var activeCommandDelegate: null
 
+  // Search state. The find bar owns the query and passes the complete match
+  // list here; the delegates only render the matches for their own block.
+  property var searchMatches: []
+  property int activeSearchMatch: -1
+  property bool searchActive: false
+
+  // True while the highlights come from the global search window. In this
+  // mode the editor keeps focus, so Up/Down cycle matches, Escape dismisses
+  // the highlights, and the first edit returns to normal writing.
+  property bool searchNavigationActive: false
+
+  // Last caret seen in the document, used to start local search at the first
+  // match at or after the caret.
+  property string caretBlockId: ""
+  property int caretPosition: 0
+
+  function setSearchActive(active) {
+    root.searchActive = active
+  }
+
+  function caretContext() {
+    const row = root.caretBlockId.length > 0
+                ? root.model.indexOfBlock(root.caretBlockId)
+                : -1
+
+    if (row < 0)
+      return { row: 0, position: 0 }
+
+    return { row: row, position: root.caretPosition }
+  }
+
+  function setSearchMatches(matches, activeIndex) {
+    root.searchMatches = matches
+    root.activeSearchMatch = activeIndex
+
+    if (activeIndex >= 0 && activeIndex < matches.length)
+      root.scrollToSearchMatch(matches[activeIndex])
+  }
+
+  function clearSearch() {
+    root.searchMatches = []
+    root.activeSearchMatch = -1
+    root.searchNavigationActive = false
+  }
+
+  function setSearchNavigationActive(active) {
+    root.searchNavigationActive = active && root.searchMatches.length > 0
+  }
+
+  // Cycles the global-search selection. Called from the focused block when
+  // the user presses Up/Down, mirroring the local find bar behaviour.
+  function moveSearchMatch(direction) {
+    if (!root.searchNavigationActive || root.searchMatches.length === 0)
+      return
+
+    const count = root.searchMatches.length
+    let next = root.activeSearchMatch + direction
+
+    if (next < 0)
+      next = count - 1
+    else if (next >= count)
+      next = 0
+
+    const match = root.searchMatches[next]
+
+    root.activeSearchMatch = next
+    root.scrollToSearchMatch(match)
+    root.focusSearchMatch(match)
+  }
+
+  // Escape during global-search navigation only drops the highlights; the
+  // caret stays on the match the user navigated to.
+  function dismissSearchHighlights() {
+    if (!root.searchNavigationActive)
+      return
+
+    root.clearSearch()
+  }
+
+  function scrollToSearchMatch(match) {
+    const row = root.model.indexOfBlock(match.blockId)
+
+    if (row < 0)
+      return
+
+    documentView.forceLayout()
+
+    Qt.callLater(function() {
+      documentView.positionViewAtIndex(row, ListView.Contain)
+    })
+  }
+
+  // Enter on the find bar: move the caret into the matched block and select
+  // the matched range so it stays visible after the highlights are cleared.
+  function focusSearchMatch(match) {
+    const row = root.model.indexOfBlock(match.blockId)
+
+    if (row < 0)
+      return
+
+    documentView.positionViewAtIndex(row, ListView.Contain)
+    documentView.forceLayout()
+
+    Qt.callLater(function() {
+      const delegate = documentView.itemAtIndex(row)
+
+      if (delegate) {
+        delegate.refreshBlock()
+        delegate.focusBlockAtRange(match.start, match.start + match.length)
+      }
+    })
+  }
+
+  // Returns the highlight descriptors for one block. Compared by blockId
+  // because the row can change while the find bar is open.
+  function searchHighlightsFor(blockId) {
+    const highlights = []
+    const active = root.activeSearchMatch >= 0
+                   && root.activeSearchMatch < root.searchMatches.length
+                 ? root.searchMatches[root.activeSearchMatch]
+                 : null
+
+    for (let i = 0; i < root.searchMatches.length; ++i) {
+      const match = root.searchMatches[i]
+
+      if (match.blockId !== blockId)
+        continue
+
+      highlights.push({
+        start: match.start,
+        length: match.length,
+        active: active !== null
+                && active.blockId === match.blockId
+                && active.start === match.start
+                && active.length === match.length
+      })
+    }
+
+    return highlights
+  }
+
   function focusDelegateAt(row, position, attempt) {
     const focusAttempt = attempt === undefined ? 0 : attempt
 
@@ -149,7 +290,7 @@ Item {
       bottom: parent.bottom
       horizontalCenter: parent.horizontalCenter
 
-      topMargin: 48
+      topMargin: root.searchActive ? 96 : 48
       bottomMargin: 160
     }
 
@@ -186,6 +327,10 @@ Item {
         renderer.focusEditorAtX(xPosition)
       }
 
+      function focusBlockAtRange(start, end) {
+        renderer.focusEditorRange(start, end)
+      }
+
       function applyCommand(command) {
         if (!command)
           return
@@ -214,6 +359,27 @@ Item {
         blockType: delegateRoot.blockType
         headingLevel: delegateRoot.headingLevel
         numberIndex: delegateRoot.numberIndex
+        searchHighlights: root.searchHighlightsFor(delegateRoot.blockId)
+        searchNavigationActive: root.searchNavigationActive
+
+        onCaretMoved: function(position) {
+          root.caretBlockId = delegateRoot.blockId
+          root.caretPosition = position
+        }
+
+        onSearchNavigated: function(direction) {
+          root.moveSearchMatch(direction)
+        }
+
+        onSearchDismissed: {
+          root.dismissSearchHighlights()
+        }
+
+        onSearchEditStarted: {
+          // Typing or pressing Enter ends the navigation session before the
+          // text change reaches the model.
+          root.dismissSearchHighlights()
+        }
 
         onMoveFocusRequested: function(direction, xPosition) {
           const targetIndex = delegateRoot.index + direction

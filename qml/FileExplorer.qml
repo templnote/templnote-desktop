@@ -15,12 +15,118 @@ Rectangle {
   // Item that is currently being renamed inline after creation or rename click.
   property string editingEntryPath: ""
 
+  // Recursive folder/file search shown in place of the normal entry list.
+  property bool searchVisible: false
+  property string searchQuery: ""
+  property var searchResults: []
+  property int searchIndex: -1
+
+  readonly property bool searchHasResults: searchResults.length > 0
+
   // Deletion confirmation requested signal to display centered floating dialog at window level.
   signal deleteRequested(string path, string name, bool isFolder)
   signal newDocumentCreated()
 
   function confirmDelete(path, name, isFolder) {
     root.deleteRequested(path, name, isFolder)
+  }
+
+  function toggleSearch() {
+    if (root.searchVisible)
+      root.closeSearch(true)
+    else
+      root.openSearch()
+  }
+
+  function openSearch() {
+    root.searchVisible = true
+    root.searchQuery = ""
+    root.searchResults = []
+    root.searchIndex = -1
+
+    Qt.callLater(function() {
+      searchField.forceActiveFocus()
+      searchField.selectAll()
+    })
+  }
+
+  // `restoreFocus` is false when the caller is about to move focus by
+  // activating a result.
+  function closeSearch(restoreFocus) {
+    if (!root.searchVisible)
+      return
+
+    root.searchVisible = false
+    root.searchQuery = ""
+    root.searchResults = []
+    root.searchIndex = -1
+    searchField.text = ""
+
+    if (restoreFocus)
+      documentView.forceActiveFocus()
+  }
+
+  function updateSearch(text) {
+    root.searchQuery = text
+    root.searchResults = text.trim().length > 0 && root.documentList
+                        ? root.documentList.searchEntries(text)
+                        : []
+    root.searchIndex = root.searchResults.length > 0 ? 0 : -1
+    root.scrollToSearchIndex()
+  }
+
+  function scrollToSearchIndex() {
+    Qt.callLater(function() {
+      if (root.searchVisible && root.searchIndex >= 0)
+        searchView.positionViewAtIndex(root.searchIndex, ListView.Contain)
+    })
+  }
+
+  function moveSearch(direction) {
+    if (root.searchResults.length === 0)
+      return
+
+    const count = root.searchResults.length
+    let next = root.searchIndex + direction
+
+    if (next < 0)
+      next = count - 1
+    else if (next >= count)
+      next = 0
+
+    root.searchIndex = next
+    root.scrollToSearchIndex()
+  }
+
+  function activateSearch(index) {
+    if (index < 0 || index >= root.searchResults.length)
+      return
+
+    const result = root.searchResults[index]
+
+    root.closeSearch(false)
+
+    if (!root.documentList || !root.documentModel)
+      return
+
+    if (result.isFolder) {
+      root.documentList.enterFolder(result.filePath)
+      return
+    }
+
+    // Reveal the containing folder so the opened document is visible in the
+    // explorer again.
+    const separator = result.filePath.lastIndexOf("/")
+
+    if (separator > 0) {
+      const parentDirectory = result.filePath.substring(0, separator)
+
+      if (root.documentList.directory !== parentDirectory)
+        root.documentList.navigateTo(parentDirectory)
+    }
+
+    if (root.documentModel.loadDocument(result.filePath))
+      root.documentList.currentFilePath = result.filePath
   }
 
   function createDocument() {
@@ -112,7 +218,7 @@ Rectangle {
         top: parent.top
         left: parent.left
         right: parent.right
-        topMargin: 24
+        topMargin: 10
         leftMargin: 20
         rightMargin: 16
       }
@@ -152,7 +258,7 @@ Rectangle {
             },
             {
               icon: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_search_20_regular.svg",
-              action: ""
+              action: "search"
             },
           ]
 
@@ -164,7 +270,8 @@ Rectangle {
             icon.source: modelData.icon
             icon.width: 20
             icon.height: 20
-            icon.color: Theme.textMuted
+            icon.color: modelData.action === "search" && root.searchVisible
+                        ? Theme.accent : Theme.textMuted
             width: (actionRow.width - actionRow.spacing * (actionRepeater.count - 1)) / actionRepeater.count
             height: 32
             padding: 0
@@ -186,6 +293,121 @@ Rectangle {
                 root.createFolder()
               else if (modelData.action === "newDocument")
                 root.createDocument()
+              else if (modelData.action === "search")
+                root.toggleSearch()
+            }
+          }
+        }
+      }
+
+      Rectangle {
+        id: searchBar
+
+        width: parent.width
+        height: 32
+        radius: 8
+        visible: root.searchVisible
+        color: Theme.background
+        border.width: 1
+        border.color: searchField.activeFocus ? Theme.accent : Theme.border
+
+        Row {
+          anchors {
+            fill: parent
+            leftMargin: 8
+            rightMargin: 6
+          }
+
+          spacing: 6
+
+          Item {
+            width: 14
+            height: parent.height
+
+            IconImage {
+              anchors.centerIn: parent
+              width: 14
+              height: 14
+              source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_search_20_regular.svg"
+              sourceSize.width: 14
+              sourceSize.height: 14
+              color: Theme.textFaint
+            }
+          }
+
+          TextField {
+            id: searchField
+
+            width: parent.width - 14 - searchCount.width - searchClose.width
+                   - parent.spacing * 3
+            height: parent.height
+            placeholderText: "Search files and folders"
+            placeholderTextColor: Theme.textFaint
+            color: Theme.text
+            font.pixelSize: 13
+            padding: 0
+            background: null
+            selectByMouse: true
+
+            onTextChanged: root.updateSearch(text)
+
+            Keys.onUpPressed: function(event) {
+              event.accepted = true
+              root.moveSearch(-1)
+            }
+
+            Keys.onDownPressed: function(event) {
+              event.accepted = true
+              root.moveSearch(1)
+            }
+
+            Keys.onReturnPressed: function(event) {
+              event.accepted = true
+              root.activateSearch(root.searchIndex)
+            }
+
+            Keys.onEnterPressed: function(event) {
+              event.accepted = true
+              root.activateSearch(root.searchIndex)
+            }
+
+            Keys.onEscapePressed: function(event) {
+              event.accepted = true
+              root.closeSearch(true)
+            }
+          }
+
+          Text {
+            id: searchCount
+
+            width: implicitWidth
+            height: parent.height
+            visible: root.searchQuery.length > 0
+            text: root.searchResults.length
+            color: Theme.textFaint
+            font.pixelSize: 11
+            verticalAlignment: Text.AlignVCenter
+          }
+
+          Item {
+            id: searchClose
+
+            width: 20
+            height: parent.height
+
+            Text {
+              anchors.centerIn: parent
+              text: "✕"
+              color: searchCloseMouse.containsMouse ? Theme.accent : Theme.textMuted
+              font.pixelSize: 11
+            }
+
+            MouseArea {
+              id: searchCloseMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.closeSearch(true)
             }
           }
         }
@@ -302,8 +524,30 @@ Rectangle {
         rightMargin: 16
       }
 
-      visible: !root.documentList || root.documentList.count === 0
+      visible: !root.searchVisible
+               && (!root.documentList || root.documentList.count === 0)
       text: "This folder is empty"
+      color: Theme.textFaint
+      font.pixelSize: 13
+      wrapMode: Text.WordWrap
+    }
+
+    Text {
+      id: searchEmptyState
+
+      anchors {
+        top: header.bottom
+        left: parent.left
+        right: parent.right
+        topMargin: 12
+        leftMargin: 20
+        rightMargin: 16
+      }
+
+      visible: root.searchVisible && !root.searchHasResults
+      text: root.searchQuery.length > 0
+            ? "No matching files or folders"
+            : "Type to search files and folders"
       color: Theme.textFaint
       font.pixelSize: 13
       wrapMode: Text.WordWrap
@@ -324,6 +568,7 @@ Rectangle {
       }
 
       model: root.documentList
+      visible: !root.searchVisible
       spacing: 2
       clip: true
       boundsBehavior: Flickable.StopAtBounds
@@ -568,6 +813,107 @@ Rectangle {
             onActiveFocusChanged: {
               if (!activeFocus && entry.renamingEntry)
                 root.commitRename(entry.filePath, entry.draftName, entry.isFolder)
+            }
+          }
+        }
+      }
+    }
+
+    ListView {
+      id: searchView
+
+      anchors {
+        top: header.bottom
+        left: parent.left
+        right: parent.right
+        bottom: parent.bottom
+        topMargin: 12
+        leftMargin: 12
+        rightMargin: 12
+        bottomMargin: 16
+      }
+
+      model: root.searchResults
+      visible: root.searchVisible
+      spacing: 2
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+
+      delegate: Item {
+        id: searchEntry
+
+        required property var modelData
+        required property int index
+
+        width: searchView.width
+        height: 44
+
+        Rectangle {
+          anchors.fill: parent
+          radius: 8
+          color: searchEntry.index === root.searchIndex
+                 ? Theme.tint(Theme.accent, 0.16)
+                 : searchEntryMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+          Behavior on color {
+            ColorAnimation {
+              duration: 120
+              easing.type: Easing.OutCubic
+            }
+          }
+        }
+
+        MouseArea {
+          id: searchEntryMouse
+
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+
+          onClicked: root.activateSearch(searchEntry.index)
+        }
+
+        Row {
+          anchors {
+            fill: parent
+            leftMargin: 10
+            rightMargin: 10
+          }
+
+          spacing: 8
+
+          IconImage {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 16
+            height: 16
+            source: searchEntry.modelData.isFolder
+                    ? "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_folder_20_regular.svg"
+                    : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_document_20_regular.svg"
+            sourceSize.width: 16
+            sourceSize.height: 16
+            color: searchEntry.index === root.searchIndex ? Theme.accent : Theme.textMuted
+          }
+
+          Column {
+            width: parent.width - 24
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 1
+
+            Text {
+              width: parent.width
+              text: searchEntry.modelData.name
+              color: searchEntry.index === root.searchIndex ? Theme.text : Theme.textMuted
+              font.pixelSize: 13
+              elide: Text.ElideRight
+            }
+
+            Text {
+              width: parent.width
+              visible: searchEntry.modelData.relativePath.length > 0
+              text: searchEntry.modelData.relativePath
+              color: Theme.textFaint
+              font.pixelSize: 11
+              elide: Text.ElideMiddle
             }
           }
         }

@@ -81,10 +81,25 @@ public:
   // Path of the entry at `row`, or an empty string when out of range.
   Q_INVOKABLE QString filePathAt(int row) const;
 
+  // Recursively searches every folder and .templnote file below the model
+  // root by name (case-insensitive substring match). Each result is a map
+  // with name, filePath, isFolder and relativePath (the containing folder
+  // relative to the root, empty for root-level entries). An empty query
+  // returns an empty list.
+  Q_INVOKABLE QVariantList searchEntries(const QString &query) const;
+
 signals:
   void countChanged();
   void directoryChanged();
   void currentFilePathChanged();
+
+  // Emitted after a file or folder has been renamed on disk. The search index
+  // uses this to move every indexed path below the old location.
+  void pathRenamed(const QString &oldPath, const QString &newPath);
+
+  // Emitted after a file or folder has been removed. Folders may have moved
+  // their children elsewhere, so the index also re-syncs with disk.
+  void pathRemoved(const QString &path);
 
 private:
   struct Entry {

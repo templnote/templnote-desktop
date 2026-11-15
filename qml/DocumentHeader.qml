@@ -172,7 +172,7 @@ Item {
     anchors {
       top: row.bottom
       left: row.left
-      topMargin: 2
+      topMargin: 10
     }
 
     visible: root.errorText.length > 0

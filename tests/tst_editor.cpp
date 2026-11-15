@@ -1,6 +1,7 @@
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QStandardPaths>
 #include <QtTest>
 
 #include "../src/model/BlockModel.h"
@@ -41,8 +42,55 @@ private:
 
   BlockModel *model() const { return m_window->findChild<BlockModel *>(); }
 
+  QQuickItem *editorItem() const {
+    return m_window->findChild<QQuickItem *>(QStringLiteral("editor"));
+  }
+
+  static QVariantMap matchAt(const QString &blockId, int start, int length) {
+    QVariantMap match;
+    match.insert(QStringLiteral("blockId"), blockId);
+    match.insert(QStringLiteral("start"), start);
+    match.insert(QStringLiteral("length"), length);
+    return match;
+  }
+
+  // Puts the editor into the state the global search window leaves behind
+  // after Enter: matches highlighted, first match active and focused.
+  QVariantList beginSearchNavigation(const QString &firstId,
+                                     const QString &secondId) {
+    QVariantList matches;
+    matches.append(matchAt(firstId, 0, 5));
+    matches.append(matchAt(firstId, 10, 5));
+    matches.append(matchAt(secondId, 0, 5));
+
+    QQuickItem *editor = editorItem();
+    if (!editor)
+      return {};
+
+    if (!QMetaObject::invokeMethod(editor, "setSearchMatches",
+                                   Q_ARG(QVariant, matches),
+                                   Q_ARG(QVariant, QVariant(0)))) {
+      return {};
+    }
+
+    if (!QMetaObject::invokeMethod(editor, "setSearchNavigationActive",
+                                   Q_ARG(QVariant, QVariant(true)))) {
+      return {};
+    }
+
+    if (!QMetaObject::invokeMethod(editor, "focusSearchMatch",
+                                   Q_ARG(QVariant, matches.at(0)))) {
+      return {};
+    }
+
+    return matches;
+  }
+
 private slots:
   void initTestCase() {
+    QStandardPaths::setTestModeEnabled(true);
+    QCoreApplication::setOrganizationName("TemplnoteTest");
+    QCoreApplication::setApplicationName("TemplnoteEditorTest");
     qmlRegisterType<BlockModel>("Templnote", 1, 0, "BlockModel");
   }
 
@@ -234,6 +282,88 @@ private slots:
     QCOMPARE(m_window->activeFocusItem(), textEditors[0]);
     QCOMPARE(textEditors[0]->property("cursorPosition").toInt(), 0);
     QVERIFY(textEditors[0]->property("cursorVisible").toBool());
+  }
+
+  void globalSearchNavigationCyclesMatchesAndEscapeDismisses() {
+    BlockModel *blockModel = model();
+    const QString firstId =
+        blockModel->data(blockModel->index(0, 0), BlockModel::BlockIdRole)
+            .toString();
+    const QString secondId =
+        blockModel->data(blockModel->index(1, 0), BlockModel::BlockIdRole)
+            .toString();
+    QVERIFY(blockModel->updateBlockText(firstId, "alpha one alpha"));
+    QVERIFY(blockModel->updateBlockText(secondId, "alpha two"));
+    QTest::qWait(100);
+
+    QQuickItem *editor = editorItem();
+    QVERIFY(editor);
+    QVERIFY(!beginSearchNavigation(firstId, secondId).isEmpty());
+
+    QTRY_COMPARE(editor->property("searchNavigationActive").toBool(), true);
+    QTRY_COMPARE(editor->property("activeSearchMatch").toInt(), 0);
+    QTRY_COMPARE(m_window->activeFocusItem(), editors()[0]);
+
+    QTest::keyClick(m_window, Qt::Key_Down);
+    QTRY_COMPARE(editor->property("activeSearchMatch").toInt(), 1);
+    QCOMPARE(m_window->activeFocusItem(), editors()[0]);
+
+    QTest::keyClick(m_window, Qt::Key_Down);
+    QTRY_COMPARE(editor->property("activeSearchMatch").toInt(), 2);
+    QTRY_COMPARE(m_window->activeFocusItem(), editors()[1]);
+
+    // Wraps back to the first match, like the local find bar.
+    QTest::keyClick(m_window, Qt::Key_Down);
+    QTRY_COMPARE(editor->property("activeSearchMatch").toInt(), 0);
+    QTRY_COMPARE(m_window->activeFocusItem(), editors()[0]);
+
+    QTest::keyClick(m_window, Qt::Key_Up);
+    QTRY_COMPARE(editor->property("activeSearchMatch").toInt(), 2);
+    QTRY_COMPARE(m_window->activeFocusItem(), editors()[1]);
+
+    QQuickItem *focusedEditor = m_window->activeFocusItem();
+    const int caretBefore = focusedEditor->property("cursorPosition").toInt();
+    const QString selectedBefore =
+        focusedEditor->property("selectedText").toString();
+    const QString textBefore = focusedEditor->property("text").toString();
+    QCOMPARE(selectedBefore, QStringLiteral("alpha"));
+
+    QTest::keyClick(m_window, Qt::Key_Escape);
+    QTRY_COMPARE(editor->property("searchNavigationActive").toBool(), false);
+    QCOMPARE(editor->property("searchMatches").toList().size(), 0);
+    QCOMPARE(editor->property("activeSearchMatch").toInt(), -1);
+
+    // Escape removes the highlights and the match selection, but keeps the
+    // caret and text in place.
+    QCOMPARE(focusedEditor->property("selectedText").toString(), QString());
+    QCOMPARE(focusedEditor->property("cursorPosition").toInt(), caretBefore);
+    QCOMPARE(focusedEditor->property("text").toString(), textBefore);
+  }
+
+  void globalSearchNavigationEndsOnEdit() {
+    BlockModel *blockModel = model();
+    const QString firstId =
+        blockModel->data(blockModel->index(0, 0), BlockModel::BlockIdRole)
+            .toString();
+    const QString secondId =
+        blockModel->data(blockModel->index(1, 0), BlockModel::BlockIdRole)
+            .toString();
+    QVERIFY(blockModel->updateBlockText(firstId, "alpha one alpha"));
+    QVERIFY(blockModel->updateBlockText(secondId, "alpha two"));
+    QTest::qWait(100);
+
+    QQuickItem *editor = editorItem();
+    QVERIFY(editor);
+    QVERIFY(!beginSearchNavigation(firstId, secondId).isEmpty());
+    QTRY_COMPARE(editor->property("searchNavigationActive").toBool(), true);
+    QTRY_COMPARE(m_window->activeFocusItem(), editors()[0]);
+
+    // The first match is selected; typing replaces it and ends navigation.
+    typeText(m_window, "x");
+    QTRY_COMPARE(editor->property("searchNavigationActive").toBool(), false);
+    QCOMPARE(editor->property("searchMatches").toList().size(), 0);
+    QCOMPARE(blockModel->document().blockAt(0)->text,
+             QStringLiteral("x one alpha"));
   }
 };
 

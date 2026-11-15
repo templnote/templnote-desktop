@@ -40,6 +40,20 @@ add_test(
     COMMAND tst_storage
 )
 
+add_executable(tst_searchindex
+    tst_searchindex.cpp
+)
+
+target_link_libraries(tst_searchindex PRIVATE
+    templnote_core
+    Qt6::Test
+)
+
+add_test(
+    NAME SearchIndexTests
+    COMMAND tst_searchindex
+)
+
 # QML regression tests: compile the editor QML into the test executable and
 # drive it with Qt Test. This keeps the app target untouched while still
 # exercising the real delegates, focus handling and undo/redo routing.
@@ -54,6 +68,13 @@ set_source_files_properties(
 foreach(qml_file
     Editor.qml
     BlockRenderer.qml
+    CommandMenu.qml
+    SearchWindow.qml
+    ResultsList.qml
+    ResultPreview.qml
+    SearchService/SearchService.qml
+    SearchService/LocalSearchService.qml
+    SearchService/HighlightService.qml
     blocks/TextBlock.qml
     blocks/ParagraphBlock.qml
     blocks/HeadingBlock.qml
@@ -79,6 +100,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/Theme.qml
     ${TEST_QML_DIR}/Editor.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
+    ${TEST_QML_DIR}/CommandMenu.qml
     ${TEST_QML_DIR}/blocks/TextBlock.qml
     ${TEST_QML_DIR}/blocks/ParagraphBlock.qml
     ${TEST_QML_DIR}/blocks/HeadingBlock.qml
@@ -99,6 +121,52 @@ add_test(
 )
 
 set_tests_properties(EditorQmlTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+)
+
+qt_add_executable(tst_searchwindow
+    tst_searchwindow.cpp
+)
+
+set(SEARCH_ICON
+    "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_search_20_regular.svg"
+)
+set_source_files_properties("${SEARCH_ICON}" PROPERTIES
+    QT_RESOURCE_ALIAS "assets/icons/ic_fluent_search_20_regular.svg"
+)
+
+qt_add_qml_module(tst_searchwindow
+    URI TemplnoteSearchTest
+    VERSION 1.0
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/searchwindow"
+
+    QML_FILES
+    SearchWindowTest.qml
+    ${TEST_QML_DIR}/Theme.qml
+    ${TEST_QML_DIR}/SearchWindow.qml
+    ${TEST_QML_DIR}/ResultsList.qml
+    ${TEST_QML_DIR}/ResultPreview.qml
+    ${TEST_QML_DIR}/SearchService/SearchService.qml
+    ${TEST_QML_DIR}/SearchService/LocalSearchService.qml
+    ${TEST_QML_DIR}/SearchService/HighlightService.qml
+
+    RESOURCES
+    ${SEARCH_ICON}
+)
+
+target_link_libraries(tst_searchwindow PRIVATE
+    templnote_core
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+)
+
+add_test(
+    NAME SearchWindowQmlTests
+    COMMAND tst_searchwindow
+)
+
+set_tests_properties(SearchWindowQmlTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
 )
 

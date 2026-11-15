@@ -22,6 +22,19 @@ ApplicationWindow {
     id: documentList
   }
 
+  SearchIndex {
+    id: searchIndex
+
+    blockModel: blockModel
+    documentList: documentList
+  }
+
+  SearchResultsModel {
+    id: searchResults
+
+    index: searchIndex
+  }
+
   Connections {
     target: blockModel
 
@@ -70,6 +83,26 @@ ApplicationWindow {
     context: Qt.ApplicationShortcut
     onActivated: {
       editor.redo()
+    }
+  }
+
+  Shortcut {
+    sequence: "Ctrl+/"
+    context: Qt.ApplicationShortcut
+    enabled: !searchWindow.visible
+    onActivated: searchBar.open()
+  }
+
+  Shortcut {
+    // Shift+/ is reported as '?' on some keyboard layouts, so bind both
+    // spellings of the same physical shortcut.
+    sequences: ["Ctrl+Shift+/", "Ctrl+Shift+?"]
+    context: Qt.ApplicationShortcut
+    onActivated: {
+      if (searchBar.visible)
+        searchBar.close(false)
+
+      searchWindow.open()
     }
   }
 
@@ -148,7 +181,23 @@ ApplicationWindow {
         top: parent.top
         left: parent.left
         leftMargin: 24
-        topMargin: 2
+        topMargin: 10
+      }
+    }
+
+    SearchBar {
+      id: searchBar
+
+      model: blockModel
+      editor: editor
+
+      width: Math.min(440, workspace.width - 48)
+      z: 4
+
+      anchors {
+        top: parent.top
+        topMargin: 56
+        horizontalCenter: parent.horizontalCenter
       }
     }
 
@@ -161,10 +210,26 @@ ApplicationWindow {
         bottom: parent.bottom
       }
     }
+
+    OptionsMenu {
+      id: optionsMenu
+      anchors.fill: parent
+      z: 3
+    }
   }
 
   SettingsWindow {
     id: settingsWindow
+  }
+
+  SearchWindow {
+    id: searchWindow
+
+    blockModel: blockModel
+    documentList: documentList
+    editor: editor
+    resultsModel: searchResults
+    searchIndex: searchIndex
   }
 
   // Centered floating modal window for delete confirmation with backdrop overlay.

@@ -19,6 +19,8 @@ ApplicationWindow {
   Editor {
     id: editor
 
+    objectName: "editor"
+
     anchors.fill: parent
     model: blockModel
   }

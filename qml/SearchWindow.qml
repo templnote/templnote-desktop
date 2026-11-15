@@ -1,0 +1,319 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Controls.impl
+import QtQuick.Layouts
+import "SearchService"
+
+// Full-window global search overlay. The query bar stays focused while the
+// SplitView shows grouped results on the left and the selected block on the
+// right.
+Item {
+  id: root
+
+  anchors.fill: parent
+  visible: false
+  z: 1600
+
+  property var blockModel: null
+  property var documentList: null
+  property var editor: null
+  property var resultsModel: null
+  property var searchIndex: null
+
+  property var previousFocus: null
+  property int currentIndex: -1
+  property var currentResult: null
+
+  property alias query: searchField.text
+
+  signal closed()
+
+  LocalSearchService {
+    id: localSearch
+  }
+
+  function open() {
+    if (root.visible) {
+      searchField.forceActiveFocus()
+      searchField.selectAll()
+      return
+    }
+
+    root.previousFocus = Window.window ? Window.window.activeFocusItem : null
+
+    if (root.searchIndex)
+      root.searchIndex.syncIncremental()
+
+    root.visible = true
+    searchField.forceActiveFocus()
+    searchField.selectAll()
+    root.runSearch()
+  }
+
+  function close(restoreFocus) {
+    if (!root.visible)
+      return
+
+    const shouldRestore = restoreFocus === undefined ? true : restoreFocus
+    const focusTarget = root.previousFocus
+
+    root.visible = false
+    root.previousFocus = null
+    searchField.text = ""
+
+    if (root.resultsModel)
+      root.resultsModel.search("")
+
+    root.currentIndex = -1
+    root.currentResult = null
+    resultsList.selectedIndex = -1
+    preview.result = null
+
+    if (shouldRestore && focusTarget)
+      focusTarget.forceActiveFocus()
+
+    root.closed()
+  }
+
+  function runSearch() {
+    if (!root.visible || !root.resultsModel)
+      return
+
+    root.resultsModel.search(root.query)
+
+    if (root.resultsModel.count === 0) {
+      root.currentIndex = -1
+      root.currentResult = null
+      resultsList.selectedIndex = -1
+      preview.result = null
+      return
+    }
+
+    root.selectResult(0)
+  }
+
+  function selectResult(index) {
+    if (!root.resultsModel || root.resultsModel.count === 0) {
+      root.currentIndex = -1
+      root.currentResult = null
+      resultsList.selectedIndex = -1
+      preview.result = null
+      return
+    }
+
+    const count = root.resultsModel.count
+    let next = index % count
+
+    if (next < 0)
+      next += count
+
+    root.currentIndex = next
+    root.currentResult = root.resultsModel.resultAt(next)
+    resultsList.selectedIndex = next
+    preview.result = root.currentResult
+
+    Qt.callLater(function() {
+      resultsList.positionCurrent()
+    })
+  }
+
+  function move(direction) {
+    if (!root.resultsModel || root.resultsModel.count === 0)
+      return
+
+    root.selectResult(root.currentIndex + direction)
+  }
+
+  function accept() {
+    if (root.currentIndex < 0 || !root.currentResult)
+      return
+
+    const result = root.currentResult
+    const searchQuery = root.query
+    const targetPath = result.documentPath
+    const targetBlockId = result.blockId
+
+    root.close(false)
+
+    if (!root.blockModel || targetPath.length === 0)
+      return
+
+    if (root.blockModel.currentFilePath !== targetPath) {
+      if (!root.blockModel.loadDocument(targetPath))
+        return
+
+      if (root.documentList)
+        root.documentList.currentFilePath = targetPath
+    }
+
+    Qt.callLater(function() {
+      // Recompute from the loaded model rather than trusting possibly stale
+      // index ranges. All query terms are highlighted, matching the preview.
+      const matches = localSearch.searchTerms(root.blockModel, searchQuery)
+      let active = -1
+
+      for (let i = 0; i < matches.length; ++i) {
+        if (matches[i].blockId === targetBlockId) {
+          active = i
+          break
+        }
+      }
+
+      if (active < 0 && matches.length > 0)
+        active = 0
+
+      if (root.editor) {
+        root.editor.setSearchMatches(matches, active)
+
+        if (root.editor.setSearchNavigationActive)
+          root.editor.setSearchNavigationActive(active >= 0)
+
+        if (active >= 0)
+          root.editor.focusSearchMatch(matches[active])
+      }
+    })
+  }
+
+  // Dimmed backdrop. Clicking it dismisses the search window.
+  Rectangle {
+    anchors.fill: parent
+    color: Qt.rgba(0, 0, 0, 0.48)
+
+    MouseArea {
+      anchors.fill: parent
+      onClicked: root.close(true)
+    }
+  }
+
+  Rectangle {
+    id: panel
+
+    anchors.centerIn: parent
+    width: Math.min(parent.width - 80, 1040)
+    height: Math.min(parent.height - 80, 700)
+    radius: 10
+    color: Theme.background
+    border.width: 1
+    border.color: Theme.border
+
+    // Swallow clicks so clicking inside the panel does not dismiss it.
+    MouseArea {
+      anchors.fill: parent
+    }
+
+    ColumnLayout {
+      anchors.fill: parent
+      anchors.margins: 16
+      spacing: 10
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: 10
+
+        IconImage {
+          Layout.preferredWidth: 18
+          Layout.preferredHeight: 18
+          source: Qt.resolvedUrl("../assets/icons/ic_fluent_search_20_regular.svg")
+          sourceSize.width: 18
+          sourceSize.height: 18
+          color: Theme.textFaint
+        }
+
+        TextField {
+          id: searchField
+
+          Layout.fillWidth: true
+          Layout.preferredHeight: 34
+          padding: 0
+          topPadding: 0
+          bottomPadding: 0
+
+          color: Theme.text
+          selectionColor: Theme.accent
+          selectedTextColor: Theme.accentText
+          placeholderText: "Search all documents"
+          placeholderTextColor: Theme.textFaint
+          font.pixelSize: 15
+          selectByMouse: true
+          background: null
+
+          onTextChanged: {
+            if (root.visible)
+              root.runSearch()
+          }
+
+          onAccepted: root.accept()
+
+          Keys.onUpPressed: function(event) {
+            event.accepted = true
+            root.move(-1)
+          }
+
+          Keys.onDownPressed: function(event) {
+            event.accepted = true
+            root.move(1)
+          }
+
+          Keys.onEscapePressed: function(event) {
+            event.accepted = true
+            root.close(true)
+          }
+        }
+
+        Text {
+          visible: searchField.text.length > 0
+          text: root.resultsModel
+                ? root.resultsModel.count
+                  + (root.resultsModel.count === 1 ? " result"
+                                                   : " results")
+                : ""
+          color: Theme.textMuted
+          font.pixelSize: 11
+        }
+      }
+
+      Rectangle {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 1
+        color: Theme.border
+      }
+
+      SplitView {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        orientation: Qt.Horizontal
+
+        handle: Rectangle {
+          implicitWidth: 1
+          implicitHeight: 1
+          color: Theme.border
+        }
+
+        ResultsList {
+          id: resultsList
+
+          SplitView.preferredWidth: 360
+          SplitView.minimumWidth: 260
+          SplitView.fillHeight: true
+
+          resultsModel: root.resultsModel
+          emptyText: root.query.length > 0
+                     ? "No documents match this search"
+                     : "Type to search all documents"
+
+          onResultClicked: function(index) {
+            root.selectResult(index)
+            searchField.forceActiveFocus()
+          }
+        }
+
+        ResultPreview {
+          id: preview
+
+          SplitView.fillWidth: true
+          SplitView.minimumWidth: 320
+        }
+      }
+    }
+  }
+}

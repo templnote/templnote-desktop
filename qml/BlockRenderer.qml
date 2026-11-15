@@ -21,11 +21,22 @@ Item {
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
+  signal caretMoved(int position)
   signal commandMenuRequested(string query, real xPosition, real yPosition)
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
   property bool commandMenuActive: false
+
+  // Search highlight ranges for this block: [{ start, length, active }].
+  property var searchHighlights: []
+
+  // Set while the editor is in global-search navigation mode.
+  property bool searchNavigationActive: false
+
+  signal searchNavigated(int direction)
+  signal searchDismissed()
+  signal searchEditStarted()
 
   property int pendingFocus: -1
 
@@ -39,6 +50,11 @@ Item {
   function focusEditorAtX(xPosition) {
     if (block && loader.status === Loader.Ready)
       block.focusEditorAtX(xPosition)
+  }
+
+  function focusEditorRange(start, end) {
+    if (block && loader.status === Loader.Ready)
+      block.focusEditorRange(start, end)
   }
 
   function requestFocus(position) {
@@ -109,10 +125,13 @@ Item {
       item.headingLevel = Qt.binding(function() { return root.headingLevel })
       item.numberIndex = Qt.binding(function() { return root.numberIndex })
       item.model = Qt.binding(function() { return root.model })
+      item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
+      item.searchNavigationActive = Qt.binding(function() { return root.searchNavigationActive })
 
       item.enterPressed.connect(root.enterPressed)
       item.backspacePressed.connect(root.backspacePressed)
       item.focusRequested.connect(root.requestFocus)
+      item.caretMoved.connect(root.caretMoved)
       item.undoRequested.connect(root.undoRequested)
       item.redoRequested.connect(root.redoRequested)
       item.moveFocusRequested.connect(root.moveFocusRequested)
@@ -121,6 +140,9 @@ Item {
       item.commandMenuAccepted.connect(root.commandMenuAccepted)
       item.commandMenuNavigated.connect(root.commandMenuNavigated)
       item.commandMenuActive = Qt.binding(function() { return root.commandMenuActive })
+      item.searchNavigated.connect(root.searchNavigated)
+      item.searchDismissed.connect(root.searchDismissed)
+      item.searchEditStarted.connect(root.searchEditStarted)
 
       root.applyPendingFocus()
     }

@@ -13,7 +13,7 @@ Rectangle {
   Column {
     anchors.top: parent.top
     anchors.horizontalCenter: parent.horizontalCenter
-    anchors.topMargin: 24
+    anchors.topMargin: 10
     spacing: 16
 
     Button {
