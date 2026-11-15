@@ -16,7 +16,7 @@ Item {
   property bool showBullet: false
   property bool showNumbered: false
   property string numberPrefix: numberIndex + "."
-  property int verticalPadding: 12
+  property int verticalPadding: 0
   property int horizontalPadding: 12
   property int rowHeight: 0
   property real fontPixelSize: 16

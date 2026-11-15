@@ -639,20 +639,11 @@ Rectangle {
 
             anchors.fill: parent
             hoverEnabled: true
-            acceptedButtons: Qt.LeftButton | Qt.RightButton
             cursorShape: Qt.PointingHandCursor
 
             onClicked: function(mouse) {
               if (!root.documentList)
                 return
-
-              if (mouse.button === Qt.RightButton) {
-                itemContextMenu.entryPath = entry.filePath
-                itemContextMenu.entryName = entry.name
-                itemContextMenu.entryIsFolder = entry.isFolder
-                itemContextMenu.popup()
-                return
-              }
 
               if (entry.isFolder) {
                 root.documentList.enterFolder(entry.filePath)
@@ -946,84 +937,6 @@ Rectangle {
           }
         }
       }
-    }
-  }
-
-  Menu {
-    id: itemContextMenu
-
-    property string entryPath: ""
-    property string entryName: ""
-    property bool entryIsFolder: false
-
-    topPadding: 6
-    bottomPadding: 6
-    leftPadding: 6
-    rightPadding: 6
-
-    background: Rectangle {
-      implicitWidth: 160
-      radius: 8
-      color: Theme.surface
-      border.width: 1
-      border.color: Theme.border
-    }
-
-    delegate: MenuItem {
-      id: menuItem
-
-      implicitWidth: 160
-      implicitHeight: 34
-
-      contentItem: Item {
-        anchors.fill: parent
-
-        Text {
-          anchors {
-            left: parent.left
-            leftMargin: 14
-            right: parent.right
-            rightMargin: 10
-            verticalCenter: parent.verticalCenter
-          }
-          text: menuItem.text
-          color: menuItem.highlighted ? Theme.text : Theme.textMuted
-          font.pixelSize: 13
-          elide: Text.ElideRight
-        }
-      }
-
-      background: Rectangle {
-        anchors.fill: parent
-        radius: 8
-        color: menuItem.highlighted
-               ? Theme.tint(Theme.accent, 0.16)
-               : "transparent"
-
-        Rectangle {
-          visible: menuItem.highlighted
-
-          anchors {
-            left: parent.left
-            verticalCenter: parent.verticalCenter
-          }
-
-          width: 3
-          height: 18
-          radius: 2
-          color: Theme.accent
-        }
-      }
-    }
-
-    MenuItem {
-      text: "Rename"
-      onTriggered: root.startRename(itemContextMenu.entryPath)
-    }
-
-    MenuItem {
-      text: "Delete"
-      onTriggered: root.confirmDelete(itemContextMenu.entryPath, itemContextMenu.entryName, itemContextMenu.entryIsFolder)
     }
   }
 }

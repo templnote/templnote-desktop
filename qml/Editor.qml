@@ -323,7 +323,7 @@ Item {
       readonly property bool isCompactList: (isBullet && nextIsBullet) || (isNumbered && nextIsNumbered)
 
       width: documentView.width
-      height: renderer.implicitHeight + (delegateRoot.isCompactList ? 4 : 16)
+      height: renderer.implicitHeight + (delegateRoot.isCompactList ? 0 : 5)
 
       function focusBlock(position) {
         renderer.focusEditor(position)
@@ -356,6 +356,7 @@ Item {
       BlockRenderer {
         id: renderer
 
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
 
