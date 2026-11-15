@@ -20,6 +20,12 @@ Item {
   signal backspacePressed()
   signal undoRequested()
   signal redoRequested()
+  signal moveFocusRequested(int direction, real xPosition)
+  signal commandMenuRequested(string query, real xPosition, real yPosition)
+  signal commandMenuDismissed()
+  signal commandMenuAccepted()
+  signal commandMenuNavigated(int direction)
+  property bool commandMenuActive: false
 
   property int pendingFocus: -1
 
@@ -28,6 +34,11 @@ Item {
       block.focusEditor(position)
     else
       requestFocus(position)
+  }
+
+  function focusEditorAtX(xPosition) {
+    if (block && loader.status === Loader.Ready)
+      block.focusEditorAtX(xPosition)
   }
 
   function requestFocus(position) {
@@ -104,6 +115,12 @@ Item {
       item.focusRequested.connect(root.requestFocus)
       item.undoRequested.connect(root.undoRequested)
       item.redoRequested.connect(root.redoRequested)
+      item.moveFocusRequested.connect(root.moveFocusRequested)
+      item.commandMenuRequested.connect(root.commandMenuRequested)
+      item.commandMenuDismissed.connect(root.commandMenuDismissed)
+      item.commandMenuAccepted.connect(root.commandMenuAccepted)
+      item.commandMenuNavigated.connect(root.commandMenuNavigated)
+      item.commandMenuActive = Qt.binding(function() { return root.commandMenuActive })
 
       root.applyPendingFocus()
     }

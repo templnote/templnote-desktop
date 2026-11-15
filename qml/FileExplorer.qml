@@ -11,6 +11,7 @@ Rectangle {
   property var documentModel
   property var documentList
 
+
   // Item that is currently being renamed inline after creation or rename click.
   property string editingEntryPath: ""
 
@@ -240,6 +241,9 @@ Rectangle {
           delegate: Row {
             required property var modelData
 
+            //don't delete this line bcs breadcrumbs uses index and not only modelData
+            required property int index
+
             height: 24
             spacing: 2
 
@@ -327,6 +331,10 @@ Rectangle {
       delegate: Item {
         id: entry
 
+        // Keep an explicit reference to the containing FileExplorer from the
+        // delegate scope, where the outer component id is not always resolved.
+        property var explorerRoot: root
+
         required property string name
         required property string filePath
         required property bool isFolder
@@ -392,9 +400,9 @@ Rectangle {
                 return
               }
 
-              if (root.documentModel &&
-                  root.documentModel.loadDocument(entry.filePath)) {
-                root.documentList.currentFilePath = entry.filePath
+              if (entry.explorerRoot.documentModel &&
+                  entry.explorerRoot.documentModel.loadDocument(entry.filePath)) {
+                entry.explorerRoot.documentList.currentFilePath = entry.filePath
               }
             }
           }

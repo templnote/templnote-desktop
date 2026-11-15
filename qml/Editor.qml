@@ -8,6 +8,7 @@ Item {
 
   // for a centrally content
   property real contentWidth: 800
+  property var activeCommandDelegate: null
 
   function focusDelegateAt(row, position, attempt) {
     const focusAttempt = attempt === undefined ? 0 : attempt
@@ -181,6 +182,22 @@ Item {
         renderer.focusEditor(position)
       }
 
+      function focusBlockAtX(xPosition) {
+        renderer.focusEditorAtX(xPosition)
+      }
+
+      function applyCommand(command) {
+        if (!command)
+          return
+        root.model.updateBlockText(delegateRoot.blockId, "")
+        if (root.model.changeBlockType(delegateRoot.blockId, command.type, command.level))
+          root.focusDelegateAt(delegateRoot.index, 0)
+      }
+
+      function closeCommandMenu() {
+        renderer.commandMenuActive = false
+      }
+
       function refreshBlock() {
         renderer.refreshFromModel()
       }
@@ -197,6 +214,51 @@ Item {
         blockType: delegateRoot.blockType
         headingLevel: delegateRoot.headingLevel
         numberIndex: delegateRoot.numberIndex
+
+        onMoveFocusRequested: function(direction, xPosition) {
+          const targetIndex = delegateRoot.index + direction
+
+          if (targetIndex < 0 || targetIndex >= root.model.count)
+            return
+
+          const targetDelegate = documentView.itemAtIndex(targetIndex)
+
+          if (!targetDelegate)
+            return
+
+          targetDelegate.focusBlockAtX(xPosition)
+        }
+
+        onCommandMenuRequested: function(query, xPosition, yPosition) {
+          root.activeCommandDelegate = delegateRoot
+          renderer.commandMenuActive = true
+          commandMenu.x = Math.max(8, Math.min(root.width - commandMenu.width - 8,
+                                               delegateRoot.x + xPosition))
+          commandMenu.y = delegateRoot.y + yPosition + 44
+          commandMenu.openFor(query)
+        }
+
+        onCommandMenuDismissed: {
+          if (root.activeCommandDelegate === delegateRoot) {
+            renderer.commandMenuActive = false
+            commandMenu.visible = false
+            root.activeCommandDelegate = null
+          }
+        }
+
+        onCommandMenuAccepted: {
+          if (root.activeCommandDelegate === delegateRoot) {
+            renderer.commandMenuActive = false
+            commandMenu.visible = false
+            root.activeCommandDelegate.applyCommand(commandMenu.selectedCommand)
+            root.activeCommandDelegate = null
+          }
+        }
+
+        onCommandMenuNavigated: function(direction) {
+          if (root.activeCommandDelegate === delegateRoot)
+            commandMenu.moveSelection(direction)
+        }
 
         onEnterPressed: {
 
@@ -272,6 +334,19 @@ Item {
         }
       }
     }
+
+  CommandMenu {
+    id: commandMenu
+
+    onCommandSelected: function(command) {
+      if (root.activeCommandDelegate) {
+        root.activeCommandDelegate.applyCommand(command)
+        root.activeCommandDelegate.closeCommandMenu()
+        root.activeCommandDelegate = null
+      }
+      visible = false
+    }
+  }
 
     Component.onCompleted: {
       console.log("Editor initialized")

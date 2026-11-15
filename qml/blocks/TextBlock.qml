@@ -33,6 +33,13 @@ Item {
   signal focusRequested(int position)
   signal undoRequested()
   signal redoRequested()
+  signal moveFocusRequested(int direction, real xPosition)
+  signal commandMenuRequested(string query, real xPosition, real yPosition)
+  signal commandMenuDismissed()
+  signal commandMenuAccepted()
+  signal commandMenuNavigated(int direction)
+
+  property bool commandMenuActive: false
 
   function focusEditor(position) {
     editor.focus = true
@@ -54,6 +61,15 @@ Item {
           editor.cursorPosition = position
       }
     })
+  }
+
+  function focusEditorAtX(xPosition) {
+    editor.focus = true
+    editor.forceActiveFocus()
+
+    const x = Math.max(0, xPosition)
+    editor.cursorPosition = editor.positionAt(x, editor.cursorRectangle.y)
+    editor.cursorVisible = true
   }
 
   function refreshFromModel() {
@@ -167,6 +183,11 @@ Item {
             if (root.transformingShortcut || root.syncingFromModel)
               return
 
+            if (root.blockType === 0 && text.startsWith("/") && text.indexOf(" ") < 0)
+              root.commandMenuRequested(text.substring(1), editor.cursorRectangle.x, editor.cursorRectangle.y)
+            else if (root.commandMenuActive)
+              root.commandMenuDismissed()
+
             // paragraph -> bullet
             if (root.blockType === 0 && text.startsWith("- ")) {
               root.transformingShortcut = true
@@ -255,6 +276,23 @@ Item {
           }
 
           Keys.onPressed: function(event) {
+            if (root.commandMenuActive) {
+              if (event.key === Qt.Key_Escape) {
+                event.accepted = true
+                root.commandMenuDismissed()
+                return
+              }
+              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                event.accepted = true
+                root.commandMenuAccepted()
+                return
+              }
+              if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+                event.accepted = true
+                root.commandMenuNavigated(event.key === Qt.Key_Up ? -1 : 1)
+                return
+              }
+            }
             // TextArea has its own per-editor undo stack, which would only
             // undo the block that currently has focus. Intercept the standard
             // shortcuts and use the document-wide history in BlockModel
@@ -280,6 +318,15 @@ Item {
             if (event.key === Qt.Key_Backspace && editor.cursorPosition === 0) {
               event.accepted = true
               root.backspacePressed()
+              return
+            }
+
+            if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+              const cursorRect = editor.cursorRectangle
+              const direction = event.key === Qt.Key_Up ? -1 : 1
+
+              event.accepted = true
+              root.moveFocusRequested(direction, cursorRect.x)
               return
             }
           }

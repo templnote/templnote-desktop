@@ -68,6 +68,7 @@ qt_add_qml_module(templnote
   qml/DocumentHeader.qml
   qml/Editor.qml
   qml/BlockRenderer.qml
+  qml/CommandMenu.qml
   qml/PromptPanel.qml
   qml/NavigationRail.qml
   qml/FileExplorer.qml
