@@ -9,6 +9,9 @@ Item {
   // for a centrally content
   property real contentWidth: 800
   property var activeCommandDelegate: null
+  property bool commandMenuAbove: false
+  property real commandMenuAnchorY: 0
+  property real commandMenuGap: 8
 
   // Search state. The find bar owns the query and passes the complete match
   // list here; the delegates only render the matches for their own block.
@@ -297,6 +300,9 @@ Item {
     model: root.model
     spacing: 0
     clip: true
+    // Keep the command menu anchored while it is open. Programmatic scrolling
+    // is still allowed when the menu is first positioned.
+    interactive: root.activeCommandDelegate === null
 
     delegate: Item {
       id: delegateRoot
@@ -396,12 +402,67 @@ Item {
         }
 
         onCommandMenuRequested: function(query, xPosition, yPosition) {
+          // Subsequent text changes update the filtered commands, but do not
+          // re-run placement. This keeps an already-open menu above or below
+          // the cursor instead of flipping as its height changes.
+          if (root.activeCommandDelegate === delegateRoot
+              && renderer.commandMenuActive) {
+            commandMenu.openFor(query)
+            return
+          }
+
           root.activeCommandDelegate = delegateRoot
-          renderer.commandMenuActive = true
-          commandMenu.x = Math.max(8, Math.min(root.width - commandMenu.width - 8,
-                                               delegateRoot.x + xPosition))
-          commandMenu.y = delegateRoot.y + yPosition + 44
-          commandMenu.openFor(query)
+
+          documentView.positionViewAtIndex(
+            delegateRoot.index,
+            ListView.Contain
+          )
+
+          Qt.callLater(function() {
+            // Build the filtered list first so commandMenu.height reflects the
+            // actual number of commands before collision handling.
+            commandMenu.openFor(query)
+
+            const menuPosition = renderer.mapToItem(
+              root,
+              xPosition,
+              yPosition
+            )
+
+            const gap = root.commandMenuGap
+            const belowGap = 0
+            // Include the line's visual height so the flipped menu keeps a
+            // similar breathing space to the below-cursor placement.
+            const cursorHeight = 30
+            const availableBottom = root.height - 96
+            const belowY = menuPosition.y + belowGap
+            const aboveY = menuPosition.y - cursorHeight
+                             - commandMenu.height - gap
+            let menuY = belowY
+
+            // Prefer below the cursor. Flip above it only when the complete
+            // menu fits there; otherwise keep it below rather than clamping
+            // the menu over the active cursor.
+            let flippedAbove = false
+            if (belowY + commandMenu.height > availableBottom && aboveY >= 0) {
+              menuY = aboveY
+              flippedAbove = true
+            }
+
+            if (flippedAbove)
+              menuY = Math.max(0, menuY)
+
+            commandMenu.x = Math.max(
+              8,
+              Math.min(root.width - commandMenu.width - 8,
+                       menuPosition.x)
+            )
+
+            root.commandMenuAbove = flippedAbove
+            root.commandMenuAnchorY = menuPosition.y - cursorHeight
+            commandMenu.y = menuY
+            renderer.commandMenuActive = true
+          })
         }
 
         onCommandMenuDismissed: {
@@ -501,8 +562,18 @@ Item {
       }
     }
 
+    footer: Item {
+      width: documentView.width
+      height: documentView.height * 0.6
+    }
+
   CommandMenu {
     id: commandMenu
+
+    onHeightChanged: {
+      if (root.commandMenuAbove && root.activeCommandDelegate !== null)
+        y = root.commandMenuAnchorY - height - root.commandMenuGap
+    }
 
     onCommandSelected: function(command) {
       if (root.activeCommandDelegate) {
