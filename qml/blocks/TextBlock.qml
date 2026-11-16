@@ -28,7 +28,6 @@ Item {
   readonly property int selectionStart: editor.selectionStart
   readonly property int selectionEnd: editor.selectionEnd
   readonly property bool isFocused: editor.activeFocus
-  property bool isHovered: false
 
   property bool transformingShortcut: false
   property bool syncingFromModel: false
@@ -389,10 +388,6 @@ Item {
   MouseArea {
     anchors.fill: parent
     acceptedButtons: Qt.LeftButton
-    hoverEnabled: true
-
-    onEntered: root.isHovered = true
-    onExited: root.isHovered = false
 
     onClicked: {
       editor.forceActiveFocus()
@@ -568,12 +563,8 @@ Item {
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.IBeamCursor
-            hoverEnabled: true
             preventStealing: false
             propagateComposedEvents: true
-
-            onEntered: root.isHovered = true
-            onExited: root.isHovered = false
 
             onPressed: function(mouse) {
               const mapped = mapToItem(editor, mouse.x, mouse.y)
@@ -606,13 +597,6 @@ Item {
           background: null
 
           hoverEnabled: true
-
-          HoverHandler {
-            onHoveredChanged: {
-              if (hovered) root.isHovered = true
-              else if (!editor.hovered) root.isHovered = false
-            }
-          }
 
           function notifySelection() {
             if (editor.selectionStart === editor.selectionEnd) {

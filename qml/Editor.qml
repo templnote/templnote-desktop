@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl
 
 Item {
   id: root
@@ -21,12 +22,66 @@ Item {
   property var pendingSelection: null
 
   // Drag and drop reordering state
+  property string hoveredBlockId: ""
   property string draggingBlockId: ""
   property int draggingSourceIndex: -1
   property int dropTargetIndex: -1
   property real draggingVisualY: 0
   property real draggingItemHeight: 0
+  property real dragGlobalY: 0
   property bool isDraggingBlock: draggingBlockId.length > 0
+
+  Timer {
+    id: dragAutoScrollTimer
+    interval: 16
+    repeat: true
+    running: root.isDraggingBlock
+    onTriggered: {
+      if (!root.isDraggingBlock) return
+      // Map global drag Y to documentView coordinates
+      const viewPos = documentView.mapFromItem(null, 0, root.dragGlobalY)
+      const topEdge = 40
+      const bottomEdge = documentView.height - 40
+      const maxScroll = Math.max(0, documentView.contentHeight - documentView.height)
+
+      if (viewPos.y < topEdge) {
+        const factor = Math.max(0, Math.min(1, (topEdge - viewPos.y) / topEdge))
+        const step = (factor * 12) + 2
+        documentView.contentY = Math.max(0, documentView.contentY - step)
+        root.updateDragTarget()
+      } else if (viewPos.y > bottomEdge) {
+        const factor = Math.max(0, Math.min(1, (viewPos.y - bottomEdge) / 40))
+        const step = (factor * 12) + 2
+        documentView.contentY = Math.min(maxScroll, documentView.contentY + step)
+        root.updateDragTarget()
+      }
+    }
+  }
+
+  function updateDragTarget() {
+    if (!root.isDraggingBlock) return
+    const src = root.draggingSourceIndex
+    const curContentY = documentView.mapFromItem(null, 0, root.dragGlobalY).y + documentView.contentY
+
+    // Determine target index based on original block unshifted center lines
+    let bestTarget = src
+    let minDist = 999999
+
+    for (let i = 0; i < root.model.count; ++i) {
+      const item = documentView.itemAtIndex(i)
+      if (!item) continue
+      const itemCenter = item.y + (item.height / 2)
+      const dist = Math.abs(curContentY - itemCenter)
+      if (dist < minDist) {
+        minDist = dist
+        bestTarget = i
+      }
+    }
+
+    if (bestTarget >= 0 && bestTarget < root.model.count) {
+      root.dropTargetIndex = bestTarget
+    }
+  }
 
   Timer {
     id: selectionTimer
@@ -435,6 +490,35 @@ Item {
       readonly property var rendererItem: renderer
 
       readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
+      readonly property bool isHovered: blockHoverArea.containsMouse || handleHover.hovered
+
+      // MouseArea covering the block AND extending 48px into the left gutter (across the drag handle and beyond)
+      MouseArea {
+        id: blockHoverArea
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: -48
+        hoverEnabled: true
+        preventStealing: false
+        propagateComposedEvents: true
+        z: 10
+
+        // Allow click and press events to pass right through to the text editor, links, or handles
+        onPressed: function(mouse) { mouse.accepted = false }
+        onReleased: function(mouse) { mouse.accepted = false }
+        onClicked: function(mouse) { mouse.accepted = false }
+        onDoubleClicked: function(mouse) { mouse.accepted = false }
+      }
+
+      onIsHoveredChanged: {
+        if (isHovered) {
+          root.hoveredBlockId = delegateRoot.blockId
+        } else if (root.hoveredBlockId === delegateRoot.blockId) {
+          root.hoveredBlockId = ""
+        }
+      }
 
       // Dynamic vertical shift to make room for dragged block
       property real visualDisplacement: {
@@ -736,24 +820,29 @@ Item {
         height: 24
         x: -28
         y: 4
-        z: 10
+        z: 20
 
-        property bool activeState: (renderer.isHovered || renderer.isFocused || handleHover.hovered || handleArea.pressed) && !root.isDraggingBlock
+        // Purely mouse-hover driven: show only on the block the mouse is hovering over
+        property bool shouldShow: {
+          if (root.isDraggingBlock) return false
+          if (handleArea.pressed) return true
+          return root.hoveredBlockId === delegateRoot.blockId
+        }
 
         Timer {
           id: showTimer
-          interval: 500
+          interval: 200
           repeat: false
-          running: dragHandle.activeState && dragHandle.opacity === 0
+          running: dragHandle.shouldShow && dragHandle.opacity === 0
           onTriggered: {
-            if (dragHandle.activeState) {
+            if (dragHandle.shouldShow) {
               dragHandle.opacity = 1.0
             }
           }
         }
 
-        onActiveStateChanged: {
-          if (!activeState) {
+        onShouldShowChanged: {
+          if (!shouldShow) {
             showTimer.stop()
             dragHandle.opacity = 0.0
           }
@@ -770,12 +859,12 @@ Item {
           color: handleArea.pressed ? Theme.surfaceAlt : (handleHover.hovered ? Theme.surfaceHover : "transparent")
         }
 
-        Image {
+        IconImage {
           anchors.centerIn: parent
           width: 16
           height: 16
           source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
-          sourceSize: Qt.size(16, 16)
+          color: Theme.textMuted
         }
 
         HoverHandler {
@@ -801,6 +890,7 @@ Item {
                 root.dropTargetIndex = delegateRoot.index
                 root.draggingVisualY = 0
                 root.draggingItemHeight = delegateRoot.height
+                root.dragGlobalY = handleArea.startGlobalY
                 handleArea.cursorShape = Qt.ClosedHandCursor
               }
             }
@@ -808,22 +898,18 @@ Item {
 
           onPressed: function(mouse) {
             startGlobalY = mapToItem(null, mouse.x, mouse.y).y
+            root.dragGlobalY = startGlobalY
             holdTimer.restart()
           }
 
           onPositionChanged: function(mouse) {
+            const currentGlobalY = mapToItem(null, mouse.x, mouse.y).y
+            root.dragGlobalY = currentGlobalY
+
             if (!root.isDraggingBlock) return
 
-            const currentGlobalY = mapToItem(null, mouse.x, mouse.y).y
             root.draggingVisualY = currentGlobalY - startGlobalY
-
-            // Calculate drop target based on the center of the dragged item mapped to documentView
-            const mappedCenter = delegateRoot.mapToItem(documentView.contentItem, 0, (delegateRoot.height / 2) + root.draggingVisualY)
-            const targetIdx = documentView.indexAt(10, Math.max(0, mappedCenter.y))
-
-            if (targetIdx >= 0 && targetIdx < root.model.count) {
-              root.dropTargetIndex = targetIdx
-            }
+            root.updateDragTarget()
           }
 
           onReleased: function(mouse) {
@@ -863,35 +949,39 @@ Item {
       height: documentView.height * 0.8
     }
 
-    // Drop indicator line
+    // Drop indicator line (rendered inside contentItem to correctly track content scrolling)
     Rectangle {
       id: dropIndicator
+      parent: documentView.contentItem
       width: documentView.width
       height: 2
       radius: 1
       color: Theme.accent
       visible: root.isDraggingBlock && root.dropTargetIndex >= 0
+      z: 200
 
-      // Compute Y position relative to documentView
+      // Compute Y position in contentItem coordinates
       y: {
         if (!visible) return 0
-        const targetItem = documentView.itemAtIndex(root.dropTargetIndex)
-        if (!targetItem) return 0
-
-        // Map targetItem's top or bottom position to documentView coordinates
         const from = root.draggingSourceIndex
         const to = root.dropTargetIndex
-        if (from <= to) {
-          // Dropping below or at to: line at bottom of targetItem
-          return targetItem.y + targetItem.height
+        const targetItem = documentView.itemAtIndex(to)
+        if (!targetItem) return 0
+
+        if (from < to) {
+          // Dragged downward: candidate drop position is right below targetItem (accounting for its upward shift)
+          return targetItem.y + targetItem.height + targetItem.visualDisplacement
+        } else if (from > to) {
+          // Dragged upward: candidate drop position is right above targetItem (accounting for its downward shift)
+          return targetItem.y + targetItem.visualDisplacement
         } else {
-          // Dropping above: line at top of targetItem
+          // At original position: show at top of source item
           return targetItem.y
         }
       }
 
       Behavior on y {
-        NumberAnimation { duration: 100; easing.type: Easing.OutCubic }
+        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
       }
     }
 
