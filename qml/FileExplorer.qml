@@ -834,8 +834,40 @@ Rectangle {
               rightMargin: 8
               verticalCenter: parent.verticalCenter
             }
-            visible: entryMouse.containsMouse || entry.isSelected || renameMouse.containsMouse || deleteMouse.containsMouse
+            visible: entryMouse.containsMouse || entry.isSelected || renameMouse.containsMouse || deleteMouse.containsMouse || duplicateMouse.containsMouse
             spacing: 4
+
+            Rectangle {
+              id: duplicateFileBtn
+              width: 22
+              height: 22
+              radius: 4
+              visible: !entry.isFolder
+              color: duplicateMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+              IconImage {
+                anchors.centerIn: parent
+                width: 14
+                height: 14
+                source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_copy_20_regular.svg"
+                sourceSize.width: 14
+                sourceSize.height: 14
+                color: duplicateMouse.containsMouse ? Theme.accent : Theme.textMuted
+              }
+
+              MouseArea {
+                id: duplicateMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: function(mouse) {
+                  mouse.accepted = true
+                  if (root.documentList) {
+                    root.documentList.duplicateDocument(entry.filePath)
+                  }
+                }
+              }
+            }
 
             Rectangle {
               id: renameBtn

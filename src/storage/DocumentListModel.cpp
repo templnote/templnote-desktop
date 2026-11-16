@@ -366,6 +366,46 @@ QString DocumentListModel::renameDocument(const QString &path,
   return newPath;
 }
 
+QString DocumentListModel::duplicateDocument(const QString &path) {
+  const QFileInfo info(path);
+
+  if (!info.exists() || !info.isFile() || !isInsideRoot(info.absoluteFilePath()))
+    return {};
+
+  const QString base = info.completeBaseName();
+  const QString target =
+      AppPaths::uniqueDocumentPath(info.absolutePath(), base);
+
+  if (target.isEmpty())
+    return {};
+
+  if (!QFile::copy(info.absoluteFilePath(), target))
+    return {};
+
+  // Best-effort update of the JSON title field in the copied file
+  const QString newTitle = QFileInfo(target).completeBaseName();
+  QFile file(target);
+  if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    QJsonParseError parseError{};
+    const QJsonDocument parsed =
+        QJsonDocument::fromJson(file.readAll(), &parseError);
+    file.close();
+
+    if (parseError.error == QJsonParseError::NoError && parsed.isObject()) {
+      QJsonObject json = parsed.object();
+      json[QStringLiteral("title")] = newTitle;
+      QSaveFile output(target);
+      if (output.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        output.write(QJsonDocument(json).toJson(QJsonDocument::Indented));
+        output.commit();
+      }
+    }
+  }
+
+  refresh();
+  return QDir::cleanPath(target);
+}
+
 bool DocumentListModel::deleteEntry(const QString &path) {
   const QFileInfo info(path);
 

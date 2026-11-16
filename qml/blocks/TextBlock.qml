@@ -25,9 +25,275 @@ Item {
 
   readonly property int cursorPosition: editor.cursorPosition
   readonly property string editorText: editor.text
+  readonly property int selectionStart: editor.selectionStart
+  readonly property int selectionEnd: editor.selectionEnd
+  readonly property bool isFocused: editor.activeFocus
 
   property bool transformingShortcut: false
   property bool syncingFromModel: false
+
+  function findSyntaxTokens(text) {
+    if (!text) return []
+    let tokens = []
+    let uRegex = /<\/?u>/gi
+    let m
+    while ((m = uRegex.exec(text)) !== null) {
+      tokens.push({ start: m.index, end: m.index + m[0].length })
+    }
+    let bRegex = /\*\*(.+?)\*\*/g
+    while ((m = bRegex.exec(text)) !== null) {
+      tokens.push({ start: m.index, end: m.index + 2 })
+      tokens.push({ start: m.index + m[0].length - 2, end: m.index + m[0].length })
+    }
+    let sRegex = /~~(.+?)~~/g
+    while ((m = sRegex.exec(text)) !== null) {
+      tokens.push({ start: m.index, end: m.index + 2 })
+      tokens.push({ start: m.index + m[0].length - 2, end: m.index + m[0].length })
+    }
+    let iRegex = /(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g
+    while ((m = iRegex.exec(text)) !== null) {
+      let offset = m[0].startsWith("*") ? 0 : 1
+      let sPos = m.index + offset
+      let ePos = sPos + 1 + m[1].length
+      tokens.push({ start: sPos, end: sPos + 1 })
+      tokens.push({ start: ePos, end: ePos + 1 })
+    }
+
+    tokens.sort(function(a, b) { return a.start - b.start })
+    let clean = []
+    let lastEnd = 0
+    for (let i = 0; i < tokens.length; ++i) {
+      let t = tokens[i]
+      if (t.start >= lastEnd) {
+        clean.push(t)
+        lastEnd = t.end
+      }
+    }
+    return clean
+  }
+
+  function markdownToHtml(raw, includeSyntax) {
+    if (!raw) return ""
+    const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
+    const spanClose = "</span>"
+
+    let text = raw.replace(/<u>/gi, "\x01U\x01").replace(/<\/u>/gi, "\x01/U\x01")
+    text = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+    if (includeSyntax) {
+      // Focused mode: render formatted styling WITH dimmed syntax markers
+      text = text.replace(/\*\*(.+?)\*\*/g, spanOpen + "**" + spanClose + "<b>$1</b>" + spanOpen + "**" + spanClose)
+      text = text.replace(/~~(.+?)~~/g, spanOpen + "~~" + spanClose + "<s>$1</s>" + spanOpen + "~~" + spanClose)
+      text = text.replace(/(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g, function(match, p1) {
+        let prefix = match.startsWith("*") ? "" : match.charAt(0)
+        let suffix = match.endsWith("*") ? "" : match.charAt(match.length - 1)
+        return prefix + spanOpen + "*" + spanClose + "<i>" + p1 + "</i>" + spanOpen + "*" + spanClose + suffix
+      })
+      text = text.replace(/\x01U\x01([\s\S]*?)\x01\/U\x01/g, spanOpen + "&lt;u&gt;" + spanClose + "<u>$1</u>" + spanOpen + "&lt;/u&gt;" + spanClose)
+      text = text.replace(/\x01U\x01/g, "&lt;u&gt;").replace(/\x01\/U\x01/g, "&lt;/u&gt;")
+    } else {
+      // Unfocused mode: render formatted styling WITHOUT syntax markers
+      text = text.replace(/\x01U\x01/g, "<u>").replace(/\x01\/U\x01/g, "</u>")
+      text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+      text = text.replace(/~~(.+?)~~/g, "<s>$1</s>")
+      text = text.replace(/(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g, function(match, p1) {
+        let prefix = match.startsWith("*") ? "" : match.charAt(0)
+        let suffix = match.endsWith("*") ? "" : match.charAt(match.length - 1)
+        return prefix + "<i>" + p1 + "</i>" + suffix
+      })
+    }
+
+    text = text.replace(/\n/g, "<br/>")
+
+    // Preserve whitespace in RichText so multiple consecutive spaces don't collapse
+    text = text.replace(/  +/g, function(match) {
+      return " " + "&nbsp;".repeat(match.length - 1)
+    })
+
+    return text
+  }
+
+  function renderedToRawIndex(raw, renderedIndex) {
+    if (!raw || renderedIndex <= 0) return 0
+    let tokens = findSyntaxTokens(raw)
+    let rIdx = 0
+    let rawIdx = 0
+    let tIdx = 0
+    while (rawIdx < raw.length) {
+      if (tIdx < tokens.length && rawIdx === tokens[tIdx].start) {
+        rawIdx = tokens[tIdx].end
+        tIdx++
+        continue
+      }
+      if (rIdx === renderedIndex) {
+        return rawIdx
+      }
+      rIdx++
+      rawIdx++
+    }
+    return raw.length
+  }
+
+  function isFormatActive(type) {
+    const raw = editor.text
+    const s = Math.min(editor.selectionStart, editor.selectionEnd)
+    const e = Math.max(editor.selectionStart, editor.selectionEnd)
+    if (s === e || !raw) return false
+
+    const sel = raw.substring(s, e)
+    let openTag = "", closeTag = ""
+    let regex = null
+
+    if (type === "bold") {
+      openTag = "**"; closeTag = "**"
+      regex = /\*\*(.+?)\*\*/g
+    } else if (type === "italic") {
+      openTag = "*"; closeTag = "*"
+      regex = /(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g
+    } else if (type === "underline") {
+      openTag = "<u>"; closeTag = "</u>"
+      regex = /<u>([\s\S]*?)<\/u>/gi
+    } else if (type === "strike") {
+      openTag = "~~"; closeTag = "~~"
+      regex = /~~(.+?)~~/g
+    }
+
+    const otLen = openTag.length
+    const ctLen = closeTag.length
+
+    if (sel.toLowerCase().startsWith(openTag.toLowerCase()) &&
+        sel.toLowerCase().endsWith(closeTag.toLowerCase()) &&
+        sel.length >= (otLen + ctLen)) {
+      return true
+    }
+    if (s >= otLen && e + ctLen <= raw.length) {
+      if (raw.substring(s - otLen, s).toLowerCase() === openTag.toLowerCase() &&
+          raw.substring(e, e + ctLen).toLowerCase() === closeTag.toLowerCase()) {
+        return true
+      }
+    }
+
+    if (regex) {
+      let match
+      while ((match = regex.exec(raw)) !== null) {
+        let mStart = match.index
+        let mEnd = match.index + match[0].length
+        if (type === "italic") {
+          if (!match[0].startsWith("*")) mStart += 1
+          if (!match[0].endsWith("*")) mEnd -= 1
+        }
+        if (s >= mStart && e <= mEnd) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  function toggleFormat(type) {
+    const raw = editor.text
+    const s = Math.min(editor.selectionStart, editor.selectionEnd)
+    const e = Math.max(editor.selectionStart, editor.selectionEnd)
+    if (s === e) return
+
+    const sel = raw.substring(s, e)
+    let openTag = "", closeTag = ""
+    let regex = null
+
+    if (type === "bold") {
+      openTag = "**"; closeTag = "**"
+      regex = /\*\*(.+?)\*\*/g
+    } else if (type === "italic") {
+      openTag = "*"; closeTag = "*"
+      regex = /(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g
+    } else if (type === "underline") {
+      openTag = "<u>"; closeTag = "</u>"
+      regex = /<u>([\s\S]*?)<\/u>/gi
+    } else if (type === "strike") {
+      openTag = "~~"; closeTag = "~~"
+      regex = /~~(.+?)~~/g
+    }
+
+    const otLen = openTag.length
+    const ctLen = closeTag.length
+    let newText = ""
+    let newStart = s
+    let newEnd = e
+
+    // 1. Selection starts and ends with the tag
+    if (sel.toLowerCase().startsWith(openTag.toLowerCase()) &&
+        sel.toLowerCase().endsWith(closeTag.toLowerCase()) &&
+        sel.length >= (otLen + ctLen)) {
+      const inner = sel.substring(otLen, sel.length - ctLen)
+      newText = raw.substring(0, s) + inner + raw.substring(e)
+      newStart = s
+      newEnd = s + inner.length
+    }
+    // 2. Surrounding characters are the tag
+    else if (s >= otLen && e + ctLen <= raw.length &&
+             raw.substring(s - otLen, s).toLowerCase() === openTag.toLowerCase() &&
+             raw.substring(e, e + ctLen).toLowerCase() === closeTag.toLowerCase()) {
+      newText = raw.substring(0, s - otLen) + sel + raw.substring(e + ctLen)
+      newStart = s - otLen
+      newEnd = e - otLen
+    }
+    // 3. Selection is inside an existing span
+    else if (regex) {
+      let matchedSpan = null
+      let match
+      while ((match = regex.exec(raw)) !== null) {
+        let mStart = match.index
+        let mEnd = match.index + match[0].length
+        let contentStart = mStart + otLen
+        let contentEnd = mEnd - ctLen
+        if (type === "italic") {
+          if (!match[0].startsWith("*")) mStart += 1
+          if (!match[0].endsWith("*")) mEnd -= 1
+          contentStart = mStart + 1
+          contentEnd = mEnd - 1
+        }
+        if (s >= contentStart && e <= contentEnd) {
+          matchedSpan = { mStart: mStart, mEnd: mEnd, contentStart: contentStart, contentEnd: contentEnd }
+          break
+        }
+      }
+
+      if (matchedSpan) {
+        if (s === matchedSpan.contentStart && e === matchedSpan.contentEnd) {
+          const inner = raw.substring(matchedSpan.contentStart, matchedSpan.contentEnd)
+          newText = raw.substring(0, matchedSpan.mStart) + inner + raw.substring(matchedSpan.mEnd)
+          newStart = matchedSpan.mStart
+          newEnd = matchedSpan.mStart + inner.length
+        } else {
+          const before = raw.substring(matchedSpan.contentStart, s)
+          const after = raw.substring(e, matchedSpan.contentEnd)
+          let rebuilt = ""
+          if (before.length > 0) rebuilt += openTag + before + closeTag
+          rebuilt += sel
+          newStart = matchedSpan.mStart + (before.length > 0 ? (otLen + before.length + ctLen) : 0)
+          newEnd = newStart + sel.length
+          if (after.length > 0) rebuilt += openTag + after + closeTag
+          newText = raw.substring(0, matchedSpan.mStart) + rebuilt + raw.substring(matchedSpan.mEnd)
+        }
+      } else {
+        // Wrap
+        newText = raw.substring(0, s) + openTag + sel + closeTag + raw.substring(e)
+        newStart = s
+        newEnd = e + otLen + ctLen
+      }
+    } else {
+      // Wrap
+      newText = raw.substring(0, s) + openTag + sel + closeTag + raw.substring(e)
+      newStart = s
+      newEnd = e + otLen + ctLen
+    }
+
+    editor.text = newText
+    editor.select(newStart, newEnd)
+    if (root.model && root.blockId.length > 0)
+      root.model.updateBlockText(root.blockId, newText)
+    editor.notifySelection()
+  }
 
   signal enterPressed()
   signal backspacePressed()
@@ -40,6 +306,7 @@ Item {
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
   signal caretMoved(int position, real cursorGlobalY, real cursorHeight)
+  signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
 
   property bool commandMenuActive: false
 
@@ -139,7 +406,7 @@ Item {
 
     Row {
       width: parent.width
-      height: root.rowHeight > 0 ? root.rowHeight : editor.implicitHeight
+      height: Math.max(root.rowHeight, editor.implicitHeight)
       spacing: 0
 
       Item {
@@ -148,7 +415,7 @@ Item {
         // text of all block types aligned.
         id: bulletGutter
         width: 24
-        height: parent.height
+        height: root.rowHeight > 0 ? root.rowHeight : editor.implicitHeight
 
         Text {
           visible: root.showBullet
@@ -277,17 +544,51 @@ Item {
           }
         }
 
+        Text {
+          id: renderedViewer
+          anchors.fill: parent
+          anchors.leftMargin: editor.leftPadding
+          anchors.rightMargin: editor.rightPadding
+          anchors.topMargin: editor.topPadding
+          anchors.bottomMargin: editor.bottomMargin
+          visible: editor.text.length > 0
+          wrapMode: Text.Wrap
+          textFormat: Text.RichText
+          text: root.markdownToHtml(editor.text, editor.activeFocus)
+          color: Theme.text
+          font.pixelSize: root.fontPixelSize
+          font.weight: root.fontBold ? Font.Bold : Font.Normal
+          z: 2
+
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.IBeamCursor
+            preventStealing: false
+            propagateComposedEvents: true
+
+            onPressed: function(mouse) {
+              const mapped = mapToItem(editor, mouse.x, mouse.y)
+              const clickPos = editor.positionAt(mapped.x, mapped.y)
+              editor.forceActiveFocus()
+              editor.cursorPosition = clickPos
+              // Allow mouse event propagation so drag-selection in editor continues
+              mouse.accepted = false
+            }
+          }
+        }
+
         TextArea {
           id: editor
           anchors.fill: parent
+          z: 3
 
           wrapMode: TextArea.Wrap
           placeholderText: root.showPlaceholder ? "start typing here" : ""
           placeholderTextColor: Theme.textFaint
 
-          color: Theme.text
-          selectionColor: Theme.accent
-          selectedTextColor: Theme.accentText
+          color: "transparent"
+          selectionColor: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
+          selectedTextColor: "transparent"
           selectByMouse: true
 
           font.pixelSize: root.fontPixelSize
@@ -295,7 +596,25 @@ Item {
 
           background: null
 
+          function notifySelection() {
+            if (editor.selectionStart === editor.selectionEnd) {
+              root.selectionChanged(false, 0, 0, 0)
+              return
+            }
+            if (!editor.activeFocus) {
+              // Delay notifying false so clicking toolbar controls or popups doesn't immediately dismiss the selection
+              return
+            }
+            const cRect = editor.cursorRectangle
+            const mapped = editor.mapToItem(root, cRect.x + cRect.width / 2, cRect.y)
+            root.selectionChanged(true, mapped.x, mapped.y, cRect.height)
+          }
+
+          onSelectionStartChanged: notifySelection()
+          onSelectionEndChanged: notifySelection()
+
           onCursorPositionChanged: {
+            notifySelection()
             if (editor.activeFocus) {
               const cRect = editor.cursorRectangle
               const mapped = editor.mapToItem(null, cRect.x, cRect.y)
@@ -304,6 +623,7 @@ Item {
           }
 
           onActiveFocusChanged: {
+            notifySelection()
             if (editor.activeFocus) {
               const cRect = editor.cursorRectangle
               const mapped = editor.mapToItem(null, cRect.x, cRect.y)
@@ -457,6 +777,30 @@ Item {
                 root.searchEditStarted()
             }
 
+            // Keyboard shortcuts for inline markdown formatting
+            if (event.modifiers & Qt.ControlModifier) {
+              if (event.key === Qt.Key_B) {
+                event.accepted = true
+                root.toggleFormat("bold")
+                return
+              }
+              if (event.key === Qt.Key_I) {
+                event.accepted = true
+                root.toggleFormat("italic")
+                return
+              }
+              if (event.key === Qt.Key_U) {
+                event.accepted = true
+                root.toggleFormat("underline")
+                return
+              }
+              if ((event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_X) {
+                event.accepted = true
+                root.toggleFormat("strike")
+                return
+              }
+            }
+
             // TextArea has its own per-editor undo stack, which would only
             // undo the block that currently has focus. Intercept the standard
             // shortcuts and use the document-wide history in BlockModel
@@ -475,7 +819,13 @@ Item {
 
             if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
               event.accepted = true
-              root.enterPressed()
+              if ((event.modifiers & Qt.ShiftModifier) && root.blockType !== 1) {
+                // Shift + Enter inside non-heading blocks inserts a newline within the same block
+                editor.insert(editor.cursorPosition, "\n")
+              } else {
+                // Regular Enter, or Shift + Enter on Headings, splits into next block
+                root.enterPressed()
+              }
               return
             }
 

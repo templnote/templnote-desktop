@@ -71,6 +71,10 @@ public:
   // Renames an existing file inside the root. Returns the new path or empty on failure.
   Q_INVOKABLE QString renameDocument(const QString &path, const QString &newName);
 
+  // Duplicates an existing document in the same directory with an auto-suffixed name.
+  // Returns the new document path or empty on failure.
+  Q_INVOKABLE QString duplicateDocument(const QString &path);
+
   // Deletes a folder or file by moving it to the system trash.
   Q_INVOKABLE bool deleteEntry(const QString &path);
 

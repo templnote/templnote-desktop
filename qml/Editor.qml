@@ -14,6 +14,62 @@ Item {
   property real commandMenuAnchorY: 0
   property real commandMenuGap: 2
 
+  property var activeSelectionDelegate: null
+  property bool selectionToolbarAbove: true
+  property real selectionToolbarAnchorY: 0
+  property real selectionToolbarGap: 6
+  property var pendingSelection: null
+
+  Timer {
+    id: selectionTimer
+    interval: 200
+    repeat: false
+    onTriggered: {
+      if (!root.pendingSelection || !root.pendingSelection.delegate)
+        return
+
+      const item = root.pendingSelection
+      const delegateRoot = item.delegate
+      const renderer = item.renderer
+
+      root.activeSelectionDelegate = delegateRoot
+      selectionToolbar.currentBlockType = delegateRoot.blockType
+      selectionToolbar.currentHeadingLevel = delegateRoot.headingLevel
+      selectionToolbar.isBold = renderer.isFormatActive("bold")
+      selectionToolbar.isItalic = renderer.isFormatActive("italic")
+      selectionToolbar.isUnderline = renderer.isFormatActive("underline")
+      selectionToolbar.isStrikethrough = renderer.isFormatActive("strike")
+
+      const pos = renderer.mapToItem(root, item.x, item.y)
+      const gap = root.selectionToolbarGap
+      const actualCursorHeight = item.cursorHeight > 0 ? item.cursorHeight : 20
+      const aboveY = pos.y - gap - selectionToolbar.height
+      const belowY = pos.y + actualCursorHeight + gap
+      const availableBottom = root.height - root.bottomReservedSpace - 1
+
+      let flippedAbove = true
+      let toolbarY = aboveY
+
+      // Default is displaying on topside of cursor. If not enough space above, flip below.
+      if (aboveY < 0 && belowY + selectionToolbar.height <= availableBottom) {
+        toolbarY = belowY
+        flippedAbove = false
+      }
+
+      // Center horizontally around the active cursor position, constrained to editor bounds
+      const idealX = pos.x - (selectionToolbar.implicitWidth / 2)
+      selectionToolbar.x = Math.max(
+        8,
+        Math.min(root.width - selectionToolbar.implicitWidth - 8, idealX)
+      )
+
+      root.selectionToolbarAbove = flippedAbove
+      root.selectionToolbarAnchorY = pos.y
+      selectionToolbar.y = toolbarY
+      selectionToolbar.visible = true
+    }
+  }
+
   // Search state. The find bar owns the query and passes the complete match
   // list here; the delegates only render the matches for their own block.
   property var searchMatches: []
@@ -369,6 +425,7 @@ Item {
       readonly property bool isNumbered: delegateRoot.blockType === 3
       readonly property bool nextIsNumbered: delegateRoot.nextBlockType === 3
       readonly property bool isCompactList: (isBullet && nextIsBullet) || (isNumbered && nextIsNumbered)
+      readonly property var rendererItem: renderer
 
       width: documentView.width
       height: renderer.implicitHeight + (delegateRoot.isCompactList ? 0 : 5)
@@ -530,6 +587,33 @@ Item {
             commandMenu.moveSelection(direction)
         }
 
+        onSelectionChanged: function(hasSelection, xPosition, yPosition, cursorHeight) {
+          if (!hasSelection) {
+            selectionTimer.stop()
+            root.pendingSelection = null
+            if (root.activeSelectionDelegate === delegateRoot && !selectionToolbar.hasActivePopup) {
+              selectionToolbar.visible = false
+              root.activeSelectionDelegate = null
+            }
+            return
+          }
+
+          // If toolbar is currently visible, hide it while actively selecting/adjusting
+          if (root.activeSelectionDelegate !== delegateRoot) {
+            selectionToolbar.visible = false
+          }
+
+          root.pendingSelection = {
+            delegate: delegateRoot,
+            renderer: renderer,
+            x: xPosition,
+            y: yPosition,
+            cursorHeight: cursorHeight
+          }
+
+          selectionTimer.restart()
+        }
+
         onEnterPressed: {
 
           const currentText = renderer.editorText
@@ -631,6 +715,59 @@ Item {
         root.activeCommandDelegate = null
       }
       visible = false
+    }
+  }
+
+  SelectionToolbar {
+    id: selectionToolbar
+
+    function syncFormattingState() {
+      if (!root.activeSelectionDelegate) return
+      const renderer = root.activeSelectionDelegate.rendererItem
+      if (renderer) {
+        selectionToolbar.isBold = renderer.isFormatActive("bold")
+        selectionToolbar.isItalic = renderer.isFormatActive("italic")
+        selectionToolbar.isUnderline = renderer.isFormatActive("underline")
+        selectionToolbar.isStrikethrough = renderer.isFormatActive("strike")
+      }
+    }
+
+    onBoldToggled: {
+      if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
+        root.activeSelectionDelegate.rendererItem.toggleFormat("bold")
+        syncFormattingState()
+      }
+    }
+
+    onItalicToggled: {
+      if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
+        root.activeSelectionDelegate.rendererItem.toggleFormat("italic")
+        syncFormattingState()
+      }
+    }
+
+    onUnderlineToggled: {
+      if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
+        root.activeSelectionDelegate.rendererItem.toggleFormat("underline")
+        syncFormattingState()
+      }
+    }
+
+    onStrikethroughToggled: {
+      if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
+        root.activeSelectionDelegate.rendererItem.toggleFormat("strike")
+        syncFormattingState()
+      }
+    }
+
+    onBlockTypeSelected: function(type, level) {
+      if (root.activeSelectionDelegate) {
+        const id = root.activeSelectionDelegate.blockId
+        const idx = root.activeSelectionDelegate.index
+        if (root.model.changeBlockType(id, type, level)) {
+          root.focusDelegateAt(idx, -1)
+        }
+      }
     }
   }
 }

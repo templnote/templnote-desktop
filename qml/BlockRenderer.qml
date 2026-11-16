@@ -27,6 +27,7 @@ Item {
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
+  signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
   property bool commandMenuActive: false
 
   // Search highlight ranges for this block: [{ start, length, active }].
@@ -56,6 +57,17 @@ Item {
   function focusEditorRange(start, end) {
     if (block && loader.status === Loader.Ready)
       block.focusEditorRange(start, end)
+  }
+
+  function toggleFormat(type) {
+    if (block && loader.status === Loader.Ready && typeof block.toggleFormat === "function")
+      block.toggleFormat(type)
+  }
+
+  function isFormatActive(type) {
+    if (block && loader.status === Loader.Ready && typeof block.isFormatActive === "function")
+      return block.isFormatActive(type)
+    return false
   }
 
   function requestFocus(position) {
@@ -141,6 +153,7 @@ Item {
       item.commandMenuDismissed.connect(root.commandMenuDismissed)
       item.commandMenuAccepted.connect(root.commandMenuAccepted)
       item.commandMenuNavigated.connect(root.commandMenuNavigated)
+      item.selectionChanged.connect(root.selectionChanged)
       item.commandMenuActive = Qt.binding(function() { return root.commandMenuActive })
       item.searchNavigated.connect(root.searchNavigated)
       item.searchDismissed.connect(root.searchDismissed)
