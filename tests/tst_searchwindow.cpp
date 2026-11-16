@@ -138,6 +138,8 @@ public:
     const Row &result = m_visible.at(row);
     map.insert(QStringLiteral("documentTitle"), result.documentTitle);
     map.insert(QStringLiteral("documentPath"), result.documentPath);
+    map.insert(QStringLiteral("documentRelativePath"),
+               QFileInfo(result.documentPath).fileName());
     map.insert(QStringLiteral("blockId"), result.blockId);
     map.insert(QStringLiteral("blockText"), result.blockText);
     map.insert(QStringLiteral("snippet"), result.snippet);
@@ -157,6 +159,10 @@ public:
     }
 
     return documentPath;
+  }
+
+  Q_INVOKABLE QString relativeDocumentPath(const QString &documentPath) const {
+    return QFileInfo(documentPath).fileName();
   }
 
   Q_INVOKABLE int groupMatchCount(const QString &documentPath) const {

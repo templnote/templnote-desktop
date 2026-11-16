@@ -22,6 +22,7 @@ public:
   enum Roles {
     DocumentTitleRole = Qt::UserRole + 1,
     DocumentPathRole,
+    DocumentRelativePathRole,
     BlockIdRole,
     BlockTextRole,
     SnippetRole,
@@ -53,6 +54,7 @@ public:
 
   // Section header helpers, keyed by document path.
   Q_INVOKABLE QString groupTitle(const QString &documentPath) const;
+  Q_INVOKABLE QString relativeDocumentPath(const QString &documentPath) const;
   Q_INVOKABLE int groupMatchCount(const QString &documentPath) const;
 
 signals:

@@ -10,9 +10,12 @@ Item {
 
   property var resultsModel: null
   property int selectedIndex: -1
+  property string selectedDocumentPath: ""
   property string emptyText: "Type to search all documents"
 
   signal resultClicked(int index)
+  signal documentHeaderClicked(string path)
+  signal documentHeaderDoubleClicked(string path)
 
   HighlightService {
     id: highlighter
@@ -23,9 +26,22 @@ Item {
       resultView.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
+  function positionDocument(path) {
+    if (!root.resultsModel || root.resultsModel.count === 0 || !path)
+      return
+    for (let i = 0; i < root.resultsModel.count; ++i) {
+      const res = root.resultsModel.resultAt(i)
+      if (res && res.documentPath === path) {
+        resultView.positionViewAtIndex(i, ListView.Beginning)
+        break
+      }
+    }
+  }
+
   Rectangle {
     anchors.fill: parent
-    color: "transparent"
+    radius: 8
+    color: Theme.background
   }
 
   ListView {
@@ -33,13 +49,12 @@ Item {
 
     anchors {
       fill: parent
-      leftMargin: 8
-      rightMargin: 8
+      margins: 6
     }
     clip: true
     model: root.resultsModel
     currentIndex: root.selectedIndex
-    spacing: 4
+    spacing: 2
 
     section.property: "documentPath"
     section.criteria: ViewSection.FullString
@@ -49,19 +64,34 @@ Item {
 
       required property string section
 
+      readonly property bool isSelected: root.selectedDocumentPath === section
+
       width: resultView.width
-      height: 54
-      color: "transparent"
+      height: 48
+      radius: 6
+      color: isSelected
+             ? Theme.surfaceHover
+             : (headerMouse.containsMouse ? Theme.surfaceAlt : "transparent")
+
+      Behavior on color {
+        ColorAnimation {
+          duration: 150
+          easing.type: Easing.OutQuad
+        }
+      }
 
       Rectangle {
+        visible: sectionHeader.isSelected
+
         anchors {
           left: parent.left
-          right: parent.right
-          top: parent.top
+          verticalCenter: parent.verticalCenter
         }
 
-        height: 1
-        color: Theme.border
+        width: 3
+        height: 18
+        radius: 2
+        color: Theme.accent
       }
 
       Column {
@@ -69,11 +99,11 @@ Item {
           left: parent.left
           right: countLabel.left
           verticalCenter: parent.verticalCenter
-          leftMargin: 10
-          rightMargin: 12
+          leftMargin: sectionHeader.isSelected ? 14 : 8
+          rightMargin: 8
         }
 
-        spacing: 3
+        spacing: 2
 
         Text {
           width: parent.width
@@ -88,7 +118,9 @@ Item {
 
         Text {
           width: parent.width
-          text: section
+          text: root.resultsModel && root.resultsModel.relativeDocumentPath
+                ? root.resultsModel.relativeDocumentPath(section)
+                : section
           color: Theme.textFaint
           font.pixelSize: 11
           elide: Text.ElideMiddle
@@ -110,6 +142,15 @@ Item {
         color: Theme.textMuted
         font.pixelSize: 11
       }
+
+      MouseArea {
+        id: headerMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.documentHeaderClicked(sectionHeader.section)
+        onDoubleClicked: root.documentHeaderDoubleClicked(sectionHeader.section)
+      }
     }
 
     delegate: Rectangle {
@@ -122,11 +163,18 @@ Item {
       readonly property bool selected: root.selectedIndex === index
 
       width: resultView.width
-      height: snippetText.implicitHeight + 20
-      radius: 8
+      height: snippetText.implicitHeight + 18
+      radius: 6
       color: selected
-             ? Theme.tint(Theme.accent, 0.16)
-             : (rowMouse.containsMouse ? Theme.surfaceHover : "transparent")
+             ? Theme.surfaceHover
+             : (rowMouse.containsMouse ? Theme.surfaceAlt : "transparent")
+
+      Behavior on color {
+        ColorAnimation {
+          duration: 150
+          easing.type: Easing.OutQuad
+        }
+      }
 
       Rectangle {
         visible: resultRow.selected

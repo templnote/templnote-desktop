@@ -182,6 +182,45 @@ Item {
     focusDelegateAt(0, 0)
   }
 
+  function ensureCursorVisible(cursorGlobalY, cursorHeight) {
+    if (cursorHeight <= 0 || documentView.height <= 0)
+      return
+
+    // Map global Y coordinate to documentView local coordinates
+    const localCursor = documentView.mapFromItem(null, 0, cursorGlobalY)
+    const localCursorY = localCursor.y
+    const viewHeight = documentView.height
+
+    // When the cursor gets close to the bottom (within bottom 35% of the view)
+    // or goes below the view, smoothly scroll so the cursor is centered.
+    const triggerThreshold = viewHeight * 0.65
+    if (localCursorY + cursorHeight > triggerThreshold) {
+      const currentContentY = scrollAnimation.running ? scrollAnimation.to : documentView.contentY
+      const targetContentY = currentContentY + (localCursorY - (viewHeight / 2))
+      const maxContentY = Math.max(0, documentView.contentHeight - viewHeight)
+      const clampedTarget = Math.max(0, Math.min(targetContentY, maxContentY))
+
+      if (Math.abs(clampedTarget - currentContentY) > 2) {
+        scrollAnimation.stop()
+        scrollAnimation.from = documentView.contentY
+        scrollAnimation.to = clampedTarget
+        scrollAnimation.start()
+      }
+    } else if (localCursorY < 0) {
+      // If cursor is scrolled above the view (e.g. arrow up), scroll up to keep it visible
+      const currentContentY = scrollAnimation.running ? scrollAnimation.to : documentView.contentY
+      const targetContentY = currentContentY + localCursorY - (viewHeight * 0.2)
+      const clampedTarget = Math.max(0, targetContentY)
+
+      if (Math.abs(clampedTarget - currentContentY) > 2) {
+        scrollAnimation.stop()
+        scrollAnimation.from = documentView.contentY
+        scrollAnimation.to = clampedTarget
+        scrollAnimation.start()
+      }
+    }
+  }
+
   Connections {
     target: root.model
 
@@ -305,6 +344,14 @@ Item {
     // is still allowed when the menu is first positioned.
     interactive: root.activeCommandDelegate === null
 
+    NumberAnimation {
+      id: scrollAnimation
+      target: documentView
+      property: "contentY"
+      duration: 180
+      easing.type: Easing.OutCubic
+    }
+
     delegate: Item {
       id: delegateRoot
 
@@ -371,9 +418,10 @@ Item {
         searchHighlights: root.searchHighlightsFor(delegateRoot.blockId)
         searchNavigationActive: root.searchNavigationActive
 
-        onCaretMoved: function(position) {
+        onCaretMoved: function(position, cursorGlobalY, cursorHeight) {
           root.caretBlockId = delegateRoot.blockId
           root.caretPosition = position
+          root.ensureCursorVisible(cursorGlobalY, cursorHeight)
         }
 
         onSearchNavigated: function(direction) {
@@ -559,7 +607,7 @@ Item {
 
     footer: Item {
       width: documentView.width
-      height: documentView.height * 0.6
+      height: documentView.height * 0.8
     }
 
     Component.onCompleted: {

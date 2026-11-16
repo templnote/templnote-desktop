@@ -134,7 +134,10 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_document_20_regular.svg
   assets/icons/ic_fluent_folder_add_20_regular.svg
   assets/icons/ic_fluent_line_horizontal_3_20_regular.svg
+  assets/icons/ic_fluent_globe_search_20_regular.svg
   assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
+  assets/icons/ic_fluent_mic_pulse_20_regular.svg
+  assets/icons/ic_fluent_chevron_down_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

@@ -1,6 +1,10 @@
 #include "SearchResultsModel.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QVariantMap>
+
+#include "../storage/AppPaths.h"
 
 namespace Templnote {
 SearchResultsModel::SearchResultsModel(QObject *parent)
@@ -21,6 +25,8 @@ QVariant SearchResultsModel::data(const QModelIndex &index, int role) const {
     return result.documentTitle;
   case DocumentPathRole:
     return result.documentPath;
+  case DocumentRelativePathRole:
+    return relativeDocumentPath(result.documentPath);
   case BlockIdRole:
     return result.blockId;
   case BlockTextRole:
@@ -47,6 +53,7 @@ QVariant SearchResultsModel::data(const QModelIndex &index, int role) const {
 QHash<int, QByteArray> SearchResultsModel::roleNames() const {
   return {{DocumentTitleRole, "documentTitle"},
           {DocumentPathRole, "documentPath"},
+          {DocumentRelativePathRole, "documentRelativePath"},
           {BlockIdRole, "blockId"},
           {BlockTextRole, "blockText"},
           {SnippetRole, "snippet"},
@@ -96,6 +103,8 @@ QVariantMap SearchResultsModel::resultAt(int row) const {
 
   map.insert(QStringLiteral("documentTitle"), result.documentTitle);
   map.insert(QStringLiteral("documentPath"), result.documentPath);
+  map.insert(QStringLiteral("documentRelativePath"),
+             relativeDocumentPath(result.documentPath));
   map.insert(QStringLiteral("blockId"), result.blockId);
   map.insert(QStringLiteral("blockText"), result.blockText);
   map.insert(QStringLiteral("snippet"), result.snippet);
@@ -117,6 +126,25 @@ QString SearchResultsModel::groupTitle(const QString &documentPath) const {
   }
 
   return documentPath;
+}
+
+QString SearchResultsModel::relativeDocumentPath(
+    const QString &documentPath) const {
+  if (documentPath.isEmpty())
+    return {};
+
+  const QString root = m_index ? m_index->documentsRoot()
+                               : AppPaths::documentsDirectory();
+  if (root.isEmpty())
+    return documentPath;
+
+  const QString rel = QDir(root).relativeFilePath(documentPath);
+  if (rel.isEmpty() || rel == QLatin1String(".") ||
+      rel.startsWith(QLatin1String("..")) || QDir::isAbsolutePath(rel)) {
+    return QFileInfo(documentPath).fileName();
+  }
+
+  return QDir::cleanPath(rel);
 }
 
 int SearchResultsModel::groupMatchCount(const QString &documentPath) const {

@@ -22,7 +22,7 @@ Item {
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
-  signal caretMoved(int position)
+  signal caretMoved(int position, real cursorGlobalY, real cursorHeight)
   signal commandMenuRequested(string query, real xPosition, real yPosition, real cursorHeight)
   signal commandMenuDismissed()
   signal commandMenuAccepted()

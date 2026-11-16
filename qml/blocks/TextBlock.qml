@@ -39,7 +39,7 @@ Item {
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
-  signal caretMoved(int position)
+  signal caretMoved(int position, real cursorGlobalY, real cursorHeight)
 
   property bool commandMenuActive: false
 
@@ -296,13 +296,19 @@ Item {
           background: null
 
           onCursorPositionChanged: {
-            if (editor.activeFocus)
-              root.caretMoved(editor.cursorPosition)
+            if (editor.activeFocus) {
+              const cRect = editor.cursorRectangle
+              const mapped = editor.mapToItem(null, cRect.x, cRect.y)
+              root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0, cRect.height)
+            }
           }
 
           onActiveFocusChanged: {
-            if (editor.activeFocus)
-              root.caretMoved(editor.cursorPosition)
+            if (editor.activeFocus) {
+              const cRect = editor.cursorRectangle
+              const mapped = editor.mapToItem(null, cRect.x, cRect.y)
+              root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0, cRect.height)
+            }
           }
 
           Component.onCompleted: {

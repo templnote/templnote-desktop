@@ -23,6 +23,7 @@ Item {
   property var previousFocus: null
   property int currentIndex: -1
   property var currentResult: null
+  property string selectedDocumentPath: ""
 
   property alias query: searchField.text
 
@@ -66,7 +67,9 @@ Item {
 
     root.currentIndex = -1
     root.currentResult = null
+    root.selectedDocumentPath = ""
     resultsList.selectedIndex = -1
+    resultsList.selectedDocumentPath = ""
     preview.result = null
 
     if (shouldRestore && focusTarget)
@@ -84,7 +87,9 @@ Item {
     if (root.resultsModel.count === 0) {
       root.currentIndex = -1
       root.currentResult = null
+      root.selectedDocumentPath = ""
       resultsList.selectedIndex = -1
+      resultsList.selectedDocumentPath = ""
       preview.result = null
       return
     }
@@ -96,7 +101,9 @@ Item {
     if (!root.resultsModel || root.resultsModel.count === 0) {
       root.currentIndex = -1
       root.currentResult = null
+      root.selectedDocumentPath = ""
       resultsList.selectedIndex = -1
+      resultsList.selectedDocumentPath = ""
       preview.result = null
       return
     }
@@ -107,6 +114,8 @@ Item {
     if (next < 0)
       next += count
 
+    root.selectedDocumentPath = ""
+    resultsList.selectedDocumentPath = ""
     root.currentIndex = next
     root.currentResult = root.resultsModel.resultAt(next)
     resultsList.selectedIndex = next
@@ -117,14 +126,107 @@ Item {
     })
   }
 
-  function move(direction) {
-    if (!root.resultsModel || root.resultsModel.count === 0)
+  function selectDocument(path) {
+    if (!path || path.length === 0)
       return
 
-    root.selectResult(root.currentIndex + direction)
+    root.selectedDocumentPath = path
+    resultsList.selectedDocumentPath = path
+    root.currentIndex = -1
+    root.currentResult = null
+    resultsList.selectedIndex = -1
+    preview.result = null
+
+    Qt.callLater(function() {
+      resultsList.positionDocument(path)
+    })
+  }
+
+  function openDocumentAtTop(path) {
+    if (!path || path.length === 0)
+      return
+
+    root.close(false)
+
+    if (!root.blockModel)
+      return
+
+    if (root.blockModel.currentFilePath !== path) {
+      if (!root.blockModel.loadDocument(path))
+        return
+
+      if (root.documentList)
+        root.documentList.currentFilePath = path
+    }
+
+    Qt.callLater(function() {
+      if (root.editor) {
+        root.editor.focusFirstBlock()
+      }
+    })
+  }
+
+  function navigationItems() {
+    const items = []
+    if (!root.resultsModel || root.resultsModel.count === 0)
+      return items
+
+    let lastPath = ""
+    for (let i = 0; i < root.resultsModel.count; ++i) {
+      const res = root.resultsModel.resultAt(i)
+      if (!res) continue
+      if (res.documentPath !== lastPath) {
+        lastPath = res.documentPath
+        items.push({ type: "doc", path: lastPath })
+      }
+      items.push({ type: "result", index: i, result: res })
+    }
+    return items
+  }
+
+  function move(direction) {
+    const items = navigationItems()
+    if (items.length === 0)
+      return
+
+    let currentPos = -1
+    for (let i = 0; i < items.length; ++i) {
+      const it = items[i]
+      if (root.selectedDocumentPath.length > 0) {
+        if (it.type === "doc" && it.path === root.selectedDocumentPath) {
+          currentPos = i
+          break
+        }
+      } else if (root.currentIndex >= 0) {
+        if (it.type === "result" && it.index === root.currentIndex) {
+          currentPos = i
+          break
+        }
+      }
+    }
+
+    if (currentPos < 0) {
+      currentPos = direction > 0 ? -1 : items.length
+    }
+
+    let nextPos = (currentPos + direction) % items.length
+    if (nextPos < 0)
+      nextPos += items.length
+
+    const target = items[nextPos]
+    if (target.type === "doc") {
+      root.selectDocument(target.path)
+    } else {
+      root.selectResult(target.index)
+    }
   }
 
   function accept() {
+    if (root.selectedDocumentPath.length > 0) {
+      root.openDocumentAtTop(root.selectedDocumentPath)
+      return
+    }
+
     if (root.currentIndex < 0 || !root.currentResult)
       return
 
@@ -191,10 +293,10 @@ Item {
     anchors.centerIn: parent
     width: Math.min(parent.width - 80, 1040)
     height: Math.min(parent.height - 80, 700)
-    radius: 10
-    color: Theme.background
-    border.width: 1
-    border.color: Theme.border
+    radius: 12
+    color: Theme.surface
+    border.width: 0
+    clip: true
 
     // Swallow clicks so clicking inside the panel does not dismiss it.
     MouseArea {
@@ -203,79 +305,83 @@ Item {
 
     ColumnLayout {
       anchors.fill: parent
-      anchors.margins: 16
+      anchors.margins: 14
       spacing: 10
 
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: 10
-
-        IconImage {
-          Layout.preferredWidth: 18
-          Layout.preferredHeight: 18
-          source: Qt.resolvedUrl("../assets/icons/ic_fluent_search_20_regular.svg")
-          sourceSize.width: 18
-          sourceSize.height: 18
-          color: Theme.textFaint
-        }
-
-        TextField {
-          id: searchField
-
-          Layout.fillWidth: true
-          Layout.preferredHeight: 34
-          padding: 0
-          topPadding: 0
-          bottomPadding: 0
-
-          color: Theme.text
-          selectionColor: Theme.accent
-          selectedTextColor: Theme.accentText
-          placeholderText: "Search all documents"
-          placeholderTextColor: Theme.textFaint
-          font.pixelSize: 15
-          selectByMouse: true
-          background: null
-
-          onTextChanged: {
-            if (root.visible)
-              root.runSearch()
-          }
-
-          onAccepted: root.accept()
-
-          Keys.onUpPressed: function(event) {
-            event.accepted = true
-            root.move(-1)
-          }
-
-          Keys.onDownPressed: function(event) {
-            event.accepted = true
-            root.move(1)
-          }
-
-          Keys.onEscapePressed: function(event) {
-            event.accepted = true
-            root.close(true)
-          }
-        }
-
-        Text {
-          visible: searchField.text.length > 0
-          text: root.resultsModel
-                ? root.resultsModel.count
-                  + (root.resultsModel.count === 1 ? " result"
-                                                   : " results")
-                : ""
-          color: Theme.textMuted
-          font.pixelSize: 11
-        }
-      }
-
+      // Search input bar with subtle pill background
       Rectangle {
         Layout.fillWidth: true
-        Layout.preferredHeight: 1
-        color: Theme.border
+        Layout.preferredHeight: 44
+        radius: 8
+        color: Theme.surfaceAlt
+
+        RowLayout {
+          anchors.fill: parent
+          anchors.leftMargin: 12
+          anchors.rightMargin: 12
+          spacing: 10
+
+          IconImage {
+            Layout.preferredWidth: 18
+            Layout.preferredHeight: 18
+            source: Qt.resolvedUrl("../assets/icons/ic_fluent_search_20_regular.svg")
+            sourceSize.width: 18
+            sourceSize.height: 18
+            color: Theme.textFaint
+          }
+
+          TextField {
+            id: searchField
+
+            Layout.fillWidth: true
+            Layout.preferredHeight: 34
+            padding: 0
+            topPadding: 0
+            bottomPadding: 0
+
+            color: Theme.text
+            selectionColor: Theme.accent
+            selectedTextColor: Theme.accentText
+            placeholderText: "Search all documents"
+            placeholderTextColor: Theme.textFaint
+            font.pixelSize: 15
+            selectByMouse: true
+            background: null
+
+            onTextChanged: {
+              if (root.visible)
+                root.runSearch()
+            }
+
+            onAccepted: root.accept()
+
+            Keys.onUpPressed: function(event) {
+              event.accepted = true
+              root.move(-1)
+            }
+
+            Keys.onDownPressed: function(event) {
+              event.accepted = true
+              root.move(1)
+            }
+
+            Keys.onEscapePressed: function(event) {
+              event.accepted = true
+              root.close(true)
+            }
+          }
+
+          Text {
+            visible: searchField.text.length > 0
+            text: root.resultsModel
+                  ? root.resultsModel.count
+                    + (root.resultsModel.count === 1 ? " result"
+                                                     : " results")
+                  : ""
+            color: Theme.textMuted
+            font.pixelSize: 11
+          }
+        }
       }
 
       SplitView {
@@ -284,9 +390,9 @@ Item {
         orientation: Qt.Horizontal
 
         handle: Rectangle {
-          implicitWidth: 1
-          implicitHeight: 1
-          color: Theme.border
+          implicitWidth: 8
+          implicitHeight: 8
+          color: "transparent"
         }
 
         ResultsList {
@@ -304,6 +410,15 @@ Item {
           onResultClicked: function(index) {
             root.selectResult(index)
             searchField.forceActiveFocus()
+          }
+
+          onDocumentHeaderClicked: function(path) {
+            root.selectDocument(path)
+            searchField.forceActiveFocus()
+          }
+
+          onDocumentHeaderDoubleClicked: function(path) {
+            root.openDocumentAtTop(path)
           }
         }
 

@@ -19,9 +19,15 @@ Item {
     id: highlighter
   }
 
+  Rectangle {
+    anchors.fill: parent
+    radius: 8
+    color: Theme.background
+  }
+
   ColumnLayout {
     anchors.fill: parent
-    anchors.margins: 20
+    anchors.margins: 16
     spacing: 8
     visible: root.hasResult
 
@@ -36,7 +42,11 @@ Item {
 
     Text {
       Layout.fillWidth: true
-      text: root.hasResult ? root.result.documentPath : ""
+      text: root.hasResult
+            ? (root.result.documentRelativePath !== undefined && root.result.documentRelativePath.length > 0
+               ? root.result.documentRelativePath
+               : root.result.documentPath)
+            : ""
       color: Theme.textFaint
       font.pixelSize: 11
       elide: Text.ElideMiddle
@@ -53,10 +63,8 @@ Item {
       font.pixelSize: 11
     }
 
-    Rectangle {
-      Layout.fillWidth: true
-      Layout.preferredHeight: 1
-      color: Theme.border
+    Item {
+      Layout.preferredHeight: 6
     }
 
     Flickable {

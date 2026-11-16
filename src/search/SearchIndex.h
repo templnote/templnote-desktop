@@ -58,6 +58,8 @@ public:
   DocumentListModel *documentList() const;
   void setDocumentList(DocumentListModel *model);
 
+  QString documentsRoot() const;
+
   // Returns matching blocks grouped and ordered by the best rank per
   // document. Plain text queries are split into whitespace-separated terms;
   // every term must prefix-match a token in the block text (FTS5 AND).
@@ -138,8 +140,6 @@ private:
   static QString makeSnippet(const QString &text,
                              const QVector<MatchRange> &ranges,
                              QVector<MatchRange> *snippetRanges);
-
-  QString documentsRoot() const;
 
   QSqlDatabase m_db;
   QString m_connectionName;

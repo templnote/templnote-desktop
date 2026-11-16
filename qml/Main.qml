@@ -205,7 +205,7 @@ ApplicationWindow {
     PromptPanel {
       id: promptPanel
       z: 1
-      width: workspace.contentWidth
+      expandedWidth: workspace.contentWidth
       anchors {
         horizontalCenter: parent.horizontalCenter
         bottom: parent.bottom
@@ -216,6 +216,23 @@ ApplicationWindow {
       id: optionsMenu
       anchors.fill: parent
       z: 3
+      searchActive: searchBar.visible
+      globalSearchActive: searchWindow.visible
+      onSearchRequested: {
+        if (searchBar.visible)
+          searchBar.close(true)
+        else
+          searchBar.open()
+      }
+      onGlobalSearchRequested: {
+        if (searchWindow.visible) {
+          searchWindow.close()
+        } else {
+          if (searchBar.visible)
+            searchBar.close(false)
+          searchWindow.open()
+        }
+      }
     }
   }
 

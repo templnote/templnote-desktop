@@ -29,7 +29,12 @@ Item {
   readonly property int menuBottomPadding: 16
   readonly property int menuMaxHeight: 260
 
+  property bool searchActive: false
+  property bool globalSearchActive: false
+
   signal optionTriggered(string key)
+  signal searchRequested()
+  signal globalSearchRequested()
 
   property var previousFocus: null
 
@@ -98,6 +103,13 @@ Item {
            ? Theme.surfaceHover
            : "transparent"
 
+    Behavior on color {
+      ColorAnimation {
+        duration: 150
+        easing.type: Easing.OutQuad
+      }
+    }
+
     IconImage {
       anchors.centerIn: parent
       width: 20
@@ -125,6 +137,106 @@ Item {
 
     ToolTip.visible: triggerMouse.containsMouse && !root.menuOpen
     ToolTip.text: "Options"
+    ToolTip.delay: 500
+  }
+
+  Rectangle {
+    id: searchButton
+
+    anchors {
+      top: trigger.top
+      right: globalSearchButton.left
+      rightMargin: 6
+    }
+
+    width: 28
+    height: 28
+    radius: 8
+    color: searchMouse.containsMouse || root.searchActive
+           ? Theme.surfaceHover
+           : "transparent"
+
+    Behavior on color {
+      ColorAnimation {
+        duration: 150
+        easing.type: Easing.OutQuad
+      }
+    }
+
+    IconImage {
+      anchors.centerIn: parent
+      width: 20
+      height: 20
+      source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_search_20_regular.svg"
+      sourceSize.width: 20
+      sourceSize.height: 20
+      color: root.searchActive ? Theme.accent : Theme.textMuted
+    }
+
+    MouseArea {
+      id: searchMouse
+
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+
+      onClicked: {
+        root.searchRequested()
+      }
+    }
+
+    ToolTip.visible: searchMouse.containsMouse
+    ToolTip.text: "Find in document (Ctrl+/)"
+    ToolTip.delay: 500
+  }
+
+  Rectangle {
+    id: globalSearchButton
+
+    anchors {
+      top: trigger.top
+      right: trigger.left
+      rightMargin: 6
+    }
+
+    width: 28
+    height: 28
+    radius: 8
+    color: globalSearchMouse.containsMouse || root.globalSearchActive
+           ? Theme.surfaceHover
+           : "transparent"
+
+    Behavior on color {
+      ColorAnimation {
+        duration: 150
+        easing.type: Easing.OutQuad
+      }
+    }
+
+    IconImage {
+      anchors.centerIn: parent
+      width: 20
+      height: 20
+      source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_globe_search_20_regular.svg"
+      sourceSize.width: 20
+      sourceSize.height: 20
+      color: root.globalSearchActive ? Theme.accent : Theme.textMuted
+    }
+
+    MouseArea {
+      id: globalSearchMouse
+
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+
+      onClicked: {
+        root.globalSearchRequested()
+      }
+    }
+
+    ToolTip.visible: globalSearchMouse.containsMouse
+    ToolTip.text: "Search all documents (Ctrl+Shift+/)"
     ToolTip.delay: 500
   }
 
