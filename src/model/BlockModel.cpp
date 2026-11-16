@@ -868,6 +868,21 @@ bool BlockModel::createDocument(const QString &path) {
   return true;
 }
 
+bool BlockModel::closeDocument() {
+  Document empty;
+  resetDocument(std::move(empty));
+
+  m_createdAt.clear();
+  m_lastError.clear();
+  emit lastErrorChanged();
+
+  setModified(false);
+  setLastModified({});
+  setCurrentFilePath({});
+
+  return true;
+}
+
 bool BlockModel::renameDocument(const QString &newBaseName) {
   if (m_currentFilePath.isEmpty())
     return setError(QStringLiteral("This document has not been saved yet."));

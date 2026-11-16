@@ -211,6 +211,25 @@ private slots:
              QFileInfo(documentPath).absoluteFilePath());
   }
 
+  void mostRecentDocumentPathRecursiveFindsSubfolders() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    DocumentListModel model(directory.path());
+    const QString folder = model.createUntitledFolder();
+    QVERIFY(!folder.isEmpty());
+
+    const QString documentPath = QDir(folder).filePath("Nested.templnote");
+    QFile document(documentPath);
+    QVERIFY(document.open(QIODevice::WriteOnly));
+    document.write("{\"format\":\"templnote\",\"version\":1,\"blocks\":[]}");
+    document.close();
+
+    model.refresh();
+    QCOMPARE(model.mostRecentDocumentPathRecursive(),
+             QFileInfo(documentPath).absoluteFilePath());
+  }
+
   void documentListTracksFiles() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

@@ -481,6 +481,35 @@ QString DocumentListModel::mostRecentDocumentPath() const {
   return {};
 }
 
+QString DocumentListModel::mostRecentDocumentPathRecursive() const {
+  if (m_rootDirectory.isEmpty())
+    return {};
+
+  QString bestPath;
+  QDateTime bestModified;
+
+  QDirIterator iterator(m_rootDirectory, QDir::Files | QDir::Readable,
+                        QDirIterator::Subdirectories);
+
+  while (iterator.hasNext()) {
+    const QFileInfo info(iterator.next());
+
+    if (info.suffix().compare(QStringLiteral("templnote"),
+                              Qt::CaseInsensitive) != 0) {
+      continue;
+    }
+
+    const QDateTime modified = info.lastModified();
+
+    if (bestPath.isEmpty() || modified > bestModified) {
+      bestPath = info.absoluteFilePath();
+      bestModified = modified;
+    }
+  }
+
+  return bestPath;
+}
+
 QString DocumentListModel::filePathAt(int row) const {
   if (row < 0 || row >= m_entries.size())
     return {};

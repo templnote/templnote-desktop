@@ -79,6 +79,7 @@ qt_add_qml_module(templnote
   qml/Main.qml
   qml/Theme.qml
   qml/Preferences.qml
+  qml/HomeScreen.qml
   qml/DocumentHeader.qml
   qml/Editor.qml
   qml/BlockRenderer.qml

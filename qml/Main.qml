@@ -11,12 +11,23 @@ ApplicationWindow {
   minimumWidth: 900
 
   visible: true
-  title: "Templnote — " + blockModel.documentTitle + (blockModel.isModified ? " •" : "")
+  title: hasDocument
+         ? "Templnote — " + blockModel.documentTitle + (blockModel.isModified ? " •" : "")
+         : "Templnote"
   color: Theme.background
+
+  // True while a document is loaded. When false the workspace shows the blank
+  // home surface instead of an empty editor.
+  readonly property bool hasDocument: blockModel.currentFilePath.length > 0
 
   // Set once the user chose Save/Discard so the close handler lets the
   // window go through on the second pass.
   property bool allowClose: false
+
+  onHasDocumentChanged: {
+    if (!hasDocument && searchBar.visible)
+      searchBar.close(false)
+  }
 
   onClosing: function(close) {
     if (window.allowClose || !blockModel.isModified)
@@ -81,8 +92,15 @@ ApplicationWindow {
     target: blockModel
 
     function onCurrentFilePathChanged() {
-      documentList.currentFilePath = blockModel.currentFilePath
+      const path = blockModel.currentFilePath
+
+      documentList.currentFilePath = path
       documentList.refresh()
+
+      // Remember the exact document so session restore does not have to guess
+      // from modification times (and can find files inside subfolders).
+      if (path.length > 0)
+        Preferences.lastDocumentPath = path
     }
 
     function onDocumentLoaded() {
@@ -95,21 +113,12 @@ ApplicationWindow {
     sequence: StandardKey.Save
     context: Qt.ApplicationShortcut
     onActivated: {
-      if (blockModel.currentFilePath.length > 0) {
-        if (blockModel.saveCurrentDocument())
-          documentList.refresh()
+      // Nothing to save while the home surface is showing.
+      if (blockModel.currentFilePath.length === 0)
         return
-      }
 
-      const path = documentList.createUntitledPath()
-
-      if (path.length > 0 && blockModel.createDocument(path)) {
-        documentList.currentFilePath = path
+      if (blockModel.saveCurrentDocument())
         documentList.refresh()
-        Qt.callLater(function() {
-          editor.focusFirstBlock()
-        })
-      }
     }
   }
 
@@ -131,7 +140,7 @@ ApplicationWindow {
   Shortcut {
     sequence: "Ctrl+/"
     context: Qt.ApplicationShortcut
-    enabled: !searchWindow.visible
+    enabled: !searchWindow.visible && window.hasDocument
     onActivated: searchBar.open()
   }
 
@@ -207,12 +216,21 @@ ApplicationWindow {
       color: Theme.background
     }
 
+    HomeScreen {
+      id: homeScreen
+
+      anchors.fill: parent
+      visible: !window.hasDocument
+      z: 0
+    }
+
     Editor {
       id: editor
       anchors.fill: parent
       contentWidth: workspace.contentWidth
       bottomReservedSpace: promptPanel.height
       model: blockModel
+      visible: window.hasDocument
     }
 
     DocumentHeader {
@@ -220,6 +238,7 @@ ApplicationWindow {
 
       model: blockModel
 
+      visible: window.hasDocument
       width: Math.min(workspace.contentWidth, workspace.width - 48)
       z: 2
 
@@ -250,6 +269,7 @@ ApplicationWindow {
     PromptPanel {
       id: promptPanel
       z: 1
+      visible: window.hasDocument
       expandedWidth: workspace.contentWidth
       anchors {
         horizontalCenter: parent.horizontalCenter
@@ -273,6 +293,8 @@ ApplicationWindow {
 
       onOptionTriggered: function(key) {
         if (key === "find") {
+          if (!window.hasDocument)
+            return
           if (searchBar.visible)
             searchBar.close(true)
           else
@@ -293,6 +315,8 @@ ApplicationWindow {
       }
 
       onSearchRequested: {
+        if (!window.hasDocument)
+          return
         if (searchBar.visible)
           searchBar.close(true)
         else
@@ -503,20 +527,16 @@ ApplicationWindow {
               if (pathToDelete.length > 0) {
                 documentList.deleteEntry(pathToDelete)
 
-                // If currently open document was deleted, switch to another or open untitled
+                // If the currently open document was deleted, switch to the
+                // most recent survivor; otherwise fall back to the home
+                // surface with no document open.
                 if (blockModel.currentFilePath === pathToDelete) {
                   const recent = documentList.mostRecentDocumentPath()
                   if (recent.length > 0 && blockModel.loadDocument(recent)) {
                     documentList.currentFilePath = recent
                   } else {
-                    const newPath = documentList.createUntitledPath()
-                    if (newPath.length > 0 && blockModel.createDocument(newPath)) {
-                      documentList.currentFilePath = newPath
-                      documentList.refresh()
-                      Qt.callLater(function() {
-                        editor.focusFirstBlock()
-                      })
-                    }
+                    Preferences.lastDocumentPath = ""
+                    blockModel.closeDocument()
                   }
                 }
               }
@@ -703,26 +723,26 @@ ApplicationWindow {
   Component.onCompleted: {
     fileExplorer.expanded = Preferences.expandExplorerOnLaunch
 
-    // Reopen the most recently touched document when session restore is
-    // enabled; otherwise start a fresh untitled document so Ctrl+S always has
-    // a destination.
-    const recent = Preferences.restoreLastSession
-                 ? documentList.mostRecentDocumentPath()
-                 : ""
+    // Reopen the exact document from the previous session when restore is
+    // enabled. The saved path is preferred because the last open document may
+    // live in a subfolder or not be the most recently modified file. Fall back
+    // to the newest document anywhere in the tree for older configs.
+    let restored = ""
 
-    if (recent.length > 0 && blockModel.loadDocument(recent)) {
-      documentList.currentFilePath = recent
-      return
+    if (Preferences.restoreLastSession) {
+      const saved = Preferences.lastDocumentPath
+
+      if (saved.length > 0 && blockModel.loadDocument(saved))
+        restored = saved
+      else {
+        const recent = documentList.mostRecentDocumentPathRecursive()
+
+        if (recent.length > 0 && blockModel.loadDocument(recent))
+          restored = recent
+      }
     }
 
-    const path = documentList.createUntitledPath()
-
-    if (path.length > 0 && blockModel.createDocument(path)) {
-      documentList.currentFilePath = path
-      documentList.refresh()
-      Qt.callLater(function() {
-        editor.focusFirstBlock()
-      })
-    }
+    if (restored.length > 0)
+      documentList.currentFilePath = restored
   }
 }

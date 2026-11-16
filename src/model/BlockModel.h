@@ -126,6 +126,11 @@ public:
   // to `path`. Used by FileExplorer for "New document".
   Q_INVOKABLE bool createDocument(const QString &path);
 
+  // Drops the in-memory document and returns to the no-document state. The
+  // file on disk is untouched; this is used when the open file is deleted or
+  // when the workspace should show the home surface again.
+  Q_INVOKABLE bool closeDocument();
+
   // undo redo
   Q_INVOKABLE bool undo();
   bool canUndo() const;

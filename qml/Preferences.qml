@@ -19,6 +19,7 @@ QtObject {
 
     // General
     property bool restoreLastSession: true
+    property string lastDocumentPath: ""
     property bool checkForUpdates: true
 
     // Interface
@@ -37,6 +38,7 @@ QtObject {
   }
 
   property alias restoreLastSession: settings.restoreLastSession
+  property alias lastDocumentPath: settings.lastDocumentPath
   property alias checkForUpdates: settings.checkForUpdates
 
   property alias showNavigationRail: settings.showNavigationRail

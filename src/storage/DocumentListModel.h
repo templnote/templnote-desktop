@@ -82,6 +82,10 @@ public:
   // Folders are ignored.
   Q_INVOKABLE QString mostRecentDocumentPath() const;
 
+  // Same, but searches the whole document tree. Used by session restore so a
+  // document inside a subfolder is still found when no saved path exists.
+  Q_INVOKABLE QString mostRecentDocumentPathRecursive() const;
+
   // Path of the entry at `row`, or an empty string when out of range.
   Q_INVOKABLE QString filePathAt(int row) const;
 
