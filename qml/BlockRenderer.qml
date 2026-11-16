@@ -16,6 +16,8 @@ Item {
   readonly property var block: loader.item
   readonly property int cursorPosition: block ? block.cursorPosition : 0
   readonly property string editorText: block ? block.editorText : ""
+  readonly property bool isFocused: block ? block.isFocused : false
+  readonly property bool isHovered: block ? block.isHovered : false
 
   signal enterPressed()
   signal backspacePressed()

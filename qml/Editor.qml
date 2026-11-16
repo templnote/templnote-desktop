@@ -20,6 +20,14 @@ Item {
   property real selectionToolbarGap: 6
   property var pendingSelection: null
 
+  // Drag and drop reordering state
+  property string draggingBlockId: ""
+  property int draggingSourceIndex: -1
+  property int dropTargetIndex: -1
+  property real draggingVisualY: 0
+  property real draggingItemHeight: 0
+  property bool isDraggingBlock: draggingBlockId.length > 0
+
   Timer {
     id: selectionTimer
     interval: 200
@@ -395,10 +403,9 @@ Item {
 
     model: root.model
     spacing: 0
-    clip: true
-    // Keep the command menu anchored while it is open. Programmatic scrolling
-    // is still allowed when the menu is first positioned.
-    interactive: root.activeCommandDelegate === null
+    clip: false
+    // Keep the command menu anchored while it is open, and disable normal list scrolling while dragging
+    interactive: root.activeCommandDelegate === null && !root.isDraggingBlock
 
     NumberAnimation {
       id: scrollAnimation
@@ -427,8 +434,42 @@ Item {
       readonly property bool isCompactList: (isBullet && nextIsBullet) || (isNumbered && nextIsNumbered)
       readonly property var rendererItem: renderer
 
+      readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
+
+      // Dynamic vertical shift to make room for dragged block
+      property real visualDisplacement: {
+        if (!root.isDraggingBlock || isBeingDragged)
+          return 0
+        const from = root.draggingSourceIndex
+        const to = root.dropTargetIndex
+        if (from < to) {
+          // Dragged downwards: items between (from, to] shift UP by draggingItemHeight
+          if (delegateRoot.index > from && delegateRoot.index <= to)
+            return -root.draggingItemHeight
+        } else if (from > to) {
+          // Dragged upwards: items between [to, from) shift DOWN by draggingItemHeight
+          if (delegateRoot.index >= to && delegateRoot.index < from)
+            return root.draggingItemHeight
+        }
+        return 0
+      }
+
       width: documentView.width
       height: renderer.implicitHeight + (delegateRoot.isCompactList ? 0 : 5)
+      z: isBeingDragged ? 100 : 1
+
+      transform: Translate {
+        y: delegateRoot.isBeingDragged ? root.draggingVisualY : delegateRoot.visualDisplacement
+        Behavior on y {
+          enabled: !delegateRoot.isBeingDragged
+          NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+      }
+
+      opacity: isBeingDragged ? 0.85 : 1.0
+      Behavior on opacity {
+        NumberAnimation { duration: 120 }
+      }
 
       function focusBlock(position) {
         renderer.focusEditor(position)
@@ -687,11 +728,171 @@ Item {
           root.redoFrom(delegateRoot.blockId, delegateRoot.index)
         }
       }
+
+      // Drag handle on the left margin
+      Item {
+        id: dragHandle
+        width: 18
+        height: 24
+        x: -28
+        y: 4
+        z: 10
+
+        property bool activeState: (renderer.isHovered || renderer.isFocused || handleHover.hovered || handleArea.pressed) && !root.isDraggingBlock
+
+        Timer {
+          id: showTimer
+          interval: 500
+          repeat: false
+          running: dragHandle.activeState && dragHandle.opacity === 0
+          onTriggered: {
+            if (dragHandle.activeState) {
+              dragHandle.opacity = 1.0
+            }
+          }
+        }
+
+        onActiveStateChanged: {
+          if (!activeState) {
+            showTimer.stop()
+            dragHandle.opacity = 0.0
+          }
+        }
+
+        opacity: 0.0
+        Behavior on opacity {
+          NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
+        }
+
+        Rectangle {
+          anchors.fill: parent
+          radius: 4
+          color: handleArea.pressed ? Theme.surfaceAlt : (handleHover.hovered ? Theme.surfaceHover : "transparent")
+        }
+
+        Image {
+          anchors.centerIn: parent
+          width: 16
+          height: 16
+          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
+          sourceSize: Qt.size(16, 16)
+        }
+
+        HoverHandler {
+          id: handleHover
+        }
+
+        MouseArea {
+          id: handleArea
+          anchors.fill: parent
+          cursorShape: Qt.OpenHandCursor
+          preventStealing: true
+
+          property real startGlobalY: 0
+
+          Timer {
+            id: holdTimer
+            interval: 200
+            repeat: false
+            onTriggered: {
+              if (handleArea.pressed) {
+                root.draggingBlockId = delegateRoot.blockId
+                root.draggingSourceIndex = delegateRoot.index
+                root.dropTargetIndex = delegateRoot.index
+                root.draggingVisualY = 0
+                root.draggingItemHeight = delegateRoot.height
+                handleArea.cursorShape = Qt.ClosedHandCursor
+              }
+            }
+          }
+
+          onPressed: function(mouse) {
+            startGlobalY = mapToItem(null, mouse.x, mouse.y).y
+            holdTimer.restart()
+          }
+
+          onPositionChanged: function(mouse) {
+            if (!root.isDraggingBlock) return
+
+            const currentGlobalY = mapToItem(null, mouse.x, mouse.y).y
+            root.draggingVisualY = currentGlobalY - startGlobalY
+
+            // Calculate drop target based on the center of the dragged item mapped to documentView
+            const mappedCenter = delegateRoot.mapToItem(documentView.contentItem, 0, (delegateRoot.height / 2) + root.draggingVisualY)
+            const targetIdx = documentView.indexAt(10, Math.max(0, mappedCenter.y))
+
+            if (targetIdx >= 0 && targetIdx < root.model.count) {
+              root.dropTargetIndex = targetIdx
+            }
+          }
+
+          onReleased: function(mouse) {
+            holdTimer.stop()
+            handleArea.cursorShape = Qt.OpenHandCursor
+
+            if (root.isDraggingBlock) {
+              const src = root.draggingSourceIndex
+              const dst = root.dropTargetIndex
+              const blockId = root.draggingBlockId
+
+              root.draggingBlockId = ""
+              root.draggingSourceIndex = -1
+              root.dropTargetIndex = -1
+              root.draggingVisualY = 0
+
+              if (src !== dst && src >= 0 && dst >= 0) {
+                root.model.moveBlock(blockId, dst)
+              }
+            }
+          }
+
+          onCanceled: {
+            holdTimer.stop()
+            handleArea.cursorShape = Qt.OpenHandCursor
+            root.draggingBlockId = ""
+            root.draggingSourceIndex = -1
+            root.dropTargetIndex = -1
+            root.draggingVisualY = 0
+          }
+        }
+      }
     }
 
     footer: Item {
       width: documentView.width
       height: documentView.height * 0.8
+    }
+
+    // Drop indicator line
+    Rectangle {
+      id: dropIndicator
+      width: documentView.width
+      height: 2
+      radius: 1
+      color: Theme.accent
+      visible: root.isDraggingBlock && root.dropTargetIndex >= 0
+
+      // Compute Y position relative to documentView
+      y: {
+        if (!visible) return 0
+        const targetItem = documentView.itemAtIndex(root.dropTargetIndex)
+        if (!targetItem) return 0
+
+        // Map targetItem's top or bottom position to documentView coordinates
+        const from = root.draggingSourceIndex
+        const to = root.dropTargetIndex
+        if (from <= to) {
+          // Dropping below or at to: line at bottom of targetItem
+          return targetItem.y + targetItem.height
+        } else {
+          // Dropping above: line at top of targetItem
+          return targetItem.y
+        }
+      }
+
+      Behavior on y {
+        NumberAnimation { duration: 100; easing.type: Easing.OutCubic }
+      }
     }
 
     Component.onCompleted: {
