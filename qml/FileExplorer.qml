@@ -40,6 +40,7 @@ Rectangle {
   }
 
   function openSearch() {
+    searchDebounce.stop()
     root.searchVisible = true
     root.searchQuery = ""
     root.searchResults = []
@@ -57,6 +58,7 @@ Rectangle {
     if (!root.searchVisible)
       return
 
+    searchDebounce.stop()
     root.searchVisible = false
     root.searchQuery = ""
     root.searchResults = []
@@ -69,10 +71,25 @@ Rectangle {
 
   function updateSearch(text) {
     root.searchQuery = text
-    root.searchResults = text.trim().length > 0 && root.documentList
-                        ? root.documentList.searchEntries(text)
-                        : []
-    root.searchIndex = root.searchResults.length > 0 ? 0 : -1
+
+    if (text.trim().length === 0 || !root.documentList) {
+      searchDebounce.stop()
+      root.searchResults = []
+      root.searchIndex = -1
+      return
+    }
+
+    // The recursive scan runs on a worker thread; debounce keystrokes so one
+    // query per pause is issued instead of one filesystem walk per character.
+    searchDebounce.restart()
+  }
+
+  function applySearchResults(query, results) {
+    if (query !== root.searchQuery)
+      return
+
+    root.searchResults = results
+    root.searchIndex = results.length > 0 ? 0 : -1
     root.scrollToSearchIndex()
   }
 
@@ -258,6 +275,24 @@ Rectangle {
     }
   }
 
+  Timer {
+    id: searchDebounce
+    interval: 180
+    repeat: false
+    onTriggered: {
+      if (root.documentList && root.searchQuery.trim().length > 0)
+        root.documentList.searchEntriesAsync(root.searchQuery)
+    }
+  }
+
+  Connections {
+    target: root.documentList ? root.documentList : null
+
+    function onSearchCompleted(query, results) {
+      root.applySearchResults(query, results)
+    }
+  }
+
   Shortcut {
     sequence: "Ctrl+Shift+N"
     enabled: root.expanded
@@ -270,7 +305,7 @@ Rectangle {
 
   Behavior on width {
     NumberAnimation {
-      duration: 180
+      duration: Preferences.reduceMotion || !Preferences.animateExplorer ? 0 : 180
       easing.type: Easing.OutCubic
     }
   }
@@ -349,18 +384,29 @@ Rectangle {
 
             required property var modelData
 
+            // The sort action is a reserved placeholder: keep the control in
+            // the layout but make it visibly inert instead of silently doing
+            // nothing when pressed.
+            readonly property bool available: modelData.action.length > 0
+
+            enabled: available
             icon.source: modelData.icon
             icon.width: 20
             icon.height: 20
-            icon.color: modelData.action === "search" && root.searchVisible
-                        ? Theme.accent : Theme.textMuted
+            icon.color: !available ? Theme.textFaint
+                        : modelData.action === "search" && root.searchVisible
+                          ? Theme.accent : Theme.textMuted
             width: (actionRow.width - actionRow.spacing * (actionRepeater.count - 1)) / actionRepeater.count
             height: 32
             padding: 0
 
+            ToolTip.visible: actionButton.hovered && !available
+            ToolTip.text: "Sorting is coming soon"
+            ToolTip.delay: 400
+
             background: Rectangle {
               radius: 8
-              color: actionButton.hovered ? Theme.surfaceHover : "transparent"
+              color: actionButton.hovered && actionButton.enabled ? Theme.surfaceHover : "transparent"
 
               Behavior on color {
                 ColorAnimation {
@@ -912,7 +958,7 @@ Rectangle {
                 source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_delete_20_regular.svg"
                 sourceSize.width: 14
                 sourceSize.height: 14
-                color: deleteMouse.containsMouse ? "#ef4444" : Theme.textMuted
+                color: deleteMouse.containsMouse ? Theme.danger : Theme.textMuted
               }
 
               MouseArea {

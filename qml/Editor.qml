@@ -21,8 +21,14 @@ Item {
   property real selectionToolbarGap: 6
   property var pendingSelection: null
 
+  // Focus is applied once the target delegate exists (or is reused), instead
+  // of polling/forcing synchronous layouts.
+  property string pendingFocusBlockId: ""
+  property int pendingFocusPosition: 0
+  property int pendingFocusRangeStart: -1
+  property int pendingFocusRangeEnd: -1
+
   // Drag and drop reordering state
-  property string hoveredBlockId: ""
   property string draggingBlockId: ""
   property int draggingSourceIndex: -1
   property int dropTargetIndex: -1
@@ -60,27 +66,34 @@ Item {
 
   function updateDragTarget() {
     if (!root.isDraggingBlock) return
-    const src = root.draggingSourceIndex
-    const curContentY = documentView.mapFromItem(null, 0, root.dragGlobalY).y + documentView.contentY
 
-    // Determine target index based on original block unshifted center lines
-    let bestTarget = src
-    let minDist = 999999
+    const count = root.model.count
+    if (count <= 0) return
 
-    for (let i = 0; i < root.model.count; ++i) {
-      const item = documentView.itemAtIndex(i)
-      if (!item) continue
-      const itemCenter = item.y + (item.height / 2)
-      const dist = Math.abs(curContentY - itemCenter)
-      if (dist < minDist) {
-        minDist = dist
-        bestTarget = i
-      }
+    const contentY = documentView.mapFromItem(null, 0, root.dragGlobalY).y
+                     + documentView.contentY
+
+    // Insertion point: the row the dragged block should be placed before.
+    // indexAt is O(1) and avoids measuring every row on long documents.
+    let insertion = documentView.indexAt(documentView.width / 2, contentY)
+
+    if (insertion < 0)
+      insertion = contentY < 0 ? 0 : count
+    else {
+      const item = documentView.itemAtIndex(insertion)
+
+      if (item && contentY > item.y + item.height / 2)
+        ++insertion
     }
 
-    if (bestTarget >= 0 && bestTarget < root.model.count) {
-      root.dropTargetIndex = bestTarget
-    }
+    // moveBlock() takes the final index after the source is removed. For a
+    // downward move that is one slot before the raw insertion point; without
+    // this correction the block lands one row too low.
+    const target = insertion > root.draggingSourceIndex
+                 ? insertion - 1
+                 : insertion
+
+    root.dropTargetIndex = Math.max(0, Math.min(target, count - 1))
   }
 
   Timer {
@@ -139,6 +152,10 @@ Item {
   property int activeSearchMatch: -1
   property bool searchActive: false
 
+  // blockId -> [{ start, length, active }]. Built once per search update so a
+  // delegate only reads its own slice instead of scanning every match.
+  property var searchHighlightsByBlock: ({})
+
   // True while the highlights come from the global search window. In this
   // mode the editor keeps focus, so Up/Down cycle matches, Escape dismisses
   // the highlights, and the first edit returns to normal writing.
@@ -164,9 +181,39 @@ Item {
     return { row: row, position: root.caretPosition }
   }
 
+  function rebuildSearchHighlightMap() {
+    const byBlock = ({})
+    const active = root.activeSearchMatch >= 0
+                   && root.activeSearchMatch < root.searchMatches.length
+                 ? root.searchMatches[root.activeSearchMatch]
+                 : null
+
+    for (let i = 0; i < root.searchMatches.length; ++i) {
+      const match = root.searchMatches[i]
+      let list = byBlock[match.blockId]
+
+      if (!list) {
+        list = []
+        byBlock[match.blockId] = list
+      }
+
+      list.push({
+        start: match.start,
+        length: match.length,
+        active: active !== null
+                && active.blockId === match.blockId
+                && active.start === match.start
+                && active.length === match.length
+      })
+    }
+
+    root.searchHighlightsByBlock = byBlock
+  }
+
   function setSearchMatches(matches, activeIndex) {
     root.searchMatches = matches
     root.activeSearchMatch = activeIndex
+    root.rebuildSearchHighlightMap()
 
     if (activeIndex >= 0 && activeIndex < matches.length)
       root.scrollToSearchMatch(matches[activeIndex])
@@ -175,6 +222,7 @@ Item {
   function clearSearch() {
     root.searchMatches = []
     root.activeSearchMatch = -1
+    root.searchHighlightsByBlock = ({})
     root.searchNavigationActive = false
   }
 
@@ -199,6 +247,7 @@ Item {
     const match = root.searchMatches[next]
 
     root.activeSearchMatch = next
+    root.rebuildSearchHighlightMap()
     root.scrollToSearchMatch(match)
     root.focusSearchMatch(match)
   }
@@ -218,83 +267,80 @@ Item {
     if (row < 0)
       return
 
-    documentView.forceLayout()
-
-    Qt.callLater(function() {
-      documentView.positionViewAtIndex(row, ListView.Contain)
-    })
+    documentView.positionViewAtIndex(row, ListView.Contain)
   }
 
   // Enter on the find bar: move the caret into the matched block and select
   // the matched range so it stays visible after the highlights are cleared.
   function focusSearchMatch(match) {
-    const row = root.model.indexOfBlock(match.blockId)
-
-    if (row < 0)
+    if (root.model.indexOfBlock(match.blockId) < 0)
       return
 
-    documentView.positionViewAtIndex(row, ListView.Contain)
-    documentView.forceLayout()
-
-    Qt.callLater(function() {
-      const delegate = documentView.itemAtIndex(row)
-
-      if (delegate) {
-        delegate.refreshBlock()
-        delegate.focusBlockAtRange(match.start, match.start + match.length)
-      }
-    })
+    root.requestFocusBlock(match.blockId, match.start,
+                           match.start, match.start + match.length)
   }
 
-  // Returns the highlight descriptors for one block. Compared by blockId
-  // because the row can change while the find bar is open.
-  function searchHighlightsFor(blockId) {
-    const highlights = []
-    const active = root.activeSearchMatch >= 0
-                   && root.activeSearchMatch < root.searchMatches.length
-                 ? root.searchMatches[root.activeSearchMatch]
-                 : null
+  // Sets a focus intent. The delegate applies it when it exists, so a model
+  // reset or delegate reuse never leaves the caret in the wrong block.
+  function requestFocusBlock(blockId, position, rangeStart, rangeEnd) {
+    if (!blockId || blockId.length === 0)
+      return
 
-    for (let i = 0; i < root.searchMatches.length; ++i) {
-      const match = root.searchMatches[i]
+    root.pendingFocusBlockId = blockId
+    root.pendingFocusPosition = position
+    root.pendingFocusRangeStart = rangeStart === undefined ? -1 : rangeStart
+    root.pendingFocusRangeEnd = rangeEnd === undefined ? -1 : rangeEnd
 
-      if (match.blockId !== blockId)
-        continue
+    const row = root.model.indexOfBlock(blockId)
 
-      highlights.push({
-        start: match.start,
-        length: match.length,
-        active: active !== null
-                && active.blockId === match.blockId
-                && active.start === match.start
-                && active.length === match.length
-      })
+    if (row >= 0)
+      documentView.positionViewAtIndex(row, ListView.Contain)
+
+    Qt.callLater(root.applyPendingFocus)
+  }
+
+  function applyPendingFocus() {
+    if (root.pendingFocusBlockId.length === 0)
+      return
+
+    const row = root.model.indexOfBlock(root.pendingFocusBlockId)
+
+    if (row < 0) {
+      root.pendingFocusBlockId = ""
+      return
     }
 
-    return highlights
+    const delegate = documentView.itemAtIndex(row)
+
+    // The delegate's Component.onCompleted/onBlockIdChanged applies the
+    // intent once it materializes.
+    if (!delegate)
+      return
+
+    const position = root.pendingFocusPosition
+    const rangeStart = root.pendingFocusRangeStart
+    const rangeEnd = root.pendingFocusRangeEnd
+
+    root.pendingFocusBlockId = ""
+    root.pendingFocusRangeStart = -1
+    root.pendingFocusRangeEnd = -1
+
+    delegate.refreshBlock()
+
+    if (rangeStart >= 0)
+      delegate.focusBlockAtRange(rangeStart, rangeEnd)
+    else
+      delegate.focusBlock(position)
   }
 
-  function focusDelegateAt(row, position, attempt) {
-    const focusAttempt = attempt === undefined ? 0 : attempt
-
+  function focusDelegateAt(row, position) {
     if (row < 0 || row >= root.model.count)
       return
 
-    documentView.forceLayout()
+    const blockId = root.model.blockIdAt(row)
 
-    Qt.callLater(function(){
-      const delegate = documentView.itemAtIndex(row)
-
-      if (delegate) {
-        delegate.refreshBlock()
-        delegate.focusBlock(position)
-      } else if (focusAttempt < 10) {
-        // A model reset can take more than one QML turn to create the
-        // delegate. Retry briefly so new-document focus is reliable without
-        // affecting normal editor navigation.
-        root.focusDelegateAt(row, position, focusAttempt + 1)
-      }
-    })
+    if (blockId.length > 0)
+      root.requestFocusBlock(blockId, position)
   }
 
   function focusFirstBlock() {
@@ -359,33 +405,24 @@ Item {
   }
 
   function restoreFocusAfterHistory(blockId, oldRow, undo, cursorPosition) {
-    documentView.forceLayout()
+    let row = root.model.indexOfBlock(blockId)
 
-    Qt.callLater(function() {
-      let row = root.model.indexOfBlock(blockId)
+    // The undo/redo may have removed the focused block (for example when
+    // undoing a split). Move to the nearest surviving block in that case.
+    if (row < 0) {
+      const fallback = undo ? oldRow - 1 : oldRow
+      row = Math.max(0, Math.min(fallback, root.model.count - 1))
+    }
 
-      // The undo/redo may have removed the focused block (for example when
-      // undoing a split). Move to the nearest surviving block in that case.
-      if (row < 0) {
-        const fallback = undo ? oldRow - 1 : oldRow
-        row = Math.max(0, Math.min(fallback, root.model.count - 1))
-      }
+    if (row < 0)
+      return
 
-      if (row < 0)
-        return
+    const targetId = root.model.blockIdAt(row)
 
-      documentView.positionViewAtIndex(row, ListView.Contain)
-      documentView.forceLayout()
-
-      const delegate = documentView.itemAtIndex(row)
-
-      if (delegate) {
-        delegate.refreshBlock()
-        // Restore the caret to the position associated with the history step.
-        // A negative position means "end of text" (structural steps).
-        delegate.focusBlock(cursorPosition)
-      }
-    })
+    if (targetId.length > 0) {
+      // A negative position means "end of text" (structural steps).
+      root.requestFocusBlock(targetId, cursorPosition)
+    }
   }
 
   function undoFrom(blockId, row) {
@@ -435,6 +472,62 @@ Item {
                                root.model.lastHistoryCursorPosition())
   }
 
+  // Alt+Up / Alt+Down move the focused block, mirroring drag reordering from
+  // the keyboard. The caret stays at the same offset inside the block and the
+  // list animates the swap with the same timing as the drag displacement.
+  property bool keyboardMoveAnimating: false
+
+  Timer {
+    id: keyboardMoveTimer
+    interval: 160
+    repeat: false
+    onTriggered: root.keyboardMoveAnimating = false
+  }
+
+  function moveFocusedBlock(direction) {
+    if (root.caretBlockId.length === 0 || root.isDraggingBlock
+        || root.keyboardMoveAnimating)
+      return
+
+    const row = root.model.indexOfBlock(root.caretBlockId)
+
+    if (row < 0)
+      return
+
+    const target = Math.max(0, Math.min(row + direction,
+                                        root.model.count - 1))
+
+    if (target === row)
+      return
+
+    const position = root.caretPosition
+
+    // The view's move transitions are enabled only for this short window so
+    // drag-and-drop keeps its existing behaviour.
+    root.keyboardMoveAnimating = true
+
+    if (root.model.moveBlock(root.caretBlockId, target)) {
+      keyboardMoveTimer.restart()
+      root.requestFocusBlock(root.caretBlockId, position)
+    } else {
+      root.keyboardMoveAnimating = false
+    }
+  }
+
+  Shortcut {
+    sequence: "Alt+Up"
+    context: Qt.ApplicationShortcut
+    enabled: !root.isDraggingBlock && !root.keyboardMoveAnimating
+    onActivated: root.moveFocusedBlock(-1)
+  }
+
+  Shortcut {
+    sequence: "Alt+Down"
+    context: Qt.ApplicationShortcut
+    enabled: !root.isDraggingBlock && !root.keyboardMoveAnimating
+    onActivated: root.moveFocusedBlock(1)
+  }
+
   Rectangle {
     anchors.fill: parent
     color: Theme.background
@@ -459,6 +552,31 @@ Item {
     model: root.model
     spacing: 0
     clip: false
+    // Recycle delegates instead of rebuilding the whole TextArea stack while
+    // scrolling, and materialize a little ahead of the viewport.
+    reuseItems: true
+    cacheBuffer: 400
+
+    // Keyboard reordering glides with the same 150 ms OutCubic feel as the
+    // drag displacement. Enabled only while moveFocusedBlock() runs so drop
+    // handling is unchanged.
+    move: Transition {
+      enabled: root.keyboardMoveAnimating
+      NumberAnimation {
+        properties: "y"
+        duration: 150
+        easing.type: Easing.OutCubic
+      }
+    }
+
+    moveDisplaced: Transition {
+      enabled: root.keyboardMoveAnimating
+      NumberAnimation {
+        properties: "y"
+        duration: 150
+        easing.type: Easing.OutCubic
+      }
+    }
     // Keep the command menu anchored while it is open, and disable normal list scrolling while dragging
     interactive: root.activeCommandDelegate === null && !root.isDraggingBlock
 
@@ -492,6 +610,32 @@ Item {
       readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
       readonly property bool isHovered: blockHoverArea.containsMouse || handleHover.hovered
 
+      // Applies a focus intent set before this delegate existed (or while it
+      // was recycled for another block).
+      function maybeApplyPendingFocus() {
+        if (root.pendingFocusBlockId.length === 0
+            || root.pendingFocusBlockId !== delegateRoot.blockId)
+          return
+
+        const position = root.pendingFocusPosition
+        const rangeStart = root.pendingFocusRangeStart
+        const rangeEnd = root.pendingFocusRangeEnd
+
+        root.pendingFocusBlockId = ""
+        root.pendingFocusRangeStart = -1
+        root.pendingFocusRangeEnd = -1
+
+        refreshBlock()
+
+        if (rangeStart >= 0)
+          focusBlockAtRange(rangeStart, rangeEnd)
+        else
+          focusBlock(position)
+      }
+
+      Component.onCompleted: Qt.callLater(maybeApplyPendingFocus)
+      onBlockIdChanged: Qt.callLater(maybeApplyPendingFocus)
+
       // MouseArea covering the block AND extending 48px into the left gutter (across the drag handle and beyond)
       MouseArea {
         id: blockHoverArea
@@ -510,14 +654,6 @@ Item {
         onReleased: function(mouse) { mouse.accepted = false }
         onClicked: function(mouse) { mouse.accepted = false }
         onDoubleClicked: function(mouse) { mouse.accepted = false }
-      }
-
-      onIsHoveredChanged: {
-        if (isHovered) {
-          root.hoveredBlockId = delegateRoot.blockId
-        } else if (root.hoveredBlockId === delegateRoot.blockId) {
-          root.hoveredBlockId = ""
-        }
       }
 
       // Dynamic vertical shift to make room for dragged block
@@ -597,7 +733,7 @@ Item {
         headingLevel: delegateRoot.headingLevel
         numberIndex: delegateRoot.numberIndex
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
-        searchHighlights: root.searchHighlightsFor(delegateRoot.blockId)
+        searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive
 
         onCaretMoved: function(position, cursorGlobalY, cursorHeight) {
@@ -759,19 +895,9 @@ Item {
           )
           if (newId.length === 0) return
 
-          const newIndex = delegateRoot.index + 1;
-          //new block should be at index + 1 since items is at index , ez mate, so don't do wtf
-
-          documentView.forceLayout()
-
-          Qt.callLater(function() {
-            const newDelegate = documentView.itemAtIndex(newIndex)
-
-            if (newDelegate) {
-              newDelegate.refreshBlock()
-              newDelegate.focusBlock(0)
-            }
-          })
+          // The new block's delegate may not exist yet; the focus intent is
+          // applied as soon as it is created.
+          root.requestFocusBlock(newId, 0)
         }
 
         onBackspacePressed: {
@@ -826,7 +952,7 @@ Item {
         property bool shouldShow: {
           if (root.isDraggingBlock) return false
           if (handleArea.pressed) return true
-          return root.hoveredBlockId === delegateRoot.blockId
+          return delegateRoot.isHovered
         }
 
         Timer {
@@ -947,47 +1073,6 @@ Item {
     footer: Item {
       width: documentView.width
       height: documentView.height * 0.8
-    }
-
-    // Drop indicator line (rendered inside contentItem to correctly track content scrolling)
-    Rectangle {
-      id: dropIndicator
-      parent: documentView.contentItem
-      width: documentView.width
-      height: 2
-      radius: 1
-      color: Theme.accent
-      visible: root.isDraggingBlock && root.dropTargetIndex >= 0
-      z: 200
-
-      // Compute Y position in contentItem coordinates
-      y: {
-        if (!visible) return 0
-        const from = root.draggingSourceIndex
-        const to = root.dropTargetIndex
-        const targetItem = documentView.itemAtIndex(to)
-        if (!targetItem) return 0
-
-        if (from < to) {
-          // Dragged downward: candidate drop position is right below targetItem (accounting for its upward shift)
-          return targetItem.y + targetItem.height + targetItem.visualDisplacement
-        } else if (from > to) {
-          // Dragged upward: candidate drop position is right above targetItem (accounting for its downward shift)
-          return targetItem.y + targetItem.visualDisplacement
-        } else {
-          // At original position: show at top of source item
-          return targetItem.y
-        }
-      }
-
-      Behavior on y {
-        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
-      }
-    }
-
-    Component.onCompleted: {
-      console.log("Editor initialized")
-      console.log("Model count:", root.model.count)
     }
   }
 

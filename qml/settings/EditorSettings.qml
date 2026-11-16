@@ -6,9 +6,6 @@ Column {
   width: parent ? parent.width : 0
   spacing: 22
 
-  property string fontFamily: "System"
-  property string lineWidth: "Medium"
-
   Text {
     text: "Typography"
     color: Theme.text
@@ -20,9 +17,9 @@ Column {
     title: "Font family"
     description: "The font used for document content."
     options: ["System", "Mono", "Serif"]
-    value: root.fontFamily
+    value: Preferences.fontFamily
     onSelected: function(value) {
-      root.fontFamily = value
+      Preferences.fontFamily = value
     }
   }
 
@@ -30,9 +27,9 @@ Column {
     title: "Line width"
     description: "How wide the writing column becomes on large windows."
     options: ["Narrow", "Medium", "Wide"]
-    value: root.lineWidth
+    value: Preferences.lineWidth
     onSelected: function(value) {
-      root.lineWidth = value
+      Preferences.lineWidth = value
     }
   }
 
@@ -52,18 +49,27 @@ Column {
   SettingToggle {
     title: "Markdown input shortcuts"
     description: "Convert Markdown prefixes such as #, - and 1. into blocks while typing."
-    checked: true
+    checked: Preferences.markdownShortcuts
+    onToggled: function(value) {
+      Preferences.markdownShortcuts = value
+    }
   }
 
   SettingToggle {
     title: "Spell check"
     description: "Highlight misspelled words while writing."
-    checked: false
+    checked: Preferences.spellCheck
+    onToggled: function(value) {
+      Preferences.spellCheck = value
+    }
   }
 
   SettingToggle {
     title: "Smart quotes"
     description: "Replace straight quotes with typographic quotes as you type."
-    checked: false
+    checked: Preferences.smartQuotes
+    onToggled: function(value) {
+      Preferences.smartQuotes = value
+    }
   }
 }

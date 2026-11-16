@@ -36,6 +36,13 @@ Rectangle {
   visible: false
   z: 4
 
+  Timer {
+    id: searchDebounce
+    interval: 150
+    repeat: false
+    onTriggered: root.runSearch()
+  }
+
   function open() {
     if (root.visible) {
       searchField.forceActiveFocus()
@@ -60,6 +67,7 @@ Rectangle {
     const shouldRestore = restoreFocus === undefined ? true : restoreFocus
     const focusTarget = root.previousFocus
 
+    searchDebounce.stop()
     root.visible = false
     root.previousFocus = null
     searchField.text = ""
@@ -290,8 +298,14 @@ Rectangle {
     selectByMouse: true
     background: null
 
-    onTextChanged: root.runSearch()
-    onAccepted: root.accept()
+    onTextChanged: searchDebounce.restart()
+    onAccepted: {
+      // Apply the latest query before accepting, so Enter never acts on a
+      // result list that is one debounce interval behind.
+      searchDebounce.stop()
+      root.runSearch()
+      root.accept()
+    }
 
     Keys.onUpPressed: function(event) {
       event.accepted = true

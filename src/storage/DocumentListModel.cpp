@@ -6,12 +6,14 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QSaveFile>
 #include <QVariantMap>
+#include <QtConcurrent>
 #include <algorithm>
 #include <utility>
 
@@ -224,6 +226,8 @@ bool DocumentListModel::enterFolder(const QString &path) {
     return true;
 
   m_directory = absolute;
+  // Any in-flight recursive search now targets the old tree.
+  ++m_searchGeneration;
   setupWatcher();
   emit directoryChanged();
   refresh();
@@ -484,10 +488,9 @@ QString DocumentListModel::filePathAt(int row) const {
   return m_entries[row].filePath;
 }
 
-QVariantList DocumentListModel::searchEntries(const QString &query) const {
-  const QString needle = query.trimmed();
-
-  if (needle.isEmpty() || m_rootDirectory.isEmpty())
+QVariantList DocumentListModel::searchEntriesInRoot(
+    const QString &rootDirectory, const QString &needle) {
+  if (needle.isEmpty() || rootDirectory.isEmpty())
     return {};
 
   QVector<Entry> folders;
@@ -495,7 +498,7 @@ QVariantList DocumentListModel::searchEntries(const QString &query) const {
   QHash<QString, QString> containingPaths;
 
   QDirIterator iterator(
-      m_rootDirectory,
+      rootDirectory,
       QDir::Dirs | QDir::Files | QDir::Readable | QDir::NoDotAndDotDot,
       QDirIterator::Subdirectories);
 
@@ -520,7 +523,7 @@ QVariantList DocumentListModel::searchEntries(const QString &query) const {
 
     const QString absolutePath = QDir::cleanPath(info.absoluteFilePath());
     QString relativeParent =
-        QDir(m_rootDirectory).relativeFilePath(info.absolutePath());
+        QDir(rootDirectory).relativeFilePath(info.absolutePath());
 
     if (relativeParent == QStringLiteral("."))
       relativeParent.clear();
@@ -550,24 +553,55 @@ QVariantList DocumentListModel::searchEntries(const QString &query) const {
   QVariantList results;
   results.reserve(folders.size() + files.size());
 
-  for (const Entry &entry : std::as_const(folders)) {
+  const auto appendEntry = [&results, &containingPaths](const Entry &entry) {
     results.append(QVariantMap{
         {QStringLiteral("name"), entry.name},
         {QStringLiteral("filePath"), entry.filePath},
         {QStringLiteral("isFolder"), entry.isFolder},
         {QStringLiteral("relativePath"), containingPaths.value(entry.filePath)},
     });
-  }
+  };
 
-  for (const Entry &entry : std::as_const(files)) {
-    results.append(QVariantMap{
-        {QStringLiteral("name"), entry.name},
-        {QStringLiteral("filePath"), entry.filePath},
-        {QStringLiteral("isFolder"), entry.isFolder},
-        {QStringLiteral("relativePath"), containingPaths.value(entry.filePath)},
-    });
-  }
+  for (const Entry &entry : std::as_const(folders))
+    appendEntry(entry);
+
+  for (const Entry &entry : std::as_const(files))
+    appendEntry(entry);
 
   return results;
+}
+
+QVariantList DocumentListModel::searchEntries(const QString &query) const {
+  return searchEntriesInRoot(m_rootDirectory, query.trimmed());
+}
+
+void DocumentListModel::searchEntriesAsync(const QString &query) {
+  const QString needle = query.trimmed();
+  const quint64 generation = ++m_searchGeneration;
+
+  if (needle.isEmpty() || m_rootDirectory.isEmpty()) {
+    emit searchCompleted(query, {});
+    return;
+  }
+
+  const QString rootDirectory = m_rootDirectory;
+
+  auto *watcher = new QFutureWatcher<QVariantList>(this);
+
+  connect(watcher, &QFutureWatcherBase::finished, this,
+          [this, watcher, generation, query]() {
+            const QVariantList results = watcher->result();
+            watcher->deleteLater();
+
+            // A newer keystroke already superseded this scan.
+            if (generation != m_searchGeneration)
+              return;
+
+            emit searchCompleted(query, results);
+          });
+
+  watcher->setFuture(QtConcurrent::run([rootDirectory, needle]() {
+    return searchEntriesInRoot(rootDirectory, needle);
+  }));
 }
 } // namespace Templnote

@@ -16,13 +16,19 @@ Column {
   SettingToggle {
     title: "Restore last session"
     description: "Reopen the documents that were open when Templnote was closed."
-    checked: true
+    checked: Preferences.restoreLastSession
+    onToggled: function(value) {
+      Preferences.restoreLastSession = value
+    }
   }
 
   SettingToggle {
     title: "Check for updates automatically"
     description: "Look for new versions in the background and notify you when one is available."
-    checked: true
+    checked: Preferences.checkForUpdates
+    onToggled: function(value) {
+      Preferences.checkForUpdates = value
+    }
   }
 
   Rectangle {

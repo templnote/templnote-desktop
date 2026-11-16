@@ -3,6 +3,7 @@
 #include <QAbstractListModel>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QVector>
 #include <qcontainerfwd.h>
 #include <qproperty.h>
@@ -24,6 +25,8 @@ class BlockModel : public QAbstractListModel {
       QDateTime lastModified READ lastModified NOTIFY lastModifiedChanged)
   Q_PROPERTY(
       QString documentFolder READ documentFolder NOTIFY currentFilePathChanged)
+  Q_PROPERTY(bool autosaveEnabled READ autosaveEnabled WRITE setAutosaveEnabled
+                 NOTIFY autosaveEnabledChanged)
 public:
   enum Roles {
     BlockIdRole = Qt::UserRole + 1,
@@ -80,6 +83,14 @@ public:
 
   Q_INVOKABLE int indexOfBlock(const QString &id) const;
 
+  // Id of the block at `row`, or an empty string when out of range.
+  Q_INVOKABLE QString blockIdAt(int row) const;
+
+  // Writes the document to disk shortly after the last edit. Disabled by
+  // default; the application enables it in Main.qml.
+  bool autosaveEnabled() const;
+  void setAutosaveEnabled(bool enabled);
+
   // Block that should receive focus after the last undo/redo.
   Q_INVOKABLE QString lastHistoryBlockId() const;
 
@@ -130,12 +141,15 @@ signals:
   void modifiedChanged();
   void lastModifiedChanged();
   void lastErrorChanged();
+  void autosaveEnabledChanged();
   void documentLoaded();
   void documentCreated();
 
 private:
   void markModified();
   void setModified(bool modified);
+  void scheduleAutosave();
+  void autosave();
   void setCurrentFilePath(const QString &path);
   void setLastModified(const QDateTime &modified);
   bool setError(const QString &message);
@@ -206,5 +220,10 @@ private:
   QString m_textGroupBlockId;
   QElapsedTimer m_textGroupTimer;
   bool m_textGroupOpen = false;
+
+  // Debounced autosave. Saves once the user stops typing for a short while,
+  // so a crash or a closed window never silently loses the document.
+  QTimer m_autosaveTimer;
+  bool m_autosaveEnabled = false;
 };
 } // namespace Templnote

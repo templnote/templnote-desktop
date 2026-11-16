@@ -14,7 +14,18 @@ const QVector<Block> &Document::blocks() const { return m_blocks; }
 // used for the undo redo
 QVector<Block> Document::snapshot() const { return m_blocks; }
 
-void Document::restore(const QVector<Block> &blocks) { m_blocks = blocks; }
+void Document::restore(const QVector<Block> &blocks) {
+  m_blocks = blocks;
+  rebuildIdIndex();
+}
+
+void Document::rebuildIdIndex() {
+  m_idIndex.clear();
+  m_idIndex.reserve(m_blocks.size());
+
+  for (int i = 0; i < m_blocks.size(); ++i)
+    m_idIndex.insert(m_blocks[i].id, i);
+}
 
 int Document::count() const { return m_blocks.size(); }
 
@@ -31,11 +42,7 @@ const Block *Document::findBlock(const QString &id) const {
 }
 
 int Document::indexOf(const QString &id) const {
-  for (int i = 0; i < m_blocks.size(); ++i) {
-    if (m_blocks[i].id == id)
-      return i;
-  }
-  return -1;
+  return m_idIndex.value(id, -1);
 }
 
 bool Document::insertBlock(int index, const Block &block) {
@@ -46,6 +53,7 @@ bool Document::insertBlock(int index, const Block &block) {
     return false;
 
   m_blocks.insert(index, block);
+  rebuildIdIndex();
   return true;
 }
 
@@ -60,6 +68,7 @@ bool Document::removeBlock(const QString &id) {
     return false;
 
   m_blocks.removeAt(index);
+  rebuildIdIndex();
 
   return true;
 }
@@ -101,7 +110,12 @@ bool Document::setBlock(int index, const Block &block) {
   if (index < 0 || index >= m_blocks.size())
     return false;
 
+  const bool idChanged = m_blocks[index].id != block.id;
   m_blocks[index] = block;
+
+  if (idChanged)
+    rebuildIdIndex();
+
   return true;
 }
 
@@ -117,6 +131,7 @@ bool Document::moveBlock(const QString &id, int destination) {
 
   Block block = m_blocks.takeAt(source);
   m_blocks.insert(destination, block);
+  rebuildIdIndex();
 
   return true;
 }
@@ -146,6 +161,7 @@ QString Document::splitBlock(const QString &id, int position) {
   const QString newId = newBlock.id;
 
   m_blocks.insert(index + 1, newBlock);
+  rebuildIdIndex();
   return newId;
 }
 
@@ -161,6 +177,7 @@ bool Document::mergeWithPrevious(const QString &id) {
   previous.text += current.text;
 
   m_blocks.removeAt(index);
+  rebuildIdIndex();
 
   return true;
 }
@@ -228,6 +245,7 @@ bool Document::fromJson(const QJsonObject &json, QString *error) {
   }
 
   m_blocks = parsed;
+  rebuildIdIndex();
 
   if (error)
     error->clear();

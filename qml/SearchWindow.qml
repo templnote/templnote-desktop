@@ -33,6 +33,13 @@ Item {
     id: localSearch
   }
 
+  Timer {
+    id: searchDebounce
+    interval: 150
+    repeat: false
+    onTriggered: root.runSearch()
+  }
+
   function open() {
     if (root.visible) {
       searchField.forceActiveFocus()
@@ -58,6 +65,7 @@ Item {
     const shouldRestore = restoreFocus === undefined ? true : restoreFocus
     const focusTarget = root.previousFocus
 
+    searchDebounce.stop()
     root.visible = false
     root.previousFocus = null
     searchField.text = ""
@@ -350,10 +358,15 @@ Item {
 
             onTextChanged: {
               if (root.visible)
-                root.runSearch()
+                searchDebounce.restart()
             }
 
-            onAccepted: root.accept()
+            onAccepted: {
+              // Flush a pending query so Enter never acts on stale results.
+              searchDebounce.stop()
+              root.runSearch()
+              root.accept()
+            }
 
             Keys.onUpPressed: function(event) {
               event.accepted = true

@@ -49,7 +49,7 @@ QtObject {
         border: "#292e42",
         text: "#c0caf5",
         textMuted: "#9aa5ce",
-        textFaint: "#565f89",
+        textFaint: "#737da8",
         accent: "#7aa2f7",
         accentText: "#1a1b26",
         danger: "#f7768e"
@@ -62,7 +62,7 @@ QtObject {
         border: "#b4bdd6",
         text: "#3760bf",
         textMuted: "#6172b0",
-        textFaint: "#848cb5",
+        textFaint: "#6b76a5",
         accent: "#2e7de9",
         accentText: "#e1e2e7",
         danger: "#f52a65"
@@ -81,7 +81,7 @@ QtObject {
         border: "#504945",
         text: "#ebdbb2",
         textMuted: "#a89984",
-        textFaint: "#665c54",
+        textFaint: "#8a7a68",
         accent: "#fabd2f",
         accentText: "#282828",
         danger: "#fb4934"
@@ -94,7 +94,7 @@ QtObject {
         border: "#d5c4a1",
         text: "#3c3836",
         textMuted: "#7c6f64",
-        textFaint: "#a89984",
+        textFaint: "#8b7d6b",
         accent: "#b57614",
         accentText: "#fbf1c7",
         danger: "#9d0006"
@@ -113,7 +113,7 @@ QtObject {
         border: "#586e75",
         text: "#93a1a1",
         textMuted: "#839496",
-        textFaint: "#657b83",
+        textFaint: "#7a929a",
         accent: "#268bd2",
         accentText: "#fdf6e3",
         danger: "#dc322f"
@@ -126,7 +126,7 @@ QtObject {
         border: "#d3cbb7",
         text: "#586e75",
         textMuted: "#657b83",
-        textFaint: "#93a1a1",
+        textFaint: "#708587",
         accent: "#268bd2",
         accentText: "#fdf6e3",
         danger: "#dc322f"
@@ -145,7 +145,7 @@ QtObject {
         border: "#30363d",
         text: "#e6edf3",
         textMuted: "#8b949e",
-        textFaint: "#6e7681",
+        textFaint: "#828b95",
         accent: "#2f81f7",
         accentText: "#ffffff",
         danger: "#f85149"
@@ -158,7 +158,7 @@ QtObject {
         border: "#d0d7de",
         text: "#1f2328",
         textMuted: "#656d76",
-        textFaint: "#8c959f",
+        textFaint: "#6e7781",
         accent: "#0969da",
         accentText: "#ffffff",
         danger: "#cf222e"

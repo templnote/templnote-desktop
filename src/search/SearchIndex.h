@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QSqlDatabase>
 #include <QString>
+#include <QThreadPool>
 #include <QTimer>
 #include <QVariantList>
 #include <QVector>
@@ -147,6 +148,10 @@ private:
   QString m_databasePath;
   QTimer m_flushTimer;
   QVector<PendingOp> m_pending;
+
+  // Live-edit writes are applied off the GUI thread. A single worker keeps
+  // SQLite writers serialized while reads continue on the main connection.
+  QThreadPool m_writePool;
 
   BlockModel *m_blockModel = nullptr;
   DocumentListModel *m_documentList = nullptr;

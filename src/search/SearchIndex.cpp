@@ -17,7 +17,9 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariantMap>
+#include <QtConcurrent>
 #include <algorithm>
+#include <atomic>
 #include <utility>
 
 namespace Templnote {
@@ -29,6 +31,259 @@ QString escapeLike(QString value) {
   value.replace(QLatin1Char('%'), QStringLiteral("\\%"));
   value.replace(QLatin1Char('_'), QStringLiteral("\\_"));
   return value;
+}
+
+// Self-contained description of one write, so a batch can be executed on a
+// worker thread without touching the model or the GUI connection.
+struct WriteBlock {
+  QString blockId;
+  QString text;
+};
+
+struct WriteOp {
+  enum class Type { Upsert, Remove, Replace, FileReplace };
+
+  Type type = Type::Upsert;
+  QString path;
+  QString title;
+  QString blockId;
+  QString text;
+  QVector<WriteBlock> blocks;
+  bool updateMeta = false;
+};
+
+QString normalizePath(const QString &path) {
+  if (path.isEmpty())
+    return {};
+
+  return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+}
+
+bool row_removeDocument(QSqlDatabase &db, const QString &path) {
+  QSqlQuery removeIndex(db);
+  removeIndex.prepare(
+      QStringLiteral("DELETE FROM search_index WHERE document_path = ?"));
+  removeIndex.addBindValue(path);
+
+  QSqlQuery removeMeta(db);
+  removeMeta.prepare(
+      QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
+  removeMeta.addBindValue(path);
+
+  return removeIndex.exec() && removeMeta.exec();
+}
+
+bool row_replaceDocument(QSqlDatabase &db, const QString &path,
+                         const QString &title,
+                         const QVector<WriteBlock> &blocks, bool updateMeta) {
+  QSqlQuery remove(db);
+  remove.prepare(
+      QStringLiteral("DELETE FROM search_index WHERE document_path = ?"));
+  remove.addBindValue(path);
+
+  if (!remove.exec())
+    return false;
+
+  QSqlQuery insert(db);
+  insert.prepare(QStringLiteral(
+      "INSERT INTO search_index(document_path, document_title, block_id, "
+      "block_text) VALUES(?, ?, ?, ?)"));
+
+  for (const WriteBlock &block : blocks) {
+    if (block.text.isEmpty())
+      continue;
+
+    insert.addBindValue(path);
+    insert.addBindValue(title);
+    insert.addBindValue(block.blockId);
+    insert.addBindValue(block.text);
+
+    if (!insert.exec())
+      return false;
+  }
+
+  if (updateMeta) {
+    const QFileInfo info(path);
+    const qint64 modified =
+        info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
+    const qint64 size = info.exists() ? info.size() : 0;
+
+    QSqlQuery removeMeta(db);
+    removeMeta.prepare(
+        QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
+    removeMeta.addBindValue(path);
+
+    if (!removeMeta.exec())
+      return false;
+
+    QSqlQuery insertMeta(db);
+    insertMeta.prepare(QStringLiteral(
+        "INSERT INTO search_meta(document_path, document_title, modified_ms, "
+        "size) VALUES(?, ?, ?, ?)"));
+    insertMeta.addBindValue(path);
+    insertMeta.addBindValue(title);
+    insertMeta.addBindValue(modified);
+    insertMeta.addBindValue(size);
+
+    if (!insertMeta.exec())
+      return false;
+  }
+
+  return true;
+}
+
+bool row_upsertBlock(QSqlDatabase &db, const QString &path,
+                     const QString &title, const QString &blockId,
+                     const QString &text) {
+  QSqlQuery remove(db);
+  remove.prepare(QStringLiteral(
+      "DELETE FROM search_index WHERE document_path = ? AND block_id = ?"));
+  remove.addBindValue(path);
+  remove.addBindValue(blockId);
+
+  if (!remove.exec())
+    return false;
+
+  if (!text.isEmpty()) {
+    QSqlQuery insert(db);
+    insert.prepare(QStringLiteral(
+        "INSERT INTO search_index(document_path, document_title, block_id, "
+        "block_text) VALUES(?, ?, ?, ?)"));
+    insert.addBindValue(path);
+    insert.addBindValue(title);
+    insert.addBindValue(blockId);
+    insert.addBindValue(text);
+
+    if (!insert.exec())
+      return false;
+  }
+
+  QSqlQuery invalidate(db);
+  invalidate.prepare(
+      QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
+  invalidate.addBindValue(path);
+
+  return invalidate.exec();
+}
+
+bool row_removeBlock(QSqlDatabase &db, const QString &path,
+                     const QString &blockId) {
+  QSqlQuery remove(db);
+  remove.prepare(QStringLiteral(
+      "DELETE FROM search_index WHERE document_path = ? AND block_id = ?"));
+  remove.addBindValue(path);
+  remove.addBindValue(blockId);
+
+  if (!remove.exec())
+    return false;
+
+  QSqlQuery invalidate(db);
+  invalidate.prepare(
+      QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
+  invalidate.addBindValue(path);
+
+  return invalidate.exec();
+}
+
+bool replaceFromFile(QSqlDatabase &db, const QString &path) {
+  const QString normalized = normalizePath(path);
+  QFile file(normalized);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    row_removeDocument(db, normalized);
+    return false;
+  }
+
+  QJsonParseError parseError{};
+  const QJsonDocument parsed =
+      QJsonDocument::fromJson(file.readAll(), &parseError);
+  file.close();
+
+  if (parseError.error != QJsonParseError::NoError || !parsed.isObject()) {
+    row_removeDocument(db, normalized);
+    return false;
+  }
+
+  Document document;
+  QString documentError;
+
+  if (!document.fromJson(parsed.object(), &documentError)) {
+    row_removeDocument(db, normalized);
+    return false;
+  }
+
+  QString title =
+      parsed.object().value(QStringLiteral("title")).toString().trimmed();
+
+  if (title.isEmpty())
+    title = QFileInfo(normalized).completeBaseName();
+
+  QVector<WriteBlock> blocks;
+  blocks.reserve(document.blocks().size());
+
+  for (const Block &block : document.blocks())
+    blocks.append({block.id, block.text});
+
+  return row_replaceDocument(db, normalized, title, blocks, true);
+}
+
+void executeWriteBatch(const QString &databasePath, const QVector<WriteOp> &ops) {
+  static std::atomic<quint64> connectionCounter{0};
+
+  const QString connectionName =
+      QStringLiteral("templnote_search_write_%1")
+          .arg(connectionCounter.fetch_add(1));
+
+  bool ok = false;
+
+  {
+    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                               connectionName);
+    db.setDatabaseName(databasePath);
+
+    if (db.open()) {
+      QSqlQuery pragma(db);
+      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
+
+      if (db.transaction()) {
+        bool batchOk = true;
+
+        for (const WriteOp &op : ops) {
+          switch (op.type) {
+          case WriteOp::Type::Upsert:
+            batchOk = row_upsertBlock(db, op.path, op.title, op.blockId,
+                                      op.text);
+            break;
+          case WriteOp::Type::Remove:
+            batchOk = row_removeBlock(db, op.path, op.blockId);
+            break;
+          case WriteOp::Type::Replace:
+            batchOk = row_replaceDocument(db, op.path, op.title, op.blocks,
+                                          op.updateMeta);
+            break;
+          case WriteOp::Type::FileReplace:
+            batchOk = replaceFromFile(db, op.path);
+            break;
+          }
+
+          if (!batchOk)
+            break;
+        }
+
+        ok = batchOk && db.commit();
+
+        if (!ok)
+          db.rollback();
+      }
+    }
+
+    db.close();
+  }
+
+  QSqlDatabase::removeDatabase(connectionName);
+
+  if (!ok)
+    qWarning() << "SearchIndex: background write batch failed";
 }
 } // namespace
 
@@ -64,11 +319,16 @@ SearchIndex::SearchIndex(const QString &documentsRoot,
   m_flushTimer.setInterval(kFlushDelayMs);
   connect(&m_flushTimer, &QTimer::timeout, this, &SearchIndex::flushPending);
 
+  // One writer keeps SQLite writes ordered; other writes (startup sync,
+  // rename, delete) wait for the worker before touching the database.
+  m_writePool.setMaxThreadCount(1);
+
   syncIncremental();
 }
 
 SearchIndex::~SearchIndex() {
   flushPending();
+  m_writePool.waitForDone();
 
   if (m_db.isOpen())
     m_db.close();
@@ -396,9 +656,21 @@ void SearchIndex::onPathRemoved(const QString &path) {
 void SearchIndex::queueBlockUpsert(const QString &path, const QString &title,
                                    const QString &blockId,
                                    const QString &text) {
-  for (const PendingOp &op : std::as_const(m_pending)) {
-    if (op.type == PendingOp::Type::FullDocument && op.path == path)
+  // Collapse repeated edits of the same block before the flush fires. This is
+  // what keeps typing from enqueueing one SQL operation per keystroke.
+  for (PendingOp &op : m_pending) {
+    if (op.path != path)
+      continue;
+
+    if (op.type == PendingOp::Type::FullDocument)
       return;
+
+    if (op.blockId == blockId) {
+      op.type = PendingOp::Type::Upsert;
+      op.title = title;
+      op.text = text;
+      return;
+    }
   }
 
   PendingOp op;
@@ -412,9 +684,18 @@ void SearchIndex::queueBlockUpsert(const QString &path, const QString &title,
 
 void SearchIndex::queueBlockRemove(const QString &path,
                                    const QString &blockId) {
-  for (const PendingOp &op : std::as_const(m_pending)) {
-    if (op.type == PendingOp::Type::FullDocument && op.path == path)
+  for (PendingOp &op : m_pending) {
+    if (op.path != path)
+      continue;
+
+    if (op.type == PendingOp::Type::FullDocument)
       return;
+
+    if (op.blockId == blockId) {
+      op.type = PendingOp::Type::Remove;
+      op.text.clear();
+      return;
+    }
   }
 
   PendingOp op;
@@ -458,22 +739,60 @@ void SearchIndex::flushPending() {
   const QVector<PendingOp> pending = m_pending;
   m_pending.clear();
 
+  // Snapshot everything the worker needs. A full reindex of the open document
+  // must read the model on the GUI thread; file-backed reindexes can read the
+  // file on the worker.
+  QVector<WriteOp> ops;
+  ops.reserve(pending.size());
+
   for (const PendingOp &op : pending) {
+    WriteOp write;
+    write.path = op.path;
+    write.title = op.title;
+    write.blockId = op.blockId;
+    write.text = op.text;
+
     switch (op.type) {
     case PendingOp::Type::Upsert:
-      upsertBlock(op.path, op.title, op.blockId, op.text);
+      write.type = WriteOp::Type::Upsert;
       break;
     case PendingOp::Type::Remove:
-      removeBlock(op.path, op.blockId);
+      write.type = WriteOp::Type::Remove;
       break;
     case PendingOp::Type::FullDocument:
-      if (op.path == m_currentDocumentPath)
-        reindexCurrentDocument();
-      else
-        reindexDocumentFromFile(op.path);
+      if (op.path == m_currentDocumentPath && m_blockModel) {
+        write.type = WriteOp::Type::Replace;
+        write.title = m_blockModel->documentTitle();
+        write.updateMeta = true;
+        write.blocks.reserve(m_blockModel->rowCount());
+
+        for (int row = 0; row < m_blockModel->rowCount(); ++row) {
+          const QModelIndex index = m_blockModel->index(row);
+          const QString blockId =
+              m_blockModel->data(index, BlockModel::BlockIdRole).toString();
+          const QString text =
+              m_blockModel->data(index, BlockModel::ContentRole).toString();
+
+          if (!blockId.isEmpty())
+            write.blocks.append({blockId, text});
+        }
+      } else {
+        write.type = WriteOp::Type::FileReplace;
+      }
       break;
     }
+
+    ops.append(std::move(write));
   }
+
+  if (ops.isEmpty())
+    return;
+
+  const QString databasePath = m_databasePath;
+
+  (void)QtConcurrent::run(&m_writePool, [databasePath, ops = std::move(ops)]() {
+    executeWriteBatch(databasePath, ops);
+  });
 }
 
 void SearchIndex::discardPending(const QString &pathPrefix) {
@@ -539,6 +858,8 @@ bool SearchIndex::replaceDocument(const QString &path, const QString &title,
 }
 
 bool SearchIndex::reindexDocumentFromFile(const QString &path) {
+  m_writePool.waitForDone();
+
   const QString normalized = normalizedPath(path);
 
   if (normalized.isEmpty())
@@ -686,6 +1007,8 @@ bool SearchIndex::removeDocument(const QString &path) {
   if (path.isEmpty() || !m_db.isOpen())
     return false;
 
+  m_writePool.waitForDone();
+
   if (!m_db.transaction())
     return false;
 
@@ -712,6 +1035,8 @@ bool SearchIndex::removeDocument(const QString &path) {
 bool SearchIndex::removePathPrefix(const QString &path) {
   if (path.isEmpty() || !m_db.isOpen())
     return false;
+
+  m_writePool.waitForDone();
 
   const QString prefix = escapeLike(path) + QStringLiteral("/%");
 
@@ -747,6 +1072,8 @@ bool SearchIndex::renamePath(const QString &oldPath, const QString &newPath) {
       !m_db.isOpen()) {
     return false;
   }
+
+  m_writePool.waitForDone();
 
   const QString prefix = escapeLike(oldPath) + QStringLiteral("/%");
   const QString newTitle = QFileInfo(newPath).completeBaseName();
@@ -849,6 +1176,8 @@ void SearchIndex::syncIncremental() {
   if (!m_db.isOpen())
     return;
 
+  m_writePool.waitForDone();
+
   const QString root = documentsRoot();
 
   if (root.isEmpty())
@@ -918,6 +1247,8 @@ void SearchIndex::syncIncremental() {
 void SearchIndex::rebuild() {
   if (!m_db.isOpen())
     return;
+
+  m_writePool.waitForDone();
 
   QSqlQuery query(m_db);
   query.exec(QStringLiteral("DELETE FROM search_index"));

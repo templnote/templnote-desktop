@@ -644,6 +644,29 @@ private slots:
     QVERIFY(model.isModified());
   }
 
+  void autosaveWritesAfterIdle() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    const QString path = directory.filePath("Auto");
+    QVERIFY(model.createDocument(path));
+
+    model.setAutosaveEnabled(true);
+
+    const QString id = model.blockIdAt(0);
+    QVERIFY(!id.isEmpty());
+    QVERIFY(model.updateBlockText(id, QStringLiteral("autosaved text")));
+    QVERIFY(model.isModified());
+
+    // The debounced timer must persist the edit and clear the dirty flag.
+    QTRY_VERIFY_WITH_TIMEOUT(!model.isModified(), 4000);
+
+    QFile file(directory.filePath("Auto.templnote"));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QVERIFY(file.readAll().contains("autosaved text"));
+  }
+
   void saveCurrentDocumentRequiresAPath() {
     BlockModel model;
 

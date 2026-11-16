@@ -400,10 +400,16 @@ private slots:
         QVERIFY(!fileSeen);
       } else {
         fileSeen = true;
+        const QString expectedRelative =
+            QDir(root).relativeFilePath(
+                QFileInfo(result.value("filePath").toString()).absolutePath());
+
+        // Root-level entries are documented as having an empty relative path;
+        // QDir reports the root itself as ".".
         QCOMPARE(result.value("relativePath").toString(),
-                 QDir(root).relativeFilePath(
-                     QFileInfo(result.value("filePath").toString())
-                         .absolutePath()));
+                 expectedRelative == QStringLiteral(".")
+                     ? QString()
+                     : expectedRelative);
       }
 
       if (name == QStringLiteral("Project Ideas")) {
@@ -423,6 +429,32 @@ private slots:
     // Matching is case-insensitive and ignores the file extension.
     QCOMPARE(model.searchEntries(QStringLiteral("PROJECT")).size(), 4);
     QCOMPARE(model.searchEntries(QStringLiteral("unrelated")).size(), 1);
+  }
+
+  void asyncSearchEmitsLatestResults() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    QVERIFY(QDir().mkpath(QDir(root).filePath("Projects")));
+
+    QFile file(QDir(root).filePath("Projects/Project Plan.templnote"));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("{}");
+    file.close();
+
+    DocumentListModel model(root);
+
+    QSignalSpy spy(&model, &DocumentListModel::searchCompleted);
+    model.searchEntriesAsync(QStringLiteral("project"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(spy.count(), 1, 3000);
+
+    const QList<QVariant> arguments = spy.at(0);
+    QCOMPARE(arguments.at(0).toString(), QStringLiteral("project"));
+
+    const QVariantList results = arguments.at(1).toList();
+    QCOMPARE(results.size(), 2); // the folder and the document
   }
 };
 

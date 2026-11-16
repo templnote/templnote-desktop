@@ -32,6 +32,31 @@ Item {
   property bool transformingShortcut: false
   property bool syncingFromModel: false
 
+  // The formatted RichText is computed imperatively and cached. Focus changes
+  // rewrite the same text with/without syntax dimming, so caching avoids a
+  // redundant parse + relayout when nothing textual changed.
+  property string renderedHtml: ""
+  property string renderCacheRaw: ""
+  property bool renderCacheSyntax: false
+  property bool renderCacheValid: false
+
+  function refreshRenderedHtml() {
+    if (!editor)
+      return
+
+    const raw = editor.text
+    const syntax = editor.activeFocus
+
+    if (renderCacheValid && raw === renderCacheRaw
+        && syntax === renderCacheSyntax)
+      return
+
+    renderCacheRaw = raw
+    renderCacheSyntax = syntax
+    renderCacheValid = true
+    renderedHtml = markdownToHtml(raw, syntax)
+  }
+
   function findSyntaxTokens(text) {
     if (!text) return []
     let tokens = []
@@ -78,7 +103,9 @@ Item {
     const spanClose = "</span>"
 
     let text = raw.replace(/<u>/gi, "\x01U\x01").replace(/<\/u>/gi, "\x01/U\x01")
-    text = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    text = text.replace(/[&<>]/g, function(character) {
+      return character === "&" ? "&amp;" : character === "<" ? "&lt;" : "&gt;"
+    })
 
     if (includeSyntax) {
       // Focused mode: render formatted styling WITH dimmed syntax markers
@@ -377,9 +404,33 @@ Item {
     // programmatic updates), so place the caret after the restored text.
     editor.cursorPosition = editor.length
     root.syncingFromModel = false
+    root.refreshRenderedHtml()
+  }
+
+  // A recycled delegate can be moved to a different block; drop stale caret
+  // and selection state from the previous block.
+  onBlockIdChanged: {
+    if (!editor)
+      return
+
+    editor.cursorPosition = 0
+    editor.deselect()
+    root.renderCacheValid = false
+    root.refreshRenderedHtml()
   }
 
   onSearchHighlightsChanged: searchHighlightsCanvas.requestPaint()
+
+  Connections {
+    target: Theme
+
+    // The dimmed syntax markers embed the muted text colour, so a theme
+    // change needs one re-render of the cached HTML.
+    function onTextMutedChanged() {
+      root.renderCacheValid = false
+      root.refreshRenderedHtml()
+    }
+  }
 
   implicitHeight: contentColumn.implicitHeight + root.verticalPadding * 2
 
@@ -554,7 +605,7 @@ Item {
           visible: editor.text.length > 0
           wrapMode: Text.Wrap
           textFormat: Text.RichText
-          text: root.markdownToHtml(editor.text, editor.activeFocus)
+          text: root.renderedHtml
           color: Theme.text
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
@@ -591,6 +642,25 @@ Item {
           selectedTextColor: "transparent"
           selectByMouse: true
 
+          // The default caret follows the application palette, which stays
+          // dark in dark mode and nearly disappears on the theme background.
+          // Use the theme's text colour so it is clearly visible in both modes.
+          //
+          // Qt only hides a custom cursor delegate when the item moves in the
+          // viewport, not when the editor loses focus, so the delegate root is
+          // an empty Item and the visible bar is its child, gated on focus to
+          // avoid leaving a stale caret behind in every visited block.
+          cursorDelegate: Item {
+            width: 2
+
+            Rectangle {
+              anchors.fill: parent
+              radius: 1
+              color: Theme.text
+              visible: editor.activeFocus && editor.cursorVisible
+            }
+          }
+
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
 
@@ -625,6 +695,7 @@ Item {
           }
 
           onActiveFocusChanged: {
+            root.refreshRenderedHtml()
             notifySelection()
             if (editor.activeFocus) {
               const cRect = editor.cursorRectangle
@@ -635,9 +706,14 @@ Item {
 
           Component.onCompleted: {
             editor.text = root.content
+            root.refreshRenderedHtml()
           }
 
           onTextChanged: {
+            // Keep the formatted overlay in sync even while the model is
+            // being updated programmatically.
+            root.refreshRenderedHtml()
+
             if (root.transformingShortcut || root.syncingFromModel)
               return
 
@@ -837,7 +913,10 @@ Item {
               return
             }
 
-            if (event.key === Qt.Key_Up || event.key === Qt.Key_Down) {
+            // Alt+Up/Down is reserved for moving the block itself, so let the
+            // application shortcut handle it instead of moving focus.
+            if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down)
+                && !(event.modifiers & Qt.AltModifier)) {
               const cursorRect = editor.cursorRectangle
               const direction = event.key === Qt.Key_Up ? -1 : 1
 

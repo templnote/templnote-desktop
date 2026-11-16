@@ -14,8 +14,50 @@ ApplicationWindow {
   title: "Templnote — " + blockModel.documentTitle + (blockModel.isModified ? " •" : "")
   color: Theme.background
 
+  // Set once the user chose Save/Discard so the close handler lets the
+  // window go through on the second pass.
+  property bool allowClose: false
+
+  onClosing: function(close) {
+    if (window.allowClose || !blockModel.isModified)
+      return
+
+    close.accepted = false
+    saveConfirmationModal.open()
+  }
+
+  function saveAndClose() {
+    let saved = false
+
+    if (blockModel.currentFilePath.length > 0)
+      saved = blockModel.saveCurrentDocument()
+    else {
+      const path = documentList.createUntitledPath()
+      saved = path.length > 0 && blockModel.saveDocument(path)
+    }
+
+    if (saved) {
+      saveConfirmationModal.close()
+      window.allowClose = true
+      window.close()
+      return
+    }
+
+    saveConfirmationModal.errorText = blockModel.lastError.length > 0
+                                     ? blockModel.lastError
+                                     : "Could not save the document."
+  }
+
+  function discardAndClose() {
+    saveConfirmationModal.close()
+    window.allowClose = true
+    window.close()
+  }
+
   BlockModel {
     id: blockModel
+
+    autosaveEnabled: true
   }
 
   DocumentListModel {
@@ -107,8 +149,12 @@ ApplicationWindow {
   }
 
   NavigationRail {
-    property bool explorerExpanded: true
     id: navigationRail
+
+    visible: Preferences.showNavigationRail
+    width: visible ? 56 : 0
+    clip: true
+    explorerExpanded: fileExplorer.expanded
 
     anchors {
       top: parent.top
@@ -117,7 +163,6 @@ ApplicationWindow {
     }
     onExplorerToggleRequested: {
       fileExplorer.expanded = !fileExplorer.expanded
-      navigationRail.explorerExpanded = fileExplorer.expanded
     }
     onSettingsRequested: settingsWindow.open()
   }
@@ -218,6 +263,35 @@ ApplicationWindow {
       z: 3
       searchActive: searchBar.visible
       globalSearchActive: searchWindow.visible
+
+      options: [
+        { key: "find", label: "Find in document", shortcut: "Ctrl+/" },
+        { key: "globalSearch", label: "Search all documents", shortcut: "Ctrl+Shift+/" },
+        { key: "shortcuts", label: "Keyboard shortcuts", shortcut: "F1" },
+        { key: "settings", label: "Settings", shortcut: "" }
+      ]
+
+      onOptionTriggered: function(key) {
+        if (key === "find") {
+          if (searchBar.visible)
+            searchBar.close(true)
+          else
+            searchBar.open()
+        } else if (key === "globalSearch") {
+          if (searchWindow.visible) {
+            searchWindow.close()
+          } else {
+            if (searchBar.visible)
+              searchBar.close(false)
+            searchWindow.open()
+          }
+        } else if (key === "shortcuts") {
+          shortcutsSheet.open()
+        } else if (key === "settings") {
+          settingsWindow.open()
+        }
+      }
+
       onSearchRequested: {
         if (searchBar.visible)
           searchBar.close(true)
@@ -238,6 +312,16 @@ ApplicationWindow {
 
   SettingsWindow {
     id: settingsWindow
+  }
+
+  ShortcutsSheet {
+    id: shortcutsSheet
+  }
+
+  Shortcut {
+    sequence: "F1"
+    context: Qt.ApplicationShortcut
+    onActivated: shortcutsSheet.toggle()
   }
 
   SearchWindow {
@@ -405,7 +489,7 @@ ApplicationWindow {
 
             contentItem: Text {
               text: confirmModalBtn.text
-              color: "#ffffff"
+              color: Theme.accentText
               font.pixelSize: 13
               font.bold: true
               horizontalAlignment: Text.AlignHCenter
@@ -443,10 +527,188 @@ ApplicationWindow {
     }
   }
 
+  // Shown when closing with unsaved changes (autosave disabled, still
+  // typing, or the last save failed).
+  Item {
+    id: saveConfirmationModal
+    anchors.fill: parent
+    visible: false
+    z: 2001
+    focus: true
+
+    property string errorText: ""
+
+    function open() {
+      errorText = ""
+      visible = true
+      forceActiveFocus()
+    }
+
+    function close() {
+      visible = false
+      errorText = ""
+    }
+
+    Shortcut {
+      sequence: "Escape"
+      enabled: saveConfirmationModal.visible
+      onActivated: saveConfirmationModal.close()
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      color: Qt.rgba(0, 0, 0, 0.52)
+
+      MouseArea {
+        anchors.fill: parent
+        onClicked: saveConfirmationModal.close()
+      }
+    }
+
+    Rectangle {
+      anchors.centerIn: parent
+      width: 380
+      height: saveModalContent.implicitHeight + 40
+      radius: 8
+      color: Theme.surface
+      border.width: 1
+      border.color: Theme.border
+
+      MouseArea {
+        anchors.fill: parent
+      }
+
+      Column {
+        id: saveModalContent
+
+        anchors {
+          top: parent.top
+          left: parent.left
+          right: parent.right
+          margins: 20
+        }
+
+        spacing: 16
+
+        Text {
+          width: parent.width
+          text: "Save changes?"
+          color: Theme.text
+          font.pixelSize: 16
+          font.bold: true
+        }
+
+        Text {
+          width: parent.width
+          text: "Your document has unsaved changes. Save it before closing?"
+          color: Theme.textMuted
+          font.pixelSize: 13
+          wrapMode: Text.WordWrap
+        }
+
+        Text {
+          width: parent.width
+          visible: saveConfirmationModal.errorText.length > 0
+          text: saveConfirmationModal.errorText
+          color: Theme.danger
+          font.pixelSize: 12
+          wrapMode: Text.WordWrap
+        }
+
+        Row {
+          anchors.right: parent.right
+          spacing: 10
+
+          Button {
+            id: closeCancelButton
+            text: "Cancel"
+            height: 32
+            leftPadding: 16
+            rightPadding: 16
+
+            background: Rectangle {
+              radius: 8
+              color: closeCancelButton.down ? Theme.surfaceHover
+                     : (closeCancelButton.hovered ? Theme.surfaceAlt : "transparent")
+              border.width: 1
+              border.color: Theme.border
+            }
+
+            contentItem: Text {
+              text: closeCancelButton.text
+              color: Theme.text
+              font.pixelSize: 13
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+            }
+
+            onClicked: saveConfirmationModal.close()
+          }
+
+          Button {
+            id: closeDiscardButton
+            text: "Don't Save"
+            height: 32
+            leftPadding: 16
+            rightPadding: 16
+
+            background: Rectangle {
+              radius: 8
+              color: closeDiscardButton.down ? Theme.surfaceHover
+                     : (closeDiscardButton.hovered ? Theme.surfaceAlt : "transparent")
+              border.width: 1
+              border.color: Theme.border
+            }
+
+            contentItem: Text {
+              text: closeDiscardButton.text
+              color: Theme.text
+              font.pixelSize: 13
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+            }
+
+            onClicked: window.discardAndClose()
+          }
+
+          Button {
+            id: closeSaveButton
+            text: "Save"
+            height: 32
+            leftPadding: 18
+            rightPadding: 18
+
+            background: Rectangle {
+              radius: 8
+              color: closeSaveButton.down ? Qt.darker(Theme.accent, 1.15)
+                     : (closeSaveButton.hovered ? Qt.lighter(Theme.accent, 1.1) : Theme.accent)
+            }
+
+            contentItem: Text {
+              text: closeSaveButton.text
+              color: Theme.accentText
+              font.pixelSize: 13
+              font.bold: true
+              horizontalAlignment: Text.AlignHCenter
+              verticalAlignment: Text.AlignVCenter
+            }
+
+            onClicked: window.saveAndClose()
+          }
+        }
+      }
+    }
+  }
+
   Component.onCompleted: {
-    // Open the most recently touched document; otherwise start a new one in
-    // the user document folder so Ctrl+S always has a destination.
-    const recent = documentList.mostRecentDocumentPath()
+    fileExplorer.expanded = Preferences.expandExplorerOnLaunch
+
+    // Reopen the most recently touched document when session restore is
+    // enabled; otherwise start a fresh untitled document so Ctrl+S always has
+    // a destination.
+    const recent = Preferences.restoreLastSession
+                 ? documentList.mostRecentDocumentPath()
+                 : ""
 
     if (recent.length > 0 && blockModel.loadDocument(recent)) {
       documentList.currentFilePath = recent

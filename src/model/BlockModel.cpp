@@ -72,17 +72,13 @@ bool endsWord(const QString &text, const TextDiff &diff) {
   return finder.isAtBoundary();
 }
 
-int indexOfId(const QVector<Block> &blocks, const QString &id) {
-  for (int i = 0; i < blocks.size(); ++i) {
-    if (blocks[i].id == id)
-      return i;
-  }
-
-  return -1;
-}
 } // namespace
 
 BlockModel::BlockModel(QObject *parent) : QAbstractListModel(parent) {
+  m_autosaveTimer.setSingleShot(true);
+  m_autosaveTimer.setInterval(1500);
+  connect(&m_autosaveTimer, &QTimer::timeout, this, &BlockModel::autosave);
+
   m_document.appendBlock(
       Block::create(BlockType::Heading, "Welcome to Templnote"));
 
@@ -106,7 +102,7 @@ void BlockModel::saveHistory(const QVector<Block> &before,
   entry.kind = HistoryEntry::Kind::StructuralEdit;
   entry.focusBeforeId = focusBeforeId;
   entry.focusAfterId = focusAfterId;
-  entry.patch = buildPatch(before, m_document.snapshot());
+  entry.patch = buildPatch(before, m_document.blocks());
 
   m_undoStack.append(entry);
   m_redoStack.clear();
@@ -579,6 +575,27 @@ int BlockModel::indexOfBlock(const QString &id) const {
   return m_document.indexOf(id);
 }
 
+QString BlockModel::blockIdAt(int row) const {
+  const Block *block = m_document.blockAt(row);
+  return block ? block->id : QString();
+}
+
+bool BlockModel::autosaveEnabled() const { return m_autosaveEnabled; }
+
+void BlockModel::setAutosaveEnabled(bool enabled) {
+  if (m_autosaveEnabled == enabled)
+    return;
+
+  m_autosaveEnabled = enabled;
+
+  if (enabled)
+    scheduleAutosave();
+  else
+    m_autosaveTimer.stop();
+
+  emit autosaveEnabledChanged();
+}
+
 QString BlockModel::lastHistoryBlockId() const { return m_lastHistoryBlockId; }
 
 int BlockModel::lastHistoryCursorPosition() const {
@@ -602,14 +619,37 @@ bool BlockModel::isModified() const { return m_modified; }
 
 QString BlockModel::lastError() const { return m_lastError; }
 
-void BlockModel::markModified() { setModified(true); }
+void BlockModel::markModified() {
+  setModified(true);
+  scheduleAutosave();
+}
 
 void BlockModel::setModified(bool modified) {
   if (m_modified == modified)
     return;
 
   m_modified = modified;
+
+  if (!modified)
+    m_autosaveTimer.stop();
+
   emit modifiedChanged();
+}
+
+void BlockModel::scheduleAutosave() {
+  if (!m_autosaveEnabled || m_currentFilePath.isEmpty())
+    return;
+
+  m_autosaveTimer.start();
+}
+
+void BlockModel::autosave() {
+  // The user may have saved or switched documents while the timer was
+  // pending. Only write when there is still something to persist.
+  if (!m_modified || m_currentFilePath.isEmpty())
+    return;
+
+  saveCurrentDocument();
 }
 
 void BlockModel::setLastModified(const QDateTime &modified) {
@@ -668,6 +708,7 @@ bool BlockModel::resetDocument(Document document) {
 
   m_document = std::move(document);
 
+  m_autosaveTimer.stop();
   m_undoStack.clear();
   m_redoStack.clear();
   closeTextGroup();
@@ -958,7 +999,14 @@ BlockModel::buildPatch(const QVector<Block> &before,
     }
   }
 
-  // Align block order: move existing blocks and insert new ones.
+  // Align block order: move existing blocks and insert new ones. A position
+  // map avoids rescanning the vector for every row.
+  QHash<QString, int> position;
+  position.reserve(working.size());
+
+  for (int i = 0; i < working.size(); ++i)
+    position.insert(working[i].id, i);
+
   row = 0;
 
   while (row < working.size()) {
@@ -979,7 +1027,7 @@ BlockModel::buildPatch(const QVector<Block> &before,
       continue;
     }
 
-    const int existing = indexOfId(working, after[row].id);
+    const int existing = position.value(after[row].id, -1);
 
     if (existing >= 0) {
       PatchOp op;
@@ -991,6 +1039,12 @@ BlockModel::buildPatch(const QVector<Block> &before,
 
       const Block moved = working.takeAt(existing);
       working.insert(row, moved);
+
+      const int first = qMin(existing, row);
+      const int last = qMax(existing, row);
+
+      for (int i = first; i <= last; ++i)
+        position.insert(working[i].id, i);
     } else {
       PatchOp op;
       op.type = PatchOp::Type::Insert;
@@ -998,6 +1052,9 @@ BlockModel::buildPatch(const QVector<Block> &before,
       op.block = after[row];
       ops.append(op);
       working.insert(row, after[row]);
+
+      for (int i = row; i < working.size(); ++i)
+        position.insert(working[i].id, i);
     }
 
     ++row;
@@ -1013,6 +1070,7 @@ BlockModel::buildPatch(const QVector<Block> &before,
     op.block = after[appendRow];
     ops.append(op);
     working.append(after[appendRow]);
+    position.insert(after[appendRow].id, appendRow);
   }
 
   // Update text and block properties for blocks present in both documents.

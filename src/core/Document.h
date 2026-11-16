@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QJsonObject>
 #include <QString>
 #include <QVector>
@@ -52,6 +53,11 @@ public:
   bool fromJson(const QJsonObject &json, QString *error = nullptr);
 
 private:
+  // Keeps id lookups O(1). Rebuilt after structural changes, which are
+  // already O(n) because they shift the block vector.
+  void rebuildIdIndex();
+
   QVector<Block> m_blocks;
+  QHash<QString, int> m_idIndex;
 };
 } // namespace Templnote

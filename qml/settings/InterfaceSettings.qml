@@ -6,8 +6,6 @@ Column {
   width: parent ? parent.width : 0
   spacing: 22
 
-  property string density: "Comfortable"
-
   Text {
     text: "Layout"
     color: Theme.text
@@ -18,22 +16,28 @@ Column {
   SettingToggle {
     title: "Show navigation rail"
     description: "Keep the icon rail visible on the left side of the window."
-    checked: true
+    checked: Preferences.showNavigationRail
+    onToggled: function(value) {
+      Preferences.showNavigationRail = value
+    }
   }
 
   SettingToggle {
     title: "Expand the file explorer on launch"
     description: "Open the document explorer automatically when Templnote starts."
-    checked: true
+    checked: Preferences.expandExplorerOnLaunch
+    onToggled: function(value) {
+      Preferences.expandExplorerOnLaunch = value
+    }
   }
 
   SettingChoice {
     title: "Density"
     description: "Control the amount of vertical space between interface elements."
     options: ["Compact", "Comfortable", "Spacious"]
-    value: root.density
+    value: Preferences.density
     onSelected: function(value) {
-      root.density = value
+      Preferences.density = value
     }
   }
 
@@ -53,12 +57,18 @@ Column {
   SettingToggle {
     title: "Reduce motion"
     description: "Disable panel and toggle animations across the interface."
-    checked: false
+    checked: Preferences.reduceMotion
+    onToggled: function(value) {
+      Preferences.reduceMotion = value
+    }
   }
 
   SettingToggle {
     title: "Animate the file explorer"
     description: "Slide the explorer open and closed instead of snapping it."
-    checked: true
+    checked: Preferences.animateExplorer
+    onToggled: function(value) {
+      Preferences.animateExplorer = value
+    }
   }
 }

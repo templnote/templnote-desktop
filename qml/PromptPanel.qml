@@ -398,7 +398,6 @@ Rectangle {
     if (text.length === 0)
       return
 
-    console.log("Send prompt to model [" + root.selectedModel + "]:", text)
     promptInput.text = ""
   }
 }

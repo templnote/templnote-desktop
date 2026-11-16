@@ -92,6 +92,10 @@ public:
   // returns an empty list.
   Q_INVOKABLE QVariantList searchEntries(const QString &query) const;
 
+  // Runs the recursive scan on a worker thread and emits searchCompleted for
+  // the most recent request. The UI can safely call this on every keystroke.
+  Q_INVOKABLE void searchEntriesAsync(const QString &query);
+
 signals:
   void countChanged();
   void directoryChanged();
@@ -105,7 +109,13 @@ signals:
   // their children elsewhere, so the index also re-syncs with disk.
   void pathRemoved(const QString &path);
 
+  // `query` is echoed back so callers can discard stale results.
+  void searchCompleted(const QString &query, const QVariantList &results);
+
 private:
+  static QVariantList searchEntriesInRoot(const QString &rootDirectory,
+                                          const QString &needle);
+
   struct Entry {
     QString name;
     QString filePath;
@@ -121,5 +131,6 @@ private:
   QString m_currentFilePath;
   QVector<Entry> m_entries;
   QFileSystemWatcher *m_watcher = nullptr;
+  quint64 m_searchGeneration = 0;
 };
 } // namespace Templnote

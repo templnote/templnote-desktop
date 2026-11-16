@@ -68,7 +68,7 @@ Item {
 
       Behavior on x {
         NumberAnimation {
-          duration: 140
+          duration: Preferences.reduceMotion ? 0 : 140
           easing.type: Easing.OutCubic
         }
       }

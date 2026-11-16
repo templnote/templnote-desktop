@@ -12,13 +12,13 @@ Item {
   property bool menuOpen: false
   property int selectedIndex: 0
 
-  // Placeholder entries. Replace these with the real actions and handle them
-  // through optionTriggered().
+  // Actions offered by the floating menu. Main.qml handles the keys and may
+  // override the list; these defaults keep the control useful standalone.
   property var options: [
-    { key: "option-one", label: "Option one", shortcut: "" },
-    { key: "option-two", label: "Option two", shortcut: "" },
-    { key: "option-three", label: "Option three", shortcut: "" },
-    { key: "option-four", label: "Option four", shortcut: "" }
+    { key: "find", label: "Find in document", shortcut: "Ctrl+/" },
+    { key: "globalSearch", label: "Search all documents", shortcut: "Ctrl+Shift+/" },
+    { key: "shortcuts", label: "Keyboard shortcuts", shortcut: "F1" },
+    { key: "settings", label: "Settings", shortcut: "" }
   ]
 
   // Matches CommandMenu: 240px wide, 42px rows, a 40px header area and 16px

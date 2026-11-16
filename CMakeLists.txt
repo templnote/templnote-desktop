@@ -17,6 +17,7 @@ include(CTest)
 
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core
+  Concurrent
   Gui
   Quick
   QuickControls2
@@ -28,6 +29,10 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_policy(SET QTP0004 NEW)
 
 set_source_files_properties(qml/Theme.qml PROPERTIES
+  QT_QML_SINGLETON_TYPE TRUE
+)
+
+set_source_files_properties(qml/Preferences.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
 )
 
@@ -58,6 +63,7 @@ target_include_directories(templnote_core PUBLIC
 
 target_link_libraries(templnote_core PUBLIC
   Qt6::Core
+  Qt6::Concurrent
   Qt6::Sql
 )
 
@@ -72,6 +78,7 @@ qt_add_qml_module(templnote
   QML_FILES
   qml/Main.qml
   qml/Theme.qml
+  qml/Preferences.qml
   qml/DocumentHeader.qml
   qml/Editor.qml
   qml/BlockRenderer.qml
@@ -86,6 +93,7 @@ qt_add_qml_module(templnote
   qml/FileExplorer.qml
   qml/OptionsMenu.qml
   qml/SettingsWindow.qml
+  qml/ShortcutsSheet.qml
 
   qml/settings/AppearanceSettings.qml
   qml/settings/GeneralSettings.qml
@@ -123,10 +131,6 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_panel_left_expand_20_filled.svg
   assets/icons/ic_fluent_animal_cat_20_regular.svg
   assets/icons/ic_fluent_send_16_regular.svg
-  assets/icons/ic_fluent_arrow_sort_20_regular.svg
-  assets/icons/ic_fluent_chat_sparkle_20_regular.svg
-  assets/icons/ic_fluent_search_20_regular.svg
-  assets/icons/ic_fluent_document_folder_20_regular.svg
   assets/icons/ic_fluent_library_20_regular.svg
   assets/icons/ic_fluent_lightbulb_sparkle_20_regular.svg
   assets/icons/ic_fluent_delete_20_regular.svg
