@@ -11,6 +11,7 @@ Rectangle {
   color: Theme.surface
 
   signal explorerToggleRequested()
+  signal homeRequested()
   signal settingsRequested()
 
   component RailButton: Rectangle {
@@ -79,9 +80,9 @@ Rectangle {
     }
 
     RailButton {
-      iconSource: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_align_space_evenly_horizontal_20_regular.svg"
-      tooltipText: "Navigation"
-      placeholder: true
+      iconSource: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_home_heart_20_regular.svg"
+      tooltipText: "Home"
+      onClicked: root.homeRequested()
     }
 
     RailButton {

@@ -68,7 +68,7 @@ bool endsWord(const QString &text, const TextDiff &diff) {
     return false;
 
   QTextBoundaryFinder finder(QTextBoundaryFinder::Word, text);
-  finder.setPosition(diff.prefix + diff.inserted.size());
+  finder.setPosition(qBound(0, diff.prefix + diff.inserted.size(), text.size()));
   return finder.isAtBoundary();
 }
 

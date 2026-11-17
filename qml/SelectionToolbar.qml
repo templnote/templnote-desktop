@@ -12,6 +12,8 @@ Rectangle {
   property bool isItalic: false
   property bool isUnderline: false
   property bool isStrikethrough: false
+  property bool isSubscript: false
+  property bool isSuperscript: false
   property string selectedColor: "#e6edf3"
   property int fontSizeValue: 16
   property string alignment: "left" // "left", "center", "right", "justify"
@@ -26,6 +28,8 @@ Rectangle {
   signal italicToggled()
   signal underlineToggled()
   signal strikethroughToggled()
+  signal subscriptToggled()
+  signal superscriptToggled()
   signal colorSelected(string color)
   signal fontSizeChanged(int size)
   signal alignmentSelected(string align)
@@ -206,7 +210,8 @@ Rectangle {
       anchors.verticalCenter: parent.verticalCenter
     }
 
-    // 2. Formatting Toggles: Bold, Italic, Underline, Strikethrough
+    // 2. Formatting Toggles: Bold, Italic, Underline, Strikethrough,
+    //    Subscript, Superscript
     Item {
       width: 28
       height: 28
@@ -335,6 +340,78 @@ Rectangle {
         onClicked: {
           root.isStrikethrough = !root.isStrikethrough
           root.strikethroughToggled()
+        }
+      }
+    }
+
+    Item {
+      width: 28
+      height: 28
+      anchors.verticalCenter: parent.verticalCenter
+
+      Rectangle {
+        anchors.fill: parent
+        radius: 5
+        color: root.isSubscript
+               ? Theme.tint(Theme.accent, 0.16)
+               : (subscriptMouse.containsMouse ? Theme.surfaceHover : "transparent")
+      }
+
+      IconImage {
+        anchors.centerIn: parent
+        width: 16
+        height: 16
+        source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_text_subscript_20_regular.svg"
+        color: root.isSubscript ? Theme.accent : Theme.text
+      }
+
+      MouseArea {
+        id: subscriptMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: {
+          const next = !root.isSubscript
+          root.isSubscript = next
+          if (next)
+            root.isSuperscript = false
+          root.subscriptToggled()
+        }
+      }
+    }
+
+    Item {
+      width: 28
+      height: 28
+      anchors.verticalCenter: parent.verticalCenter
+
+      Rectangle {
+        anchors.fill: parent
+        radius: 5
+        color: root.isSuperscript
+               ? Theme.tint(Theme.accent, 0.16)
+               : (superscriptMouse.containsMouse ? Theme.surfaceHover : "transparent")
+      }
+
+      IconImage {
+        anchors.centerIn: parent
+        width: 16
+        height: 16
+        source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_text_superscript_20_regular.svg"
+        color: root.isSuperscript ? Theme.accent : Theme.text
+      }
+
+      MouseArea {
+        id: superscriptMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: {
+          const next = !root.isSuperscript
+          root.isSuperscript = next
+          if (next)
+            root.isSubscript = false
+          root.superscriptToggled()
         }
       }
     }

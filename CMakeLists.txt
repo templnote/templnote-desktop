@@ -149,11 +149,14 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_text_italic_20_regular.svg
   assets/icons/ic_fluent_text_underline_20_regular.svg
   assets/icons/ic_fluent_text_strikethrough_20_regular.svg
+  assets/icons/ic_fluent_text_subscript_20_regular.svg
+  assets/icons/ic_fluent_text_superscript_20_regular.svg
   assets/icons/ic_fluent_text_color_20_regular.svg
   assets/icons/ic_fluent_text_align_left_20_regular.svg
   assets/icons/ic_fluent_text_align_center_20_regular.svg
   assets/icons/ic_fluent_text_align_right_20_regular.svg
   assets/icons/ic_fluent_text_align_justify_20_regular.svg
+  assets/icons/ic_fluent_home_heart_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

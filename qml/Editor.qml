@@ -28,6 +28,13 @@ Item {
   property int pendingFocusRangeStart: -1
   property int pendingFocusRangeEnd: -1
 
+  Timer {
+    id: pendingFocusTimer
+    interval: 0
+    repeat: false
+    onTriggered: root.applyPendingFocus()
+  }
+
   // Drag and drop reordering state
   property string draggingBlockId: ""
   property int draggingSourceIndex: -1
@@ -115,6 +122,8 @@ Item {
       selectionToolbar.isItalic = renderer.isFormatActive("italic")
       selectionToolbar.isUnderline = renderer.isFormatActive("underline")
       selectionToolbar.isStrikethrough = renderer.isFormatActive("strike")
+      selectionToolbar.isSubscript = renderer.isFormatActive("subscript")
+      selectionToolbar.isSuperscript = renderer.isFormatActive("superscript")
 
       const pos = renderer.mapToItem(root, item.x, item.y)
       const gap = root.selectionToolbarGap
@@ -296,7 +305,7 @@ Item {
     if (row >= 0)
       documentView.positionViewAtIndex(row, ListView.Contain)
 
-    Qt.callLater(root.applyPendingFocus)
+    pendingFocusTimer.restart()
   }
 
   function applyPendingFocus() {
@@ -590,6 +599,7 @@ Item {
 
     delegate: Item {
       id: delegateRoot
+      property Item editorRoot: root
 
       // These properties receive the C++ model roles.
       required property string blockId
@@ -613,17 +623,17 @@ Item {
       // Applies a focus intent set before this delegate existed (or while it
       // was recycled for another block).
       function maybeApplyPendingFocus() {
-        if (root.pendingFocusBlockId.length === 0
-            || root.pendingFocusBlockId !== delegateRoot.blockId)
+        if (editorRoot.pendingFocusBlockId.length === 0
+            || editorRoot.pendingFocusBlockId !== delegateRoot.blockId)
           return
 
-        const position = root.pendingFocusPosition
-        const rangeStart = root.pendingFocusRangeStart
-        const rangeEnd = root.pendingFocusRangeEnd
+        const position = editorRoot.pendingFocusPosition
+        const rangeStart = editorRoot.pendingFocusRangeStart
+        const rangeEnd = editorRoot.pendingFocusRangeEnd
 
-        root.pendingFocusBlockId = ""
-        root.pendingFocusRangeStart = -1
-        root.pendingFocusRangeEnd = -1
+        editorRoot.pendingFocusBlockId = ""
+        editorRoot.pendingFocusRangeStart = -1
+        editorRoot.pendingFocusRangeEnd = -1
 
         refreshBlock()
 
@@ -633,8 +643,15 @@ Item {
           focusBlock(position)
       }
 
-      Component.onCompleted: Qt.callLater(maybeApplyPendingFocus)
-      onBlockIdChanged: Qt.callLater(maybeApplyPendingFocus)
+      Timer {
+        id: delegateFocusTimer
+        interval: 0
+        repeat: false
+        onTriggered: delegateRoot.maybeApplyPendingFocus()
+      }
+
+      Component.onCompleted: delegateFocusTimer.restart()
+      onBlockIdChanged: delegateFocusTimer.restart()
 
       // MouseArea covering the block AND extending 48px into the left gutter (across the drag handle and beyond)
       MouseArea {
@@ -1105,6 +1122,8 @@ Item {
         selectionToolbar.isItalic = renderer.isFormatActive("italic")
         selectionToolbar.isUnderline = renderer.isFormatActive("underline")
         selectionToolbar.isStrikethrough = renderer.isFormatActive("strike")
+        selectionToolbar.isSubscript = renderer.isFormatActive("subscript")
+        selectionToolbar.isSuperscript = renderer.isFormatActive("superscript")
       }
     }
 
@@ -1132,6 +1151,20 @@ Item {
     onStrikethroughToggled: {
       if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
         root.activeSelectionDelegate.rendererItem.toggleFormat("strike")
+        syncFormattingState()
+      }
+    }
+
+    onSubscriptToggled: {
+      if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
+        root.activeSelectionDelegate.rendererItem.toggleScriptFormat("subscript")
+        syncFormattingState()
+      }
+    }
+
+    onSuperscriptToggled: {
+      if (root.activeSelectionDelegate && root.activeSelectionDelegate.rendererItem) {
+        root.activeSelectionDelegate.rendererItem.toggleScriptFormat("superscript")
         syncFormattingState()
       }
     }

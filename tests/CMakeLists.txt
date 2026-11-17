@@ -69,6 +69,7 @@ foreach(qml_file
     Editor.qml
     BlockRenderer.qml
     CommandMenu.qml
+    SelectionToolbar.qml
     SearchWindow.qml
     ResultsList.qml
     ResultPreview.qml
@@ -101,6 +102,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/Editor.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
     ${TEST_QML_DIR}/CommandMenu.qml
+    ${TEST_QML_DIR}/SelectionToolbar.qml
     ${TEST_QML_DIR}/blocks/TextBlock.qml
     ${TEST_QML_DIR}/blocks/ParagraphBlock.qml
     ${TEST_QML_DIR}/blocks/HeadingBlock.qml

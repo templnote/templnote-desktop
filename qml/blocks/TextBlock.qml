@@ -36,9 +36,82 @@ Item {
   // rewrite the same text with/without syntax dimming, so caching avoids a
   // redundant parse + relayout when nothing textual changed.
   property string renderedHtml: ""
+  // Height of the formatted text as shown while the block is not focused.
+  // Measured explicitly because a hidden Text's implicitHeight does not
+  // reliably notify the delegate's layout before it has been polished.
+  property real renderedHeight: 0
   property string renderCacheRaw: ""
   property bool renderCacheSyntax: false
   property bool renderCacheValid: false
+
+  // Custom caret geometry, in editorLine coordinates. The real caret belongs
+  // to the invisible TextArea, whose raw layout differs from the rendered
+  // rich text whenever a <sub>/<sup> span shrinks its contents.
+  property real caretOffsetX: 0
+  property real caretOffsetY: 0
+  property real caretHeight: 0
+  property int pendingFocusPosition: 0
+
+  Timer {
+    id: measureTimer
+    interval: 0
+    repeat: false
+    onTriggered: root.measureRenderedHeight()
+  }
+
+  Timer {
+    id: caretGeometryTimer
+    interval: 0
+    repeat: false
+    onTriggered: root.updateCaretGeometry()
+  }
+
+  Timer {
+    id: focusRestoreTimer
+    interval: 0
+    repeat: false
+    onTriggered: {
+      if (!editor.activeFocus)
+        return
+
+      editor.cursorVisible = true
+      if (root.pendingFocusPosition < 0)
+        editor.cursorPosition = editor.length
+      else
+        editor.cursorPosition = Math.max(
+          0, Math.min(root.pendingFocusPosition, editor.length))
+      root.updateCaretGeometry()
+    }
+  }
+
+  function measureRenderedHeight() {
+    if (!measureText || !editor || !editorLine)
+      return
+
+    function numeric(value) {
+      return typeof value === "number" && isFinite(value) ? value : 0
+    }
+
+    const leftPadding = numeric(editor.leftPadding)
+    const rightPadding = numeric(editor.rightPadding)
+    const availableWidth = Math.max(
+      0, numeric(editorLine.width) - leftPadding - rightPadding)
+
+    // Measuring before the delegate has a width would produce a single-line
+    // height; wait until the layout pass provides one.
+    if (availableWidth <= 0)
+      return
+
+    measureText.width = availableWidth
+    measureText.text = root.renderedHtml
+    measureText.forceLayout()
+
+    const height = measureText.contentHeight
+                 + numeric(editor.topPadding) + numeric(editor.bottomMargin)
+
+    if (isFinite(height) && height !== root.renderedHeight)
+      root.renderedHeight = height
+  }
 
   function refreshRenderedHtml() {
     if (!editor)
@@ -55,16 +128,180 @@ Item {
     renderCacheSyntax = syntax
     renderCacheValid = true
     renderedHtml = markdownToHtml(raw, syntax)
+    measureRenderedHeight()
+
+    // The delegate's width can still be settling when the first content
+    // arrives, so measure once more after the current layout pass.
+    measureTimer.restart()
+  }
+
+  // Supported inline HTML tags. Subscript and superscript keep their real
+  // <sub>/<sup> markup so they render at the correct size. Qt shrinks the
+  // contents of those tags, which means the visible rich text no longer shares
+  // geometry with the raw TextArea. Selection, caret and pointer positions are
+  // therefore read from the rendered viewer instead of the TextArea.
+  function isInlineTagFormat(type) {
+    return type === "underline" || type === "subscript" || type === "superscript"
+  }
+
+  function inlineTagType(type) {
+    if (type === "underline")
+      return "u"
+    if (type === "subscript")
+      return "sub"
+    if (type === "superscript")
+      return "sup"
+    return ""
+  }
+
+  // Nesting-aware scan of <u>, <sub> and <sup>. A close tag only pairs with
+  // the most recent matching open tag, so crossed or unclosed tags are left
+  // unmatched and rendered as literal text instead of producing invalid HTML.
+  function parseInlineTags(text) {
+    const spans = []
+    const tokens = []
+    const stack = []
+    const tagRegex = /<(\/?)(u|sub|sup)>/gi
+    let match
+
+    while ((match = tagRegex.exec(text)) !== null) {
+      const type = match[2].toLowerCase()
+      const closing = match[1] === "/"
+      const token = {
+        type: type,
+        closing: closing,
+        start: match.index,
+        end: match.index + match[0].length,
+        matched: false
+      }
+      tokens.push(token)
+
+      if (!closing) {
+        stack.push({ type: type, token: token })
+      } else if (stack.length > 0 && stack[stack.length - 1].type === type) {
+        const open = stack.pop()
+        open.token.matched = true
+        token.matched = true
+        spans.push({
+          type: type,
+          openStart: open.token.start,
+          openEnd: open.token.end,
+          contentStart: open.token.end,
+          contentEnd: token.start,
+          closeStart: token.start,
+          closeEnd: token.end
+        })
+      }
+    }
+
+    return { spans: spans, tokens: tokens }
+  }
+
+  function buildTagTree(text) {
+    const parsed = parseInlineTags(text)
+    const spans = parsed.spans.slice()
+    spans.sort(function(a, b) {
+      if (a.openStart !== b.openStart)
+        return a.openStart - b.openStart
+      return b.closeEnd - a.closeEnd
+    })
+
+    const root = []
+    const stack = [{ children: root, end: text.length }]
+
+    for (let i = 0; i < spans.length; ++i) {
+      const span = spans[i]
+      while (stack.length > 1 && span.openStart >= stack[stack.length - 1].end)
+        stack.pop()
+
+      const node = { span: span, children: [] }
+      stack[stack.length - 1].children.push(node)
+      stack.push({ children: node.children, end: span.closeEnd })
+    }
+
+    return { parsed: parsed, root: root }
+  }
+
+  function escapeInlineText(text) {
+    return text.replace(/[&<>]/g, function(character) {
+      return character === "&" ? "&amp;" : character === "<" ? "&lt;" : "&gt;"
+    })
+  }
+
+  function renderInlineText(text, includeSyntax) {
+    if (!includeSyntax)
+      return escapeInlineText(text)
+
+    // Unmatched tags are literal text, but still look like dimmed syntax
+    // markers while the block is focused.
+    const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
+    const spanClose = "</span>"
+    const tagRegex = /<\/?(?:u|sub|sup)>/gi
+    let out = ""
+    let pos = 0
+    let match
+
+    while ((match = tagRegex.exec(text)) !== null) {
+      out += escapeInlineText(text.substring(pos, match.index))
+      out += spanOpen + escapeInlineText(match[0]) + spanClose
+      pos = match.index + match[0].length
+    }
+    out += escapeInlineText(text.substring(pos))
+    return out
+  }
+
+  function tagOpenHtml(type, includeSyntax) {
+    const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
+    const spanClose = "</span>"
+    const marker = spanOpen + "&lt;" + type + "&gt;" + spanClose
+
+    if (type === "u") {
+      return (includeSyntax ? marker : "") + "<u>"
+    }
+    const openTag = type === "sup" ? "<sup>" : "<sub>"
+    return (includeSyntax ? marker : "") + openTag
+  }
+
+  function tagCloseHtml(type, includeSyntax) {
+    const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
+    const spanClose = "</span>"
+    const marker = spanOpen + "&lt;/" + type + "&gt;" + spanClose
+    let closingTag = "</u>"
+    if (type === "sub")
+      closingTag = "</sub>"
+    else if (type === "sup")
+      closingTag = "</sup>"
+    return closingTag + (includeSyntax ? marker : "")
+  }
+
+  function renderTagRange(text, start, end, nodes, includeSyntax) {
+    let out = ""
+    let pos = start
+
+    for (let i = 0; i < nodes.length; ++i) {
+      const node = nodes[i]
+      const span = node.span
+      out += renderInlineText(text.substring(pos, span.openStart), includeSyntax)
+      out += tagOpenHtml(span.type, includeSyntax)
+      out += renderTagRange(text, span.contentStart, span.contentEnd,
+                            node.children, includeSyntax)
+      out += tagCloseHtml(span.type, includeSyntax)
+      pos = span.closeEnd
+    }
+
+    out += renderInlineText(text.substring(pos, end), includeSyntax)
+    return out
   }
 
   function findSyntaxTokens(text) {
     if (!text) return []
     let tokens = []
-    let uRegex = /<\/?u>/gi
-    let m
-    while ((m = uRegex.exec(text)) !== null) {
-      tokens.push({ start: m.index, end: m.index + m[0].length })
+    const parsedTags = parseInlineTags(text)
+    for (let i = 0; i < parsedTags.tokens.length; ++i) {
+      const token = parsedTags.tokens[i]
+      tokens.push({ start: token.start, end: token.end })
     }
+    let m
     let bRegex = /\*\*(.+?)\*\*/g
     while ((m = bRegex.exec(text)) !== null) {
       tokens.push({ start: m.index, end: m.index + 2 })
@@ -102,10 +339,11 @@ Item {
     const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
     const spanClose = "</span>"
 
-    let text = raw.replace(/<u>/gi, "\x01U\x01").replace(/<\/u>/gi, "\x01/U\x01")
-    text = text.replace(/[&<>]/g, function(character) {
-      return character === "&" ? "&amp;" : character === "<" ? "&lt;" : "&gt;"
-    })
+    // Render the inline HTML tags first so nested <sub>/<sup>/<u> pairs are
+    // balanced. Their contents are escaped before the markdown markers are
+    // styled below.
+    const tree = buildTagTree(raw)
+    let text = renderTagRange(raw, 0, raw.length, tree.root, includeSyntax)
 
     if (includeSyntax) {
       // Focused mode: render formatted styling WITH dimmed syntax markers
@@ -116,11 +354,8 @@ Item {
         let suffix = match.endsWith("*") ? "" : match.charAt(match.length - 1)
         return prefix + spanOpen + "*" + spanClose + "<i>" + p1 + "</i>" + spanOpen + "*" + spanClose + suffix
       })
-      text = text.replace(/\x01U\x01([\s\S]*?)\x01\/U\x01/g, spanOpen + "&lt;u&gt;" + spanClose + "<u>$1</u>" + spanOpen + "&lt;/u&gt;" + spanClose)
-      text = text.replace(/\x01U\x01/g, "&lt;u&gt;").replace(/\x01\/U\x01/g, "&lt;/u&gt;")
     } else {
       // Unfocused mode: render formatted styling WITHOUT syntax markers
-      text = text.replace(/\x01U\x01/g, "<u>").replace(/\x01\/U\x01/g, "</u>")
       text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
       text = text.replace(/~~(.+?)~~/g, "<s>$1</s>")
       text = text.replace(/(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g, function(match, p1) {
@@ -138,6 +373,103 @@ Item {
     })
 
     return text
+  }
+
+  // The rendered viewer owns the visible layout, so every position query has
+  // to go through it. Its text contains the dimmed syntax markers while the
+  // block is focused, which keeps rendered positions aligned with the raw
+  // editor positions.
+  function viewerCaretRect(position) {
+    if (!renderedViewer || !editor)
+      return Qt.rect(0, 0, 1, 0)
+
+    const maxPosition = Math.min(editor.length, renderedViewer.length)
+    const clamped = Math.max(0, Math.min(position, maxPosition))
+    if (renderedViewer.length === 0)
+      return Qt.rect(renderedViewer.x, renderedViewer.y, 1,
+                     Math.max(1, renderedViewer.contentHeight))
+
+    const rect = renderedViewer.positionToRectangle(clamped)
+    return Qt.rect(renderedViewer.x + rect.x,
+                   renderedViewer.y + rect.y,
+                   Math.max(1, rect.width), rect.height)
+  }
+
+  function updateCaretGeometry() {
+    if (!renderedViewer || !editor)
+      return
+
+    const rect = root.viewerCaretRect(editor.cursorPosition)
+    caretOffsetX = rect.x
+    caretOffsetY = rect.y
+    caretHeight = rect.height
+  }
+
+  function viewerPositionAt(x, y) {
+    if (!renderedViewer)
+      return 0
+
+    return renderedViewer.positionAt(x - renderedViewer.x, y - renderedViewer.y)
+  }
+
+  // Paint a raw-text range using the rendered viewer's rich-text geometry.
+  // Both the search highlights and the custom selection highlight use this so
+  // scaled inline formatting (such as <sub>/<sup>) stays aligned with the
+  // visible text instead of the invisible TextArea's raw layout.
+  function paintRange(ctx, start, end, color) {
+    if (!renderedViewer || end <= start)
+      return
+
+    ctx.fillStyle = color
+
+    const offsetX = renderedViewer.x
+    const offsetY = renderedViewer.y
+    const rightEdge = renderedViewer.x + renderedViewer.width
+    let runLeft = -1
+    let runRight = -1
+    let runTop = 0
+    let runHeight = 0
+
+    function flushRun() {
+      if (runLeft < 0)
+        return
+
+      ctx.fillRect(runLeft, runTop,
+                   Math.max(1, runRight - runLeft), runHeight)
+      runLeft = -1
+      runRight = -1
+    }
+
+    // positionToRectangle() returns a 1px caret rect, not a full character
+    // cell. Use the next caret position to find the right edge of each
+    // character and merge cells that share a line.
+    for (let i = start; i < end; ++i) {
+      if (editor.text.charAt(i) === "\n")
+        continue
+
+      const rect = renderedViewer.positionToRectangle(i)
+      const nextRect = renderedViewer.positionToRectangle(i + 1)
+      const sameLine = Math.abs(nextRect.y - rect.y) < 1
+      const cellRight = (sameLine
+          ? Math.max(rect.x + 1, nextRect.x)
+          // The final character on a soft-wrapped line extends to the right
+          // edge of the rendered text.
+          : Math.max(rect.x + 1, rightEdge - offsetX)) + offsetX
+
+      if (runLeft >= 0 && Math.abs(rect.y + offsetY - runTop) < 1) {
+        runRight = Math.max(runRight, cellRight)
+        runHeight = Math.max(runHeight, rect.height)
+      } else {
+        flushRun()
+
+        runLeft = rect.x + offsetX
+        runRight = cellRight
+        runTop = rect.y + offsetY
+        runHeight = rect.height
+      }
+    }
+
+    flushRun()
   }
 
   function renderedToRawIndex(raw, renderedIndex) {
@@ -179,10 +511,13 @@ Item {
       regex = /(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g
     } else if (type === "underline") {
       openTag = "<u>"; closeTag = "</u>"
-      regex = /<u>([\s\S]*?)<\/u>/gi
     } else if (type === "strike") {
       openTag = "~~"; closeTag = "~~"
       regex = /~~(.+?)~~/g
+    } else if (type === "subscript") {
+      openTag = "<sub>"; closeTag = "</sub>"
+    } else if (type === "superscript") {
+      openTag = "<sup>"; closeTag = "</sup>"
     }
 
     const otLen = openTag.length
@@ -198,6 +533,19 @@ Item {
           raw.substring(e, e + ctLen).toLowerCase() === closeTag.toLowerCase()) {
         return true
       }
+    }
+
+    if (isInlineTagFormat(type)) {
+      const tagName = inlineTagType(type)
+      const parsed = parseInlineTags(raw)
+      for (let i = 0; i < parsed.spans.length; ++i) {
+        const span = parsed.spans[i]
+        if (span.type === tagName &&
+            s >= span.contentStart && e <= span.contentEnd) {
+          return true
+        }
+      }
+      return false
     }
 
     if (regex) {
@@ -217,11 +565,18 @@ Item {
     return false
   }
 
+  function commitEditorText(newText, newStart, newEnd) {
+    editor.text = newText
+    editor.select(newStart, newEnd)
+    if (root.model && root.blockId.length > 0)
+      root.model.updateBlockText(root.blockId, newText)
+    editor.notifySelection()
+  }
+
   function toggleFormat(type) {
     const raw = editor.text
     const s = Math.min(editor.selectionStart, editor.selectionEnd)
     const e = Math.max(editor.selectionStart, editor.selectionEnd)
-    if (s === e) return
 
     const sel = raw.substring(s, e)
     let openTag = "", closeTag = ""
@@ -235,14 +590,37 @@ Item {
       regex = /(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g
     } else if (type === "underline") {
       openTag = "<u>"; closeTag = "</u>"
-      regex = /<u>([\s\S]*?)<\/u>/gi
     } else if (type === "strike") {
       openTag = "~~"; closeTag = "~~"
       regex = /~~(.+?)~~/g
+    } else if (type === "subscript") {
+      openTag = "<sub>"; closeTag = "</sub>"
+    } else if (type === "superscript") {
+      openTag = "<sup>"; closeTag = "</sup>"
     }
 
     const otLen = openTag.length
     const ctLen = closeTag.length
+
+    // Collapsed caret: subscript/superscript apply to the text typed next by
+    // inserting an empty tag pair with the caret inside it. Running the toggle
+    // again from between the tags removes the pair again.
+    if (s === e) {
+      if (type !== "subscript" && type !== "superscript")
+        return
+
+      if (s >= otLen && s + ctLen <= raw.length &&
+          raw.substring(s - otLen, s).toLowerCase() === openTag.toLowerCase() &&
+          raw.substring(s, s + ctLen).toLowerCase() === closeTag.toLowerCase()) {
+        commitEditorText(raw.substring(0, s - otLen) + raw.substring(s + ctLen),
+                         s - otLen, s - otLen)
+      } else {
+        const newText = raw.substring(0, s) + openTag + closeTag + raw.substring(e)
+        commitEditorText(newText, s + otLen, s + otLen)
+      }
+      return
+    }
+
     let newText = ""
     let newStart = s
     let newEnd = e
@@ -264,7 +642,53 @@ Item {
       newStart = s - otLen
       newEnd = e - otLen
     }
-    // 3. Selection is inside an existing span
+    // 3. Selection is inside an existing <u>/<sub>/<sup> span
+    else if (isInlineTagFormat(type)) {
+      const tagName = inlineTagType(type)
+      const parsed = parseInlineTags(raw)
+      let matchedSpan = null
+
+      // Spans are produced inner-first, so the first containing span is the
+      // innermost one.
+      for (let i = 0; i < parsed.spans.length; ++i) {
+        const span = parsed.spans[i]
+        if (span.type === tagName &&
+            s >= span.contentStart && e <= span.contentEnd) {
+          matchedSpan = span
+          break
+        }
+      }
+
+      if (matchedSpan) {
+        if (s === matchedSpan.contentStart && e === matchedSpan.contentEnd) {
+          const inner = raw.substring(matchedSpan.contentStart, matchedSpan.contentEnd)
+          newText = raw.substring(0, matchedSpan.openStart) + inner +
+                    raw.substring(matchedSpan.closeEnd)
+          newStart = matchedSpan.openStart
+          newEnd = matchedSpan.openStart + inner.length
+        } else {
+          const before = raw.substring(matchedSpan.contentStart, s)
+          const after = raw.substring(e, matchedSpan.contentEnd)
+          let rebuilt = ""
+          if (before.length > 0)
+            rebuilt += openTag + before + closeTag
+          rebuilt += sel
+          newStart = matchedSpan.openStart +
+                     (before.length > 0 ? (otLen + before.length + ctLen) : 0)
+          newEnd = newStart + sel.length
+          if (after.length > 0)
+            rebuilt += openTag + after + closeTag
+          newText = raw.substring(0, matchedSpan.openStart) + rebuilt +
+                    raw.substring(matchedSpan.closeEnd)
+        }
+      } else {
+        // Wrap
+        newText = raw.substring(0, s) + openTag + sel + closeTag + raw.substring(e)
+        newStart = s
+        newEnd = e + otLen + ctLen
+      }
+    }
+    // 4. Selection is inside an existing markdown span
     else if (regex) {
       let matchedSpan = null
       let match
@@ -315,11 +739,66 @@ Item {
       newEnd = e + otLen + ctLen
     }
 
-    editor.text = newText
-    editor.select(newStart, newEnd)
-    if (root.model && root.blockId.length > 0)
-      root.model.updateBlockText(root.blockId, newText)
-    editor.notifySelection()
+    commitEditorText(newText, newStart, newEnd)
+  }
+
+  // Remove all <sub>/<sup> spans of the given type that are fully contained
+  // in [s, e]. Used to enforce mutual exclusivity when a selection contains an
+  // opposite script span rather than sitting entirely inside it.
+  function stripContainedTagFormat(type, s, e) {
+    const raw = editor.text
+    const tagName = inlineTagType(type)
+    if (tagName.length === 0)
+      return false
+
+    const parsed = parseInlineTags(raw)
+    let removals = []
+    let removedLength = 0
+
+    for (let i = 0; i < parsed.spans.length; ++i) {
+      const span = parsed.spans[i]
+      if (span.type !== tagName || span.openStart < s || span.closeEnd > e)
+        continue
+
+      removals.push({ start: span.openStart, end: span.openEnd })
+      removals.push({ start: span.closeStart, end: span.closeEnd })
+      removedLength += (span.openEnd - span.openStart) +
+                       (span.closeEnd - span.closeStart)
+    }
+
+    if (removals.length === 0)
+      return false
+
+    removals.sort(function(a, b) { return b.start - a.start })
+    let newText = raw
+    for (let i = 0; i < removals.length; ++i)
+      newText = newText.substring(0, removals[i].start) +
+                newText.substring(removals[i].end)
+
+    commitEditorText(newText, s, e - removedLength)
+    return true
+  }
+
+  function toggleScriptFormat(type) {
+    const raw = editor.text
+    const s = Math.min(editor.selectionStart, editor.selectionEnd)
+    const e = Math.max(editor.selectionStart, editor.selectionEnd)
+
+    // Turning the active script format off should not disturb the other one.
+    if (s !== e && isFormatActive(type)) {
+      toggleFormat(type)
+      return
+    }
+
+    const other = type === "subscript" ? "superscript" : "subscript"
+    if (s !== e) {
+      if (isFormatActive(other))
+        toggleFormat(other)
+      else
+        stripContainedTagFormat(other, s, e)
+    }
+
+    toggleFormat(type)
   }
 
   signal enterPressed()
@@ -352,40 +831,44 @@ Item {
     editor.focus = true
     editor.forceActiveFocus()
 
+    const safePosition = position < 0
+                         ? editor.length
+                         : Math.max(0, Math.min(position, editor.length))
+
     if (position < 0)
       editor.cursorPosition = editor.length
     else
-      editor.cursorPosition = position
+      editor.cursorPosition = safePosition
+
+    root.updateCaretGeometry()
 
     // A freshly created TextArea can receive focus one event-loop turn after
     // the delegate is created. Re-apply the caret state after that handoff.
-    Qt.callLater(function() {
-      if (editor.activeFocus) {
-        editor.cursorVisible = true
-        if (position < 0)
-          editor.cursorPosition = editor.length
-        else
-          editor.cursorPosition = position
-      }
-    })
+    root.pendingFocusPosition = position
+    focusRestoreTimer.restart()
   }
 
   function focusEditorAtX(xPosition) {
     editor.focus = true
     editor.forceActiveFocus()
+    editor.cursorVisible = true
 
     const x = Math.max(0, xPosition)
-    editor.cursorPosition = editor.positionAt(x, editor.cursorRectangle.y)
-    editor.cursorVisible = true
+    const y = root.viewerCaretRect(editor.cursorPosition).y + 1
+    editor.cursorPosition = root.viewerPositionAt(x, y)
+    root.updateCaretGeometry()
   }
 
   function focusEditorRange(start, end) {
     editor.focus = true
     editor.forceActiveFocus()
 
-    editor.cursorPosition = start
-    editor.select(start, end)
+    const safeStart = Math.max(0, Math.min(start, editor.length))
+    const safeEnd = Math.max(safeStart, Math.min(end, editor.length))
+    editor.cursorPosition = safeStart
+    editor.select(safeStart, safeEnd)
     editor.cursorVisible = true
+    root.updateCaretGeometry()
   }
 
   function refreshFromModel() {
@@ -420,6 +903,12 @@ Item {
   }
 
   onSearchHighlightsChanged: searchHighlightsCanvas.requestPaint()
+
+  onRenderedHtmlChanged: {
+    root.updateCaretGeometry()
+    // The viewer's text binding may settle after this notification.
+    caretGeometryTimer.restart()
+  }
 
   Connections {
     target: Theme
@@ -457,7 +946,14 @@ Item {
 
     Row {
       width: parent.width
-      height: Math.max(root.rowHeight, editor.implicitHeight)
+      height: {
+        const textH = editor.activeFocus
+            ? editor.implicitHeight
+            : (editor.text.length > 0
+               ? root.renderedHeight
+               : editor.implicitHeight)
+        return Math.max(root.rowHeight, textH)
+      }
       spacing: 0
 
       Item {
@@ -466,7 +962,7 @@ Item {
         // text of all block types aligned.
         id: bulletGutter
         width: 24
-        height: root.rowHeight > 0 ? root.rowHeight : editor.implicitHeight
+        height: parent.height
 
         Text {
           visible: root.showBullet
@@ -499,6 +995,24 @@ Item {
         height: parent.height
         clip: false
 
+        onWidthChanged: {
+          root.measureRenderedHeight()
+          root.updateCaretGeometry()
+        }
+
+        // Off-layout measuring item for the formatted (syntax-free) text.
+        // It mirrors the visible viewer's typography and wrapping width.
+        Text {
+          id: measureText
+          width: 0
+          visible: false
+          wrapMode: Text.Wrap
+          textFormat: Text.RichText
+          text: ""
+          font.pixelSize: root.fontPixelSize
+          font.weight: root.fontBold ? Font.Bold : Font.Normal
+        }
+
         // Painted behind the text. Canvas lets a single match span several
         // wrapped lines without creating one item per character.
         Canvas {
@@ -528,6 +1042,15 @@ Item {
             }
           }
 
+          Connections {
+            target: root
+
+            function onRenderedHtmlChanged() {
+              if (searchHighlightsCanvas.visible)
+                searchHighlightsCanvas.requestPaint()
+            }
+          }
+
           onPaint: {
             const ctx = getContext("2d")
             ctx.clearRect(0, 0, width, height)
@@ -539,63 +1062,76 @@ Item {
 
             for (let h = 0; h < highlights.length; ++h) {
               const highlight = highlights[h]
-
-              ctx.fillStyle = highlight.active
+              const color = highlight.active
                   ? Theme.tint(Theme.accent, 0.40)
                   : Theme.tint(Theme.accent, 0.16)
-
-              let runLeft = -1
-              let runRight = -1
-              let runTop = 0
-              let runHeight = 0
-
-              function flushRun() {
-                if (runLeft < 0)
-                  return
-
-                ctx.fillRect(runLeft, runTop,
-                             Math.max(1, runRight - runLeft), runHeight)
-                runLeft = -1
-                runRight = -1
-              }
-
-              // positionToRectangle() returns a 1px caret rect, not a full
-              // character cell. Use the next caret position to find the right
-              // edge of each character and merge cells that share a line.
-              for (let i = highlight.start;
-                   i < highlight.start + highlight.length; ++i) {
-                if (editor.text.charAt(i) === "\n")
-                  continue
-
-                const rect = editor.positionToRectangle(i)
-                const nextRect = editor.positionToRectangle(i + 1)
-                const sameLine = Math.abs(nextRect.y - rect.y) < 1
-                const cellRight = sameLine
-                    ? Math.max(rect.x + 1, nextRect.x)
-                    // The final character on a soft-wrapped line extends to
-                    // the right edge of the text area.
-                    : Math.max(rect.x + 1,
-                               editor.width - editor.rightPadding)
-
-                if (runLeft >= 0 && Math.abs(rect.y - runTop) < 1) {
-                  runRight = Math.max(runRight, cellRight)
-                  runHeight = Math.max(runHeight, rect.height)
-                } else {
-                  flushRun()
-
-                  runLeft = rect.x
-                  runRight = cellRight
-                  runTop = rect.y
-                  runHeight = rect.height
-                }
-              }
-
-              flushRun()
+              root.paintRange(ctx, highlight.start,
+                              highlight.start + highlight.length, color)
             }
           }
         }
 
-        Text {
+        // The native TextArea selection follows the raw layout, which drifts
+        // away from the visible text after a shrunk <sub>/<sup>. Draw the
+        // selection from the rendered viewer instead.
+        Canvas {
+          id: selectionCanvas
+
+          anchors.fill: parent
+          z: 1
+          visible: editor.activeFocus &&
+                   editor.selectionStart !== editor.selectionEnd
+          onWidthChanged: requestPaint()
+          onHeightChanged: requestPaint()
+          onVisibleChanged: if (visible) requestPaint()
+
+          Connections {
+            target: editor
+
+            function onSelectionStartChanged() {
+              if (selectionCanvas.visible)
+                selectionCanvas.requestPaint()
+            }
+
+            function onSelectionEndChanged() {
+              if (selectionCanvas.visible)
+                selectionCanvas.requestPaint()
+            }
+
+            function onActiveFocusChanged() {
+              if (selectionCanvas.visible)
+                selectionCanvas.requestPaint()
+            }
+          }
+
+          Connections {
+            target: root
+
+            function onRenderedHtmlChanged() {
+              if (selectionCanvas.visible)
+                selectionCanvas.requestPaint()
+            }
+          }
+
+          onPaint: {
+            const ctx = getContext("2d")
+            ctx.clearRect(0, 0, width, height)
+
+            const start = Math.min(editor.selectionStart, editor.selectionEnd)
+            const end = Math.max(editor.selectionStart, editor.selectionEnd)
+            if (start === end)
+              return
+
+            root.paintRange(ctx, start, end,
+                            Qt.rgba(Theme.accent.r, Theme.accent.g,
+                                    Theme.accent.b, 0.35))
+          }
+        }
+
+        // TextEdit is used instead of Text because it exposes positionAt() and
+        // positionToRectangle(), which let the overlay map pointer and caret
+        // positions through the rich-text layout.
+        TextEdit {
           id: renderedViewer
           anchors.fill: parent
           anchors.leftMargin: editor.leftPadding
@@ -603,28 +1139,102 @@ Item {
           anchors.topMargin: editor.topPadding
           anchors.bottomMargin: editor.bottomMargin
           visible: editor.text.length > 0
-          wrapMode: Text.Wrap
-          textFormat: Text.RichText
+          wrapMode: TextEdit.Wrap
+          textFormat: TextEdit.RichText
           text: root.renderedHtml
           color: Theme.text
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
+          readOnly: true
+          selectByMouse: false
+          selectByKeyboard: false
+          cursorVisible: false
+          activeFocusOnPress: false
+          padding: 0
+          leftPadding: 0
+          rightPadding: 0
+          topPadding: 0
+          bottomPadding: 0
+          textMargin: 0
           z: 2
 
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.IBeamCursor
-            preventStealing: false
-            propagateComposedEvents: true
+          onContentHeightChanged: root.updateCaretGeometry()
+        }
 
-            onPressed: function(mouse) {
-              const mapped = mapToItem(editor, mouse.x, mouse.y)
-              const clickPos = editor.positionAt(mapped.x, mapped.y)
-              editor.forceActiveFocus()
-              editor.cursorPosition = clickPos
-              // Allow mouse event propagation so drag-selection in editor continues
-              mouse.accepted = false
+        // The caret belongs to the invisible TextArea, so draw our own at the
+        // matching rich-text position.
+        Rectangle {
+          id: customCaret
+
+          x: root.caretOffsetX
+          y: root.caretOffsetY
+          width: 2
+          height: Math.max(1, root.caretHeight)
+          radius: 1
+          color: Theme.text
+          visible: editor.activeFocus && editor.cursorVisible &&
+                   editor.selectionStart === editor.selectionEnd
+          z: 5
+        }
+
+        // The TextArea still owns text input and keyboard navigation, but all
+        // pointer selection is mapped through the rendered viewer.
+        MouseArea {
+          id: textMouseArea
+
+          anchors.fill: parent
+          z: 4
+          cursorShape: Qt.IBeamCursor
+          acceptedButtons: Qt.LeftButton
+          property int anchorPosition: -1
+
+          function positionFor(x, y) {
+            return root.viewerPositionAt(x, y)
+          }
+
+          function wordRangeAt(position) {
+            const text = editor.text
+            function isWordChar(character) {
+              return /[A-Za-z0-9_'\u00C0-\uFFFF]/.test(character)
             }
+
+            let start = Math.max(0, Math.min(position, text.length))
+            let end = start
+
+            while (start > 0 && isWordChar(text.charAt(start - 1)))
+              start--
+            while (end < text.length && isWordChar(text.charAt(end)))
+              end++
+
+            if (start === end)
+              return { start: position, end: position }
+
+            return { start: start, end: end }
+          }
+
+          onPressed: function(mouse) {
+            editor.forceActiveFocus()
+            editor.cursorVisible = true
+
+            const position = positionFor(mouse.x, mouse.y)
+            anchorPosition = position
+            editor.select(position, position)
+          }
+
+          onPositionChanged: function(mouse) {
+            if (!pressed || anchorPosition < 0)
+              return
+
+            const position = positionFor(mouse.x, mouse.y)
+            editor.select(anchorPosition, position)
+          }
+
+          onReleased: anchorPosition = -1
+
+          onDoubleClicked: function(mouse) {
+            const range = wordRangeAt(positionFor(mouse.x, mouse.y))
+            anchorPosition = -1
+            editor.select(range.start, range.end)
           }
         }
 
@@ -638,27 +1248,15 @@ Item {
           placeholderTextColor: Theme.textFaint
 
           color: "transparent"
-          selectionColor: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35)
+          selectionColor: "transparent"
           selectedTextColor: "transparent"
-          selectByMouse: true
+          selectByMouse: false
 
-          // The default caret follows the application palette, which stays
-          // dark in dark mode and nearly disappears on the theme background.
-          // Use the theme's text colour so it is clearly visible in both modes.
-          //
-          // Qt only hides a custom cursor delegate when the item moves in the
-          // viewport, not when the editor loses focus, so the delegate root is
-          // an empty Item and the visible bar is its child, gated on focus to
-          // avoid leaving a stale caret behind in every visited block.
+          // Selection and caret are drawn over the rendered viewer, so the
+          // native ones must not paint on top of the rich text.
           cursorDelegate: Item {
-            width: 2
-
-            Rectangle {
-              anchors.fill: parent
-              radius: 1
-              color: Theme.text
-              visible: editor.activeFocus && editor.cursorVisible
-            }
+            width: 0
+            height: 0
           }
 
           font.pixelSize: root.fontPixelSize
@@ -677,8 +1275,9 @@ Item {
               // Delay notifying false so clicking toolbar controls or popups doesn't immediately dismiss the selection
               return
             }
-            const cRect = editor.cursorRectangle
-            const mapped = editor.mapToItem(root, cRect.x + cRect.width / 2, cRect.y)
+            const cRect = root.viewerCaretRect(editor.cursorPosition)
+            const mapped = editorLine.mapToItem(
+                             root, cRect.x + cRect.width / 2, cRect.y)
             root.selectionChanged(true, mapped.x, mapped.y, cRect.height)
           }
 
@@ -686,21 +1285,25 @@ Item {
           onSelectionEndChanged: notifySelection()
 
           onCursorPositionChanged: {
+            root.updateCaretGeometry()
             notifySelection()
             if (editor.activeFocus) {
-              const cRect = editor.cursorRectangle
-              const mapped = editor.mapToItem(null, cRect.x, cRect.y)
-              root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0, cRect.height)
+              const cRect = root.viewerCaretRect(editor.cursorPosition)
+              const mapped = editorLine.mapToItem(null, cRect.x, cRect.y)
+              root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0,
+                              cRect.height)
             }
           }
 
           onActiveFocusChanged: {
             root.refreshRenderedHtml()
+            root.updateCaretGeometry()
             notifySelection()
             if (editor.activeFocus) {
-              const cRect = editor.cursorRectangle
-              const mapped = editor.mapToItem(null, cRect.x, cRect.y)
-              root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0, cRect.height)
+              const cRect = root.viewerCaretRect(editor.cursorPosition)
+              const mapped = editorLine.mapToItem(null, cRect.x, cRect.y)
+              root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0,
+                              cRect.height)
             }
           }
 
@@ -724,8 +1327,8 @@ Item {
               root.searchEditStarted()
 
             if (root.blockType === 0 && text.startsWith("/") && text.indexOf(" ") < 0) {
-              const slashRect = editor.positionToRectangle(0)
-              const mapped = editor.mapToItem(root, slashRect.x, slashRect.y)
+              const slashRect = root.viewerCaretRect(0)
+              const mapped = editorLine.mapToItem(root, slashRect.x, slashRect.y)
               root.commandMenuRequested(text.substring(1), mapped.x, mapped.y, slashRect.height)
             } else if (root.commandMenuActive)
               root.commandMenuDismissed()
@@ -877,6 +1480,16 @@ Item {
                 root.toggleFormat("strike")
                 return
               }
+              if (event.key === Qt.Key_Comma) {
+                event.accepted = true
+                root.toggleScriptFormat("subscript")
+                return
+              }
+              if (event.key === Qt.Key_Period) {
+                event.accepted = true
+                root.toggleScriptFormat("superscript")
+                return
+              }
             }
 
             // TextArea has its own per-editor undo stack, which would only
@@ -917,7 +1530,7 @@ Item {
             // application shortcut handle it instead of moving focus.
             if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down)
                 && !(event.modifiers & Qt.AltModifier)) {
-              const cursorRect = editor.cursorRectangle
+              const cursorRect = root.viewerCaretRect(editor.cursorPosition)
               const direction = event.key === Qt.Key_Up ? -1 : 1
 
               event.accepted = true

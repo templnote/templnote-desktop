@@ -4,6 +4,8 @@
 #include <QStandardPaths>
 #include <QtTest>
 
+#include <algorithm>
+
 #include "../src/model/BlockModel.h"
 
 using namespace Templnote;
@@ -18,8 +20,11 @@ private:
   static void collectEditors(QQuickItem *item, QList<QQuickItem *> &editors) {
     const QMetaObject *metaObject = item->metaObject();
 
-    if (metaObject->indexOfProperty("cursorPosition") >= 0 &&
-        metaObject->indexOfProperty("length") >= 0) {
+    if (item->isVisible() &&
+        metaObject->indexOfProperty("cursorPosition") >= 0 &&
+        metaObject->indexOfProperty("length") >= 0 &&
+        metaObject->indexOfProperty("wrapMode") >= 0 &&
+        metaObject->indexOfProperty("background") >= 0) {
       editors.append(item);
     }
 
@@ -30,8 +35,60 @@ private:
   }
 
   QList<QQuickItem *> editors() const {
+    QList<QQuickItem *> collected;
+    collectEditors(m_window->contentItem(), collected);
+
+    // Recycled delegates can still be parented/visible for a moment after a
+    // block is removed. Ignore editors whose delegate index is no longer in
+    // the model so tests only inspect live blocks.
     QList<QQuickItem *> result;
-    collectEditors(m_window->contentItem(), result);
+    const int count = model() ? model()->rowCount() : -1;
+
+    for (QQuickItem *item : collected) {
+      QQuickItem *parent = item->parentItem();
+      int index = -1;
+
+      while (parent) {
+        const QMetaObject *metaObject = parent->metaObject();
+
+        if (metaObject->indexOfProperty("index") >= 0) {
+          index = parent->property("index").toInt();
+          break;
+        }
+
+        parent = parent->parentItem();
+      }
+
+      if (index >= 0 && (count < 0 || index < count))
+        result.append(item);
+    }
+
+    return result;
+  }
+
+  static void collectDelegates(QQuickItem *item,
+                               QList<QQuickItem *> &delegates) {
+    const QMetaObject *metaObject = item->metaObject();
+
+    if (metaObject->indexOfProperty("index") >= 0 &&
+        metaObject->indexOfProperty("blockId") >= 0) {
+      delegates.append(item);
+    }
+
+    const auto children = item->childItems();
+
+    for (QQuickItem *child : children)
+      collectDelegates(child, delegates);
+  }
+
+  QList<QQuickItem *> listDelegates() const {
+    QList<QQuickItem *> result;
+    collectDelegates(m_window->contentItem(), result);
+    std::sort(result.begin(), result.end(),
+              [](QQuickItem *left, QQuickItem *right) {
+                return left->property("index").toInt()
+                     < right->property("index").toInt();
+              });
     return result;
   }
 
@@ -282,6 +339,36 @@ private slots:
     QCOMPARE(m_window->activeFocusItem(), textEditors[0]);
     QCOMPARE(textEditors[0]->property("cursorPosition").toInt(), 0);
     QVERIFY(textEditors[0]->property("cursorVisible").toBool());
+  }
+
+  void multilineBlocksKeepTheirHeightBeforeFocusChanges() {
+    BlockModel *blockModel = model();
+    const QString secondId =
+        blockModel->data(blockModel->index(1, 0), BlockModel::BlockIdRole)
+            .toString();
+
+    // Leave the first (focused) block short and make the second, unfocused
+    // block multiline. Its delegate must still reserve room for every line
+    // before the user ever focuses it.
+    QVERIFY(blockModel->updateBlockText(secondId, "one\ntwo\nthree\nfour\nfive"));
+    const QString thirdId =
+        blockModel->appendBlock(static_cast<int>(BlockType::Paragraph));
+    QVERIFY(!thirdId.isEmpty());
+    QVERIFY(blockModel->updateBlockText(thirdId, "after"));
+
+    QTest::qWait(300);
+
+    const auto delegates = listDelegates();
+    QVERIFY(delegates.size() >= 3);
+
+    QQuickItem *second = delegates[1];
+    QQuickItem *third = delegates[2];
+
+    QVERIFY2(second->height() > 80,
+             qPrintable(QStringLiteral("Second block height was only %1")
+                            .arg(second->height())));
+    QVERIFY2(third->y() >= second->y() + second->height() - 0.5,
+             "The following block overlaps the multiline block");
   }
 
   void globalSearchNavigationCyclesMatchesAndEscapeDismisses() {

@@ -65,6 +65,11 @@ Item {
       block.toggleFormat(type)
   }
 
+  function toggleScriptFormat(type) {
+    if (block && loader.status === Loader.Ready && typeof block.toggleScriptFormat === "function")
+      block.toggleScriptFormat(type)
+  }
+
   function isFormatActive(type) {
     if (block && loader.status === Loader.Ready && typeof block.isFormatActive === "function")
       return block.isFormatActive(type)

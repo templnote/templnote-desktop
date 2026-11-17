@@ -37,6 +37,45 @@ ApplicationWindow {
     saveConfirmationModal.open()
   }
 
+  function openHome() {
+    if (!hasDocument)
+      return
+
+    if (searchBar.visible)
+      searchBar.close(false)
+
+    blockModel.closeDocument()
+  }
+
+  function requestHome() {
+    if (!hasDocument)
+      return
+
+    // Unsaved edits are not thrown away silently; reuse the save prompt and
+    // return to the home surface once the user decides.
+    if (blockModel.isModified) {
+      saveConfirmationModal.open("home")
+      return
+    }
+
+    openHome()
+  }
+
+  // Runs the action chosen when the save prompt was opened: going Home or
+  // closing the whole window.
+  function finishSaveAction() {
+    const intent = saveConfirmationModal.intent
+    saveConfirmationModal.close()
+
+    if (intent === "home") {
+      openHome()
+      return
+    }
+
+    window.allowClose = true
+    window.close()
+  }
+
   function saveAndClose() {
     let saved = false
 
@@ -48,9 +87,7 @@ ApplicationWindow {
     }
 
     if (saved) {
-      saveConfirmationModal.close()
-      window.allowClose = true
-      window.close()
+      finishSaveAction()
       return
     }
 
@@ -60,9 +97,7 @@ ApplicationWindow {
   }
 
   function discardAndClose() {
-    saveConfirmationModal.close()
-    window.allowClose = true
-    window.close()
+    finishSaveAction()
   }
 
   BlockModel {
@@ -110,7 +145,8 @@ ApplicationWindow {
   }
 
   Shortcut {
-    sequence: StandardKey.Save
+    // each can expand to multiple key combination so better to bind with an array, so don't get astonished
+    sequences: [StandardKey.Save]
     context: Qt.ApplicationShortcut
     onActivated: {
       // Nothing to save while the home surface is showing.
@@ -123,14 +159,14 @@ ApplicationWindow {
   }
 
   Shortcut {
-    sequence: StandardKey.Undo
+    sequences: [StandardKey.Undo]
     context: Qt.ApplicationShortcut
     onActivated: {
       editor.undo()
     }
   }
   Shortcut {
-    sequence: StandardKey.Redo
+    sequences: [StandardKey.Redo]
     context: Qt.ApplicationShortcut
     onActivated: {
       editor.redo()
@@ -138,6 +174,7 @@ ApplicationWindow {
   }
 
   Shortcut {
+    // from this no more changing is required until now
     sequence: "Ctrl+/"
     context: Qt.ApplicationShortcut
     enabled: !searchWindow.visible && window.hasDocument
@@ -173,6 +210,7 @@ ApplicationWindow {
     onExplorerToggleRequested: {
       fileExplorer.expanded = !fileExplorer.expanded
     }
+    onHomeRequested: window.requestHome()
     onSettingsRequested: settingsWindow.open()
   }
 
@@ -557,9 +595,12 @@ ApplicationWindow {
     focus: true
 
     property string errorText: ""
+    // What to do after the user resolves the prompt: "home" or "close".
+    property string intent: "close"
 
-    function open() {
+    function open(requestedIntent) {
       errorText = ""
+      intent = requestedIntent === undefined ? "close" : requestedIntent
       visible = true
       forceActiveFocus()
     }
@@ -567,6 +608,7 @@ ApplicationWindow {
     function close() {
       visible = false
       errorText = ""
+      intent = "close"
     }
 
     Shortcut {

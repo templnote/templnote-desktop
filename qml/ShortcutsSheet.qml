@@ -28,6 +28,17 @@ Item {
       ]
     },
     {
+      title: "Formatting",
+      items: [
+        { label: "Bold", keys: "Ctrl+B" },
+        { label: "Italic", keys: "Ctrl+I" },
+        { label: "Underline", keys: "Ctrl+U" },
+        { label: "Strikethrough", keys: "Ctrl+Shift+X" },
+        { label: "Subscript", keys: "Ctrl+," },
+        { label: "Superscript", keys: "Ctrl+." }
+      ]
+    },
+    {
       title: "Search",
       items: [
         { label: "Find in document", keys: "Ctrl+/" },
