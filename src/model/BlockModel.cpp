@@ -229,6 +229,11 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
   case MetadataRole:
     return block->metadata;
 
+  case AlignmentRole: {
+    const QString align = block->metadata.value(QStringLiteral("align")).toString();
+    return align.isEmpty() ? QStringLiteral("left") : align;
+  }
+
   case NextBlockTypeRole: {
     if (index.row() + 1 >= m_document.count())
       return -1;
@@ -266,6 +271,7 @@ QHash<int, QByteArray> BlockModel::roleNames() const {
           {ContentRole, "content"},
           {HeadingLevelRole, "headingLevel"},
           {MetadataRole, "metadata"},
+          {AlignmentRole, "alignment"},
           {NextBlockTypeRole, "nextBlockType"},
           {NumberIndexRole, "numberIndex"}};
 }
@@ -522,6 +528,40 @@ bool BlockModel::changeBlockType(const QString &id, int type,
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
+
+  markModified();
+  return true;
+}
+
+bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
+  const int row = m_document.indexOf(id);
+
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block)
+    return false;
+
+  // Don't align list blocks per specification
+  if (block->type == BlockType::Bullet || block->type == BlockType::NumberedList)
+    return false;
+
+  const QString currentAlign = block->metadata.value(QStringLiteral("align")).toString();
+  const QString targetAlign = (align == QLatin1String("center") || align == QLatin1String("right"))
+                                  ? align
+                                  : QStringLiteral("left");
+
+  if ((currentAlign.isEmpty() && targetAlign == QLatin1String("left")) || currentAlign == targetAlign)
+    return true;
+
+  const QVector<Block> before = m_document.snapshot();
+
+  if (!m_document.updateBlockAlignment(id, targetAlign))
+    return false;
+
+  saveHistory(before, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, AlignmentRole});
 
   markModified();
   return true;
@@ -1207,7 +1247,7 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
       roles << BlockTypeRole << HeadingLevelRole;
     if (current->parentId != wanted.parentId ||
         current->metadata != wanted.metadata)
-      roles << ParentIdRole << MetadataRole;
+      roles << ParentIdRole << MetadataRole << AlignmentRole;
 
     if (roles.isEmpty())
       break;

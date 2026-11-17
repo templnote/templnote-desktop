@@ -10,6 +10,7 @@ Item {
   property string content: ""
   property int headingLevel: 0
   property int numberIndex: 1
+  property string alignment: "left"
   property bool showPlaceholder: false
   property var model: null
 
@@ -75,6 +76,11 @@ Item {
     if (block && loader.status === Loader.Ready && typeof block.isFormatActive === "function")
       return block.isFormatActive(type)
     return false
+  }
+
+  function notifySelection() {
+    if (block && loader.status === Loader.Ready && typeof block.notifySelection === "function")
+      block.notifySelection()
   }
 
   function requestFocus(position) {
@@ -144,6 +150,7 @@ Item {
       item.content = Qt.binding(function() { return root.content })
       item.headingLevel = Qt.binding(function() { return root.headingLevel })
       item.numberIndex = Qt.binding(function() { return root.numberIndex })
+      item.alignment = Qt.binding(function() { return root.alignment })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })

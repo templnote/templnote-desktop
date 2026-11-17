@@ -124,6 +124,7 @@ Item {
       selectionToolbar.isStrikethrough = renderer.isFormatActive("strike")
       selectionToolbar.isSubscript = renderer.isFormatActive("subscript")
       selectionToolbar.isSuperscript = renderer.isFormatActive("superscript")
+      selectionToolbar.alignment = delegateRoot.alignment || "left"
 
       const pos = renderer.mapToItem(root, item.x, item.y)
       const gap = root.selectionToolbarGap
@@ -608,6 +609,7 @@ Item {
       required property int headingLevel
       required property int nextBlockType
       required property int numberIndex
+      required property string alignment
       required property int index
 
       readonly property real bottomGap: BlockSpacing.bottomGap(
@@ -778,6 +780,7 @@ Item {
         blockType: delegateRoot.blockType
         headingLevel: delegateRoot.headingLevel
         numberIndex: delegateRoot.numberIndex
+        alignment: delegateRoot.alignment
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive
@@ -918,7 +921,12 @@ Item {
             cursorHeight: cursorHeight
           }
 
-          selectionTimer.restart()
+          if (selectionToolbar.visible && root.activeSelectionDelegate === delegateRoot) {
+            selectionTimer.stop()
+            selectionTimer.triggered()
+          } else {
+            selectionTimer.restart()
+          }
         }
 
         onEnterPressed: {
@@ -1204,6 +1212,17 @@ Item {
         const idx = root.activeSelectionDelegate.index
         if (root.model.changeBlockType(id, type, level)) {
           root.focusDelegateAt(idx, -1)
+        }
+      }
+    }
+
+    onAlignmentSelected: function(align) {
+      if (root.activeSelectionDelegate) {
+        const id = root.activeSelectionDelegate.blockId
+        root.model.setBlockAlignment(id, align)
+        selectionToolbar.alignment = align
+        if (root.activeSelectionDelegate.rendererItem) {
+          root.activeSelectionDelegate.rendererItem.notifySelection()
         }
       }
     }

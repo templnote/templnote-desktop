@@ -58,6 +58,12 @@ private slots:
     QVERIFY(document.updateBlockType(block.id, BlockType::Heading));
 
     QCOMPARE(document.findBlock(block.id)->type, BlockType::Heading);
+
+    QVERIFY(document.updateBlockAlignment(block.id, "center"));
+    QCOMPARE(document.findBlock(block.id)->metadata.value("align").toString(), QString("center"));
+
+    QVERIFY(document.updateBlockAlignment(block.id, "left"));
+    QVERIFY(!document.findBlock(block.id)->metadata.contains("align"));
   }
 
   void removeBlock() {

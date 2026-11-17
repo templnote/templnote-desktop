@@ -43,6 +43,13 @@ Rectangle {
   visible: false
   z: 25
 
+  Behavior on x {
+    NumberAnimation {
+      duration: 300
+      easing.type: Easing.InOutCubic
+    }
+  }
+
   function blockTypeName(type, level) {
     if (type === 1) {
       if (level === 1) return "Heading 1"
@@ -746,7 +753,7 @@ Rectangle {
           anchors.centerIn: parent
           width: 15
           height: 15
-          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_text_align_left_20_regular.svg"
+          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_align_left_20_regular.svg"
           color: root.alignment === "left" ? Theme.accent : Theme.text
         }
 
@@ -779,7 +786,7 @@ Rectangle {
           anchors.centerIn: parent
           width: 15
           height: 15
-          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_text_align_center_20_regular.svg"
+          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_align_center_vertical_20_regular.svg"
           color: root.alignment === "center" ? Theme.accent : Theme.text
         }
 
@@ -812,7 +819,7 @@ Rectangle {
           anchors.centerIn: parent
           width: 15
           height: 15
-          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_text_align_right_20_regular.svg"
+          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_align_right_20_regular.svg"
           color: root.alignment === "right" ? Theme.accent : Theme.text
         }
 
@@ -824,39 +831,6 @@ Rectangle {
           onClicked: {
             root.alignment = "right"
             root.alignmentSelected("right")
-          }
-        }
-      }
-
-      // Align Justify
-      Item {
-        width: 26
-        height: 26
-
-        Rectangle {
-          anchors.fill: parent
-          radius: 4
-          color: root.alignment === "justify"
-                 ? Theme.tint(Theme.accent, 0.16)
-                 : (alignJustifyMouse.containsMouse ? Theme.surfaceHover : "transparent")
-        }
-
-        IconImage {
-          anchors.centerIn: parent
-          width: 15
-          height: 15
-          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_text_align_justify_20_regular.svg"
-          color: root.alignment === "justify" ? Theme.accent : Theme.text
-        }
-
-        MouseArea {
-          id: alignJustifyMouse
-          anchors.fill: parent
-          hoverEnabled: true
-          cursorShape: Qt.PointingHandCursor
-          onClicked: {
-            root.alignment = "justify"
-            root.alignmentSelected("justify")
           }
         }
       }

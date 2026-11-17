@@ -10,6 +10,7 @@ Item {
   property string content: ""
   property int headingLevel: 0
   property int numberIndex: 1
+  property string alignment: "left"
   property var model: null
 
   // Appearance overrides for each concrete block type.
@@ -23,6 +24,13 @@ Item {
   property real fontPixelSize: 16
   property bool fontBold: false
   readonly property real firstLineHeight: Math.max(rowHeight, Math.round(fontPixelSize * 1.35))
+  readonly property int textAlignment: (root.showBullet || root.showNumbered)
+                                       ? Text.AlignLeft
+                                       : (root.alignment === "center"
+                                          ? Text.AlignHCenter
+                                          : (root.alignment === "right"
+                                             ? Text.AlignRight
+                                             : Text.AlignLeft))
 
   readonly property int cursorPosition: editor.cursorPosition
   readonly property string editorText: editor.text
@@ -828,6 +836,11 @@ Item {
   signal searchDismissed()
   signal searchEditStarted()
 
+  function notifySelection() {
+    if (editor)
+      editor.notifySelection()
+  }
+
   function focusEditor(position) {
     editor.focus = true
     editor.forceActiveFocus()
@@ -901,6 +914,38 @@ Item {
     editor.deselect()
     root.renderCacheValid = false
     root.refreshRenderedHtml()
+  }
+
+  onAlignmentChanged: {
+    const oldCaretX = renderedViewer ? renderedViewer.positionToRectangle(0).x : 0
+    root.updateCaretGeometry()
+    caretGeometryTimer.restart()
+    selectionCanvas.requestPaint()
+    root.notifySelection()
+
+    if (renderedViewer) {
+      const newCaretX = renderedViewer.positionToRectangle(0).x
+      const deltaX = oldCaretX - newCaretX
+      if (Math.abs(deltaX) > 1) {
+        slideAnimation.stop()
+        slideAnimation.from = deltaX
+        slideAnimation.to = 0
+        slideAnimation.start()
+      }
+    }
+  }
+
+  NumberAnimation {
+    id: slideAnimation
+    target: slideLayer
+    property: "x"
+    duration: 300
+    easing.type: Easing.InOutCubic
+    onRunningChanged: {
+      if (!running) {
+        slideLayer.x = 0
+      }
+    }
   }
 
   onSearchHighlightsChanged: searchHighlightsCanvas.requestPaint()
@@ -1010,9 +1055,15 @@ Item {
           wrapMode: Text.Wrap
           textFormat: Text.RichText
           text: ""
+          horizontalAlignment: root.textAlignment
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
         }
+
+        Item {
+          id: slideLayer
+          anchors.fill: parent
+          x: 0
 
         // Painted behind the text. Canvas lets a single match span several
         // wrapped lines without creating one item per character.
@@ -1143,6 +1194,7 @@ Item {
           wrapMode: TextEdit.Wrap
           textFormat: TextEdit.RichText
           text: root.renderedHtml
+          horizontalAlignment: root.textAlignment
           color: Theme.text
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
@@ -1251,6 +1303,7 @@ Item {
           bottomPadding: 0
 
           wrapMode: TextArea.Wrap
+          horizontalAlignment: root.textAlignment
           placeholderText: root.showPlaceholder ? "start typing here" : ""
           placeholderTextColor: Theme.textFaint
 
@@ -1283,7 +1336,7 @@ Item {
               return
             }
             const cRect = root.viewerCaretRect(editor.cursorPosition)
-            const mapped = editorLine.mapToItem(
+            const mapped = slideLayer.mapToItem(
                              root, cRect.x + cRect.width / 2, cRect.y)
             root.selectionChanged(true, mapped.x, mapped.y, cRect.height)
           }
@@ -1296,7 +1349,7 @@ Item {
             notifySelection()
             if (editor.activeFocus) {
               const cRect = root.viewerCaretRect(editor.cursorPosition)
-              const mapped = editorLine.mapToItem(null, cRect.x, cRect.y)
+              const mapped = slideLayer.mapToItem(null, cRect.x, cRect.y)
               root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0,
                               cRect.height)
             }
@@ -1308,7 +1361,7 @@ Item {
             notifySelection()
             if (editor.activeFocus) {
               const cRect = root.viewerCaretRect(editor.cursorPosition)
-              const mapped = editorLine.mapToItem(null, cRect.x, cRect.y)
+              const mapped = slideLayer.mapToItem(null, cRect.x, cRect.y)
               root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0,
                               cRect.height)
             }
@@ -1335,7 +1388,7 @@ Item {
 
             if (root.blockType === 0 && text.startsWith("/") && text.indexOf(" ") < 0) {
               const slashRect = root.viewerCaretRect(0)
-              const mapped = editorLine.mapToItem(root, slashRect.x, slashRect.y)
+              const mapped = slideLayer.mapToItem(root, slashRect.x, slashRect.y)
               root.commandMenuRequested(text.substring(1), mapped.x, mapped.y, slashRect.height)
             } else if (root.commandMenuActive)
               root.commandMenuDismissed()
@@ -1545,6 +1598,7 @@ Item {
               return
             }
           }
+        }
         }
       }
     }

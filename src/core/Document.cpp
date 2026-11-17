@@ -106,6 +106,22 @@ bool Document::updateBlockType(const QString &id, BlockType type,
   return true;
 }
 
+bool Document::updateBlockAlignment(const QString &id, const QString &align) {
+  const int index = indexOf(id);
+
+  if (index < 0)
+    return false;
+
+  if (align == QLatin1String("center") || align == QLatin1String("right")) {
+    m_blocks[index].metadata.insert(QStringLiteral("align"), align);
+  } else {
+    // "left" is the default; remove or set "left"
+    m_blocks[index].metadata.remove(QStringLiteral("align"));
+  }
+
+  return true;
+}
+
 bool Document::setBlock(int index, const Block &block) {
   if (index < 0 || index >= m_blocks.size())
     return false;
