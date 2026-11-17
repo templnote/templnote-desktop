@@ -122,6 +122,21 @@ bool Document::updateBlockAlignment(const QString &id, const QString &align) {
   return true;
 }
 
+bool Document::updateBlockChecked(const QString &id, bool checked) {
+  const int index = indexOf(id);
+
+  if (index < 0)
+    return false;
+
+  if (checked) {
+    m_blocks[index].metadata.insert(QStringLiteral("checked"), true);
+  } else {
+    m_blocks[index].metadata.remove(QStringLiteral("checked"));
+  }
+
+  return true;
+}
+
 bool Document::setBlock(int index, const Block &block) {
   if (index < 0 || index >= m_blocks.size())
     return false;
@@ -167,7 +182,8 @@ QString Document::splitBlock(const QString &id, int position) {
   current.text.truncate(position);
 
   const BlockType newType = (current.type == BlockType::Bullet ||
-                             current.type == BlockType::NumberedList)
+                             current.type == BlockType::NumberedList ||
+                             current.type == BlockType::Todo)
                                 ? current.type
                                 : BlockType::Paragraph;
 

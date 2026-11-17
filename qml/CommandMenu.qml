@@ -48,7 +48,8 @@ Rectangle {
       {label: "Medium header", detail: "Heading 2", shortcut: "## Space", type: 1, level: 2},
       {label: "Small header", detail: "Heading 3", shortcut: "### Space", type: 1, level: 3},
       {label: "Bulleted list", detail: "Unordered list", shortcut: "- Space", type: 2, level: 0},
-      {label: "Numbered list", detail: "Ordered list", shortcut: "1. Space", type: 3, level: 0}
+      {label: "Numbered list", detail: "Ordered list", shortcut: "1. Space", type: 3, level: 0},
+      {label: "To-do list", detail: "Checklist", shortcut: "[] Space", type: 4, level: 0}
     ]
     for (let i = 0; i < commands.length; ++i) {
       const command = commands[i]

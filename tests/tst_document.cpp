@@ -64,6 +64,12 @@ private slots:
 
     QVERIFY(document.updateBlockAlignment(block.id, "left"));
     QVERIFY(!document.findBlock(block.id)->metadata.contains("align"));
+
+    QVERIFY(document.updateBlockChecked(block.id, true));
+    QCOMPARE(document.findBlock(block.id)->metadata.value("checked").toBool(), true);
+
+    QVERIFY(document.updateBlockChecked(block.id, false));
+    QVERIFY(!document.findBlock(block.id)->metadata.contains("checked"));
   }
 
   void removeBlock() {

@@ -36,6 +36,7 @@ public:
     HeadingLevelRole,
     MetadataRole,
     AlignmentRole,
+    CheckedRole,
     NextBlockTypeRole,
     NumberIndexRole
   };
@@ -72,6 +73,8 @@ public:
                                    int headdingLevel = 0);
 
   Q_INVOKABLE bool setBlockAlignment(const QString &id, const QString &align);
+
+  Q_INVOKABLE bool setBlockChecked(const QString &id, bool checked);
 
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
 

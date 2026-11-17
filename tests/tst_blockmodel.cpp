@@ -56,6 +56,7 @@ private slots:
              QByteArray("headingLevel"));
     QCOMPARE(roles.value(BlockModel::MetadataRole), QByteArray("metadata"));
     QCOMPARE(roles.value(BlockModel::AlignmentRole), QByteArray("alignment"));
+    QCOMPARE(roles.value(BlockModel::CheckedRole), QByteArray("checked"));
     QCOMPARE(roles.value(BlockModel::NumberIndexRole), QByteArray("numberIndex"));
 
     const QModelIndex first = model.index(0, 0);

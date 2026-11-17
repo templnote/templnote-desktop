@@ -762,6 +762,83 @@ ApplicationWindow {
     }
   }
 
+  // Developer FPS counter & performance diagnostics overlay
+  Item {
+    id: fpsOverlay
+    visible: Preferences.showFpsOverlay
+    z: 99999
+    width: fpsBadge.width
+    height: fpsBadge.height
+
+    property int frameCount: 0
+    property int currentFps: 0
+    property real lastTimestamp: 0
+
+    anchors {
+      left: Preferences.fpsOverlayPosition.indexOf("Left") !== -1 ? parent.left : undefined
+      right: Preferences.fpsOverlayPosition.indexOf("Right") !== -1 ? parent.right : undefined
+      top: Preferences.fpsOverlayPosition.indexOf("Top") !== -1 ? parent.top : undefined
+      bottom: Preferences.fpsOverlayPosition.indexOf("Bottom") !== -1 ? parent.bottom : undefined
+      margins: 14
+    }
+
+    Rectangle {
+      id: fpsBadge
+      width: fpsLayout.implicitWidth + 18
+      height: fpsLayout.implicitHeight + 10
+      radius: 6
+      color: Qt.rgba(0.08, 0.08, 0.12, 0.88)
+      border.color: fpsOverlay.currentFps >= 50 ? "#22c55e" : (fpsOverlay.currentFps >= 30 ? "#eab308" : "#ef4444")
+      border.width: 1
+
+      Row {
+        id: fpsLayout
+        anchors.centerIn: parent
+        spacing: 6
+
+        Rectangle {
+          width: 7
+          height: 7
+          radius: 3.5
+          anchors.verticalCenter: parent.verticalCenter
+          color: fpsOverlay.currentFps >= 50 ? "#22c55e" : (fpsOverlay.currentFps >= 30 ? "#eab308" : "#ef4444")
+        }
+
+        Text {
+          text: fpsOverlay.currentFps + " FPS"
+          color: "#f8fafc"
+          font.pixelSize: 12
+          font.bold: true
+          font.family: "monospace"
+          anchors.verticalCenter: parent.verticalCenter
+        }
+      }
+    }
+
+    // Measure frame intervals via active render loop animation
+    NumberAnimation on opacity {
+      from: 0.999
+      to: 1.0
+      duration: 1000
+      loops: Animation.Infinite
+      running: fpsOverlay.visible
+    }
+
+    onOpacityChanged: {
+      fpsOverlay.frameCount++
+    }
+
+    Timer {
+      interval: 500
+      running: fpsOverlay.visible
+      repeat: true
+      onTriggered: {
+        fpsOverlay.currentFps = Math.round(fpsOverlay.frameCount * 2)
+        fpsOverlay.frameCount = 0
+      }
+    }
+  }
+
   Component.onCompleted: {
     fileExplorer.expanded = Preferences.expandExplorerOnLaunch
 

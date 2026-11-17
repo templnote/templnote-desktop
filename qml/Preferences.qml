@@ -35,6 +35,13 @@ QtObject {
     property bool markdownShortcuts: true
     property bool spellCheck: false
     property bool smartQuotes: false
+
+    // Developer
+    property bool showBlockDebugBorders: true
+    property bool showBlockTypeBadge: false
+    property bool showDragDropBounds: false
+    property bool showFpsOverlay: false
+    property string fpsOverlayPosition: "Top-Right"
   }
 
   property alias restoreLastSession: settings.restoreLastSession
@@ -52,4 +59,10 @@ QtObject {
   property alias markdownShortcuts: settings.markdownShortcuts
   property alias spellCheck: settings.spellCheck
   property alias smartQuotes: settings.smartQuotes
+
+  property alias showBlockDebugBorders: settings.showBlockDebugBorders
+  property alias showBlockTypeBadge: settings.showBlockTypeBadge
+  property alias showDragDropBounds: settings.showDragDropBounds
+  property alias showFpsOverlay: settings.showFpsOverlay
+  property alias fpsOverlayPosition: settings.fpsOverlayPosition
 }

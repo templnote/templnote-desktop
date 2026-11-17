@@ -610,6 +610,7 @@ Item {
       required property int nextBlockType
       required property int numberIndex
       required property string alignment
+      required property bool checked
       required property int index
 
       readonly property real bottomGap: BlockSpacing.bottomGap(
@@ -697,9 +698,10 @@ Item {
       height: renderer.implicitHeight + delegateRoot.bottomGap
       z: isBeingDragged ? 100 : 1
 
-      // Temporary visualization overlay to inspect delegate bounding box & focus state
+      // Visualization overlay to inspect delegate bounding box & focus state
       Rectangle {
         anchors.fill: parent
+        visible: Preferences.showBlockDebugBorders
         color: renderer.isFocused ? Qt.rgba(0.2, 0.6, 1.0, 0.15) : Qt.rgba(1.0, 0.5, 0.0, 0.08)
         border.color: renderer.isFocused ? "#3b82f6" : Qt.rgba(1.0, 0.5, 0.0, 0.4)
         border.width: 1
@@ -723,6 +725,50 @@ Item {
             font.pixelSize: 10
             color: renderer.isFocused ? "#2563eb" : "#c2410c"
           }
+        }
+      }
+
+      // Block Type and Index Badge for debugging
+      Rectangle {
+        visible: Preferences.showBlockTypeBadge
+        z: 11
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.topMargin: 2
+        anchors.leftMargin: 2
+        width: typeBadgeText.implicitWidth + 8
+        height: 16
+        radius: 3
+        color: Qt.rgba(0, 0, 0, 0.75)
+
+        Text {
+          id: typeBadgeText
+          anchors.centerIn: parent
+          text: "#" + delegateRoot.index + " [" + delegateRoot.blockType + (delegateRoot.blockType === "heading" ? " h" + delegateRoot.headingLevel : "") + "] id:" + delegateRoot.blockId.substring(0, 6)
+          color: "#38bdf8"
+          font.pixelSize: 9
+          font.family: "monospace"
+          font.bold: true
+        }
+      }
+
+      // Drop target boundary visualizer during drag-and-drop
+      Rectangle {
+        visible: Preferences.showDragDropBounds && root.isDraggingBlock && root.dropTargetIndex === delegateRoot.index && !delegateRoot.isBeingDragged
+        z: 20
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 3
+        color: "#10b981"
+
+        Rectangle {
+          anchors.verticalCenter: parent.verticalCenter
+          anchors.left: parent.left
+          width: 8
+          height: 8
+          radius: 4
+          color: "#10b981"
         }
       }
 
@@ -781,6 +827,7 @@ Item {
         headingLevel: delegateRoot.headingLevel
         numberIndex: delegateRoot.numberIndex
         alignment: delegateRoot.alignment
+        isChecked: delegateRoot.checked
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive
@@ -935,7 +982,7 @@ Item {
           const cursorPosition = renderer.cursorPosition
           
           // for a smoother markdown behaviour
-          if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3) && renderer.editorText.length === 0) {
+          if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3 || delegateRoot.blockType === 4) && renderer.editorText.length === 0) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
               root.focusDelegateAt(delegateRoot.index, 0)
             }

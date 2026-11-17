@@ -37,6 +37,8 @@ public:
 
   bool updateBlockAlignment(const QString &id, const QString &align);
 
+  bool updateBlockChecked(const QString &id, bool checked);
+
   bool setBlock(int index, const Block &block);
 
   bool moveBlock(const QString &id, int destination);

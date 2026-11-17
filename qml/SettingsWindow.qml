@@ -43,6 +43,12 @@ Item {
       title: "Plugins",
       description: "Extend Templnote with plugins",
       file: "settings/PluginsSettings.qml"
+    },
+    {
+      key: "developer",
+      title: "Developer",
+      description: "Inspection, diagnostics and debug visualizers",
+      file: "settings/DeveloperSettings.qml"
     }
   ]
 

@@ -234,6 +234,10 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
     return align.isEmpty() ? QStringLiteral("left") : align;
   }
 
+  case CheckedRole: {
+    return block->metadata.value(QStringLiteral("checked"), false).toBool();
+  }
+
   case NextBlockTypeRole: {
     if (index.row() + 1 >= m_document.count())
       return -1;
@@ -272,6 +276,7 @@ QHash<int, QByteArray> BlockModel::roleNames() const {
           {HeadingLevelRole, "headingLevel"},
           {MetadataRole, "metadata"},
           {AlignmentRole, "alignment"},
+          {CheckedRole, "checked"},
           {NextBlockTypeRole, "nextBlockType"},
           {NumberIndexRole, "numberIndex"}};
 }
@@ -544,7 +549,7 @@ bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
     return false;
 
   // Don't align list blocks per specification
-  if (block->type == BlockType::Bullet || block->type == BlockType::NumberedList)
+  if (block->type == BlockType::Bullet || block->type == BlockType::NumberedList || block->type == BlockType::Todo)
     return false;
 
   const QString currentAlign = block->metadata.value(QStringLiteral("align")).toString();
@@ -562,6 +567,32 @@ bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
 
   saveHistory(before, id, id);
   emit dataChanged(index(row), index(row), {MetadataRole, AlignmentRole});
+
+  markModified();
+  return true;
+}
+
+bool BlockModel::setBlockChecked(const QString &id, bool checked) {
+  const int row = m_document.indexOf(id);
+
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block || block->type != BlockType::Todo)
+    return false;
+
+  const bool currentChecked = block->metadata.value(QStringLiteral("checked"), false).toBool();
+  if (currentChecked == checked)
+    return true;
+
+  const QVector<Block> before = m_document.snapshot();
+
+  if (!m_document.updateBlockChecked(id, checked))
+    return false;
+
+  saveHistory(before, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, CheckedRole});
 
   markModified();
   return true;
@@ -1247,7 +1278,7 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
       roles << BlockTypeRole << HeadingLevelRole;
     if (current->parentId != wanted.parentId ||
         current->metadata != wanted.metadata)
-      roles << ParentIdRole << MetadataRole << AlignmentRole;
+      roles << ParentIdRole << MetadataRole << AlignmentRole << CheckedRole;
 
     if (roles.isEmpty())
       break;

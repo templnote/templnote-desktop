@@ -105,6 +105,7 @@ qt_add_qml_module(templnote
   qml/settings/GeneralSettings.qml
   qml/settings/InterfaceSettings.qml
   qml/settings/EditorSettings.qml
+  qml/settings/DeveloperSettings.qml
   qml/settings/PluginsSettings.qml
   qml/settings/SettingToggle.qml
   qml/settings/SettingChoice.qml
@@ -114,6 +115,7 @@ qt_add_qml_module(templnote
   qml/blocks/HeadingBlock.qml
   qml/blocks/BulletBlock.qml
   qml/blocks/NumberedBlock.qml
+  qml/blocks/TodoBlock.qml
 
   qml/SearchService/SearchService.qml
   qml/SearchService/LocalSearchService.qml
@@ -122,6 +124,7 @@ qt_add_qml_module(templnote
   RESOURCES
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg
+  assets/icons/ic_fluent_developer_board_20_regular.svg
   assets/icons/ic_fluent_person_20_regular.svg
   assets/icons/ic_fluent_document_add_20_regular.svg
   assets/icons/ic_fluent_document_folder_20_regular.svg
@@ -161,6 +164,9 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_align_center_vertical_20_regular.svg
   assets/icons/ic_fluent_align_right_20_regular.svg
   assets/icons/ic_fluent_home_heart_20_regular.svg
+  assets/icons/ic_fluent_checkbox_checked_20_regular.svg
+  assets/icons/ic_fluent_checkbox_checked_20_filled.svg
+  assets/icons/ic_fluent_checkbox_unchecked_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE

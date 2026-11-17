@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl
 
 Item {
   id: root
@@ -16,6 +17,8 @@ Item {
   // Appearance overrides for each concrete block type.
   property bool showBullet: false
   property bool showNumbered: false
+  property bool showTodo: false
+  property bool isChecked: false
   property bool showPlaceholder: false
   property string numberPrefix: numberIndex + "."
   property int verticalPadding: 0
@@ -24,7 +27,7 @@ Item {
   property real fontPixelSize: 16
   property bool fontBold: false
   readonly property real firstLineHeight: Math.max(rowHeight, Math.round(fontPixelSize * 1.35))
-  readonly property int textAlignment: (root.showBullet || root.showNumbered)
+  readonly property int textAlignment: (root.showBullet || root.showNumbered || root.showTodo)
                                        ? Text.AlignLeft
                                        : (root.alignment === "center"
                                           ? Text.AlignHCenter
@@ -142,6 +145,11 @@ Item {
     // The delegate's width can still be settling when the first content
     // arrives, so measure once more after the current layout pass.
     measureTimer.restart()
+  }
+
+  onIsCheckedChanged: {
+    renderCacheValid = false
+    refreshRenderedHtml()
   }
 
   // Supported inline HTML tags. Subscript and superscript keep their real
@@ -380,6 +388,10 @@ Item {
     text = text.replace(/  +/g, function(match) {
       return " " + "&nbsp;".repeat(match.length - 1)
     })
+
+    if (root.showTodo && root.isChecked) {
+      text = "<s>" + text + "</s>"
+    }
 
     return text
   }
@@ -988,7 +1000,7 @@ Item {
     anchors.rightMargin: root.horizontalPadding
     anchors.topMargin: root.verticalPadding
     anchors.bottomMargin: root.verticalPadding
-    spacing: (root.showBullet || root.showNumbered) ? 0 : 5
+    spacing: (root.showBullet || root.showNumbered || root.showTodo) ? 0 : 5
 
     Row {
       width: parent.width
@@ -1004,7 +1016,7 @@ Item {
 
       Item {
         id: bulletGutter
-        width: (root.showBullet || root.showNumbered) ? 24 : 0
+        width: (root.showBullet || root.showNumbered || root.showTodo) ? 24 : 0
         visible: width > 0
         height: root.firstLineHeight
 
@@ -1032,6 +1044,39 @@ Item {
 
           horizontalAlignment: Text.AlignLeft
           verticalAlignment: Text.AlignVCenter
+        }
+
+        Item {
+          id: todoGutterItem
+          visible: root.showTodo
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          width: 18
+          height: 18
+
+          IconImage {
+            id: checkboxIcon
+            anchors.centerIn: parent
+            width: 18
+            height: 18
+            sourceSize.width: 18
+            sourceSize.height: 18
+            source: root.isChecked
+                    ? "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_checkbox_checked_20_filled.svg"
+                    : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_checkbox_unchecked_20_regular.svg"
+            color: (root.showTodo && root.isChecked) ? Theme.textMuted : Theme.text
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (root.model && root.blockId.length > 0) {
+                root.model.setBlockChecked(root.blockId, !root.isChecked)
+              }
+            }
+          }
         }
       }
 
@@ -1195,7 +1240,7 @@ Item {
           textFormat: TextEdit.RichText
           text: root.renderedHtml
           horizontalAlignment: root.textAlignment
-          color: Theme.text
+          color: (root.showTodo && root.isChecked) ? Theme.textMuted : Theme.text
           font.pixelSize: root.fontPixelSize
           font.weight: root.fontBold ? Font.Bold : Font.Normal
           readOnly: true
@@ -1415,6 +1460,31 @@ Item {
               // Changing the type makes the dispatcher reload the block
               // renderer, so focus has to move to the new editor.
               root.focusRequested(bulletText.length)
+              return
+            }
+
+            // paragraph -> todo list ([] or [ ])
+            const todoMatch = /^\[ ?\]\s/.exec(text)
+            if (root.blockType === 0 && todoMatch) {
+              root.transformingShortcut = true
+
+              const prefixLen = todoMatch[0].length
+              const todoText = text.substring(prefixLen)
+
+              root.model.changeBlockType(
+                root.blockId,
+                4, // BlockType::Todo
+                0
+              )
+
+              root.model.updateBlockText(
+                root.blockId,
+                todoText
+              )
+
+              root.transformingShortcut = false
+
+              root.focusRequested(todoText.length)
               return
             }
 

@@ -11,6 +11,7 @@ Item {
   property int headingLevel: 0
   property int numberIndex: 1
   property string alignment: "left"
+  property bool isChecked: false
   property bool showPlaceholder: false
   property var model: null
 
@@ -112,6 +113,8 @@ Item {
       return bulletComponent
     case 3: // BlockType::NumberedList
       return numberedComponent
+    case 4: // BlockType::Todo
+      return todoComponent
     default: // BlockType::Paragraph, and future types until implemented
       return paragraphComponent
     }
@@ -139,6 +142,11 @@ Item {
     NumberedBlock {}
   }
 
+  Component {
+    id: todoComponent
+    TodoBlock {}
+  }
+
   Loader {
     id: loader
     anchors.fill: parent
@@ -151,6 +159,7 @@ Item {
       item.headingLevel = Qt.binding(function() { return root.headingLevel })
       item.numberIndex = Qt.binding(function() { return root.numberIndex })
       item.alignment = Qt.binding(function() { return root.alignment })
+      item.isChecked = Qt.binding(function() { return root.isChecked })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
