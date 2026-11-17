@@ -17,6 +17,7 @@ Item {
   readonly property int cursorPosition: block ? block.cursorPosition : 0
   readonly property string editorText: block ? block.editorText : ""
   readonly property bool isFocused: block ? block.isFocused : false
+  readonly property real firstLineHeight: block ? block.firstLineHeight : 24
 
   signal enterPressed()
   signal backspacePressed()

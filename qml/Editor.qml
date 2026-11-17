@@ -610,11 +610,11 @@ Item {
       required property int numberIndex
       required property int index
 
-      readonly property bool isBullet: delegateRoot.blockType === 2
-      readonly property bool nextIsBullet: delegateRoot.nextBlockType === 2
-      readonly property bool isNumbered: delegateRoot.blockType === 3
-      readonly property bool nextIsNumbered: delegateRoot.nextBlockType === 3
-      readonly property bool isCompactList: (isBullet && nextIsBullet) || (isNumbered && nextIsNumbered)
+      readonly property real bottomGap: BlockSpacing.bottomGap(
+        delegateRoot.blockType,
+        delegateRoot.nextBlockType,
+        delegateRoot.index === root.model.count - 1
+      )
       readonly property var rendererItem: renderer
 
       readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
@@ -692,8 +692,37 @@ Item {
       }
 
       width: documentView.width
-      height: renderer.implicitHeight + (delegateRoot.isCompactList ? 0 : 5)
+      height: renderer.implicitHeight + delegateRoot.bottomGap
       z: isBeingDragged ? 100 : 1
+
+      // Temporary visualization overlay to inspect delegate bounding box & focus state
+      Rectangle {
+        anchors.fill: parent
+        color: renderer.isFocused ? Qt.rgba(0.2, 0.6, 1.0, 0.15) : Qt.rgba(1.0, 0.5, 0.0, 0.08)
+        border.color: renderer.isFocused ? "#3b82f6" : Qt.rgba(1.0, 0.5, 0.0, 0.4)
+        border.width: 1
+        z: -1
+
+        // Highlight inner renderer area to show any bottom gap/margin
+        Rectangle {
+          x: 0
+          y: 0
+          width: parent.width
+          height: renderer.implicitHeight
+          color: "transparent"
+          border.color: renderer.isFocused ? "#2563eb" : "#f97316"
+          border.width: 1
+
+          Text {
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 2
+            text: (renderer.isFocused ? "FOCUSED | " : "UNFOCUSED | ") + "h: " + Math.round(renderer.implicitHeight) + " / total: " + Math.round(delegateRoot.height)
+            font.pixelSize: 10
+            color: renderer.isFocused ? "#2563eb" : "#c2410c"
+          }
+        }
+      }
 
       transform: Translate {
         y: delegateRoot.isBeingDragged ? root.draggingVisualY : delegateRoot.visualDisplacement
@@ -962,7 +991,7 @@ Item {
         width: 18
         height: 24
         x: -28
-        y: 4
+        y: Math.max(0, Math.round((renderer.firstLineHeight - height) / 2))
         z: 20
 
         // Purely mouse-hover driven: show only on the block the mouse is hovering over

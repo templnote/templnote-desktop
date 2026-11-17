@@ -22,6 +22,7 @@ Item {
   property int rowHeight: 0
   property real fontPixelSize: 16
   property bool fontBold: false
+  readonly property real firstLineHeight: Math.max(rowHeight, Math.round(fontPixelSize * 1.35))
 
   readonly property int cursorPosition: editor.cursorPosition
   readonly property string editorText: editor.text
@@ -107,7 +108,7 @@ Item {
     measureText.forceLayout()
 
     const height = measureText.contentHeight
-                 + numeric(editor.topPadding) + numeric(editor.bottomMargin)
+                 + numeric(editor.topPadding) + numeric(editor.bottomPadding)
 
     if (isFinite(height) && height !== root.renderedHeight)
       root.renderedHeight = height
@@ -957,34 +958,34 @@ Item {
       spacing: 0
 
       Item {
-        // The bullet/number is drawn in its own gutter so the textarea can be
-        // offset by the same amount for every block type, keeping the
-        // text of all block types aligned.
         id: bulletGutter
-        width: 24
-        height: parent.height
+        width: (root.showBullet || root.showNumbered) ? 24 : 0
+        visible: width > 0
+        height: root.firstLineHeight
 
         Text {
           visible: root.showBullet
-          anchors.centerIn: parent
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
 
           text: "•"
           color: Theme.textMuted
           font.pixelSize: 22
 
-          horizontalAlignment: Text.AlignHCenter
+          horizontalAlignment: Text.AlignLeft
           verticalAlignment: Text.AlignVCenter
         }
 
         Text {
           visible: root.showNumbered
-          anchors.centerIn: parent
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
 
           text: root.numberPrefix
           color: Theme.textMuted
           font.pixelSize: 14
 
-          horizontalAlignment: Text.AlignHCenter
+          horizontalAlignment: Text.AlignLeft
           verticalAlignment: Text.AlignVCenter
         }
       }
@@ -1137,7 +1138,7 @@ Item {
           anchors.leftMargin: editor.leftPadding
           anchors.rightMargin: editor.rightPadding
           anchors.topMargin: editor.topPadding
-          anchors.bottomMargin: editor.bottomMargin
+          anchors.bottomMargin: editor.bottomPadding
           visible: editor.text.length > 0
           wrapMode: TextEdit.Wrap
           textFormat: TextEdit.RichText
@@ -1242,6 +1243,12 @@ Item {
           id: editor
           anchors.fill: parent
           z: 3
+
+          padding: 0
+          leftPadding: 0
+          rightPadding: 0
+          topPadding: 0
+          bottomPadding: 0
 
           wrapMode: TextArea.Wrap
           placeholderText: root.showPlaceholder ? "start typing here" : ""

@@ -32,6 +32,10 @@ set_source_files_properties(qml/Theme.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
 )
 
+set_source_files_properties(qml/BlockSpacing.qml PROPERTIES
+  QT_QML_SINGLETON_TYPE TRUE
+)
+
 set_source_files_properties(qml/Preferences.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
 )
@@ -78,6 +82,7 @@ qt_add_qml_module(templnote
   QML_FILES
   qml/Main.qml
   qml/Theme.qml
+  qml/BlockSpacing.qml
   qml/Preferences.qml
   qml/HomeScreen.qml
   qml/DocumentHeader.qml

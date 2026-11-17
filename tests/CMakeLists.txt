@@ -65,6 +65,12 @@ set_source_files_properties(
     QT_RESOURCE_ALIAS "qml/Theme.qml"
 )
 
+set_source_files_properties(
+    "${TEST_QML_DIR}/BlockSpacing.qml" PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+    QT_RESOURCE_ALIAS "qml/BlockSpacing.qml"
+)
+
 foreach(qml_file
     Editor.qml
     BlockRenderer.qml
@@ -99,6 +105,7 @@ qt_add_qml_module(tst_editor
     QML_FILES
     EditorTestWindow.qml
     ${TEST_QML_DIR}/Theme.qml
+    ${TEST_QML_DIR}/BlockSpacing.qml
     ${TEST_QML_DIR}/Editor.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
     ${TEST_QML_DIR}/CommandMenu.qml
