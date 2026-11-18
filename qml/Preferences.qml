@@ -28,6 +28,9 @@ QtObject {
     property string density: "Comfortable"
     property bool reduceMotion: false
     property bool animateExplorer: true
+    property bool paperOverWorkspace: true
+    property string paperPreset: "Journal" // "Office", "Journal", "Craft"
+    property real paperGrain: 0.035
 
     // Editor
     property string fontFamily: "System"
@@ -53,6 +56,9 @@ QtObject {
   property alias density: settings.density
   property alias reduceMotion: settings.reduceMotion
   property alias animateExplorer: settings.animateExplorer
+  property alias paperOverWorkspace: settings.paperOverWorkspace
+  property alias paperPreset: settings.paperPreset
+  property alias paperGrain: settings.paperGrain
 
   property alias fontFamily: settings.fontFamily
   property alias lineWidth: settings.lineWidth
@@ -65,4 +71,15 @@ QtObject {
   property alias showDragDropBounds: settings.showDragDropBounds
   property alias showFpsOverlay: settings.showFpsOverlay
   property alias fpsOverlayPosition: settings.fpsOverlayPosition
+
+  function applyPaperPreset(presetName) {
+    paperPreset = presetName
+    if (presetName === "Office") {
+      paperGrain = 0.015
+    } else if (presetName === "Journal") {
+      paperGrain = 0.035
+    } else if (presetName === "Craft") {
+      paperGrain = 0.065
+    }
+  }
 }

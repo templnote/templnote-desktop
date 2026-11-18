@@ -543,6 +543,31 @@ Item {
     color: Theme.background
   }
 
+  // GPU-accelerated tactile paper sheet backing the document or entire workspace
+  PaperSheet {
+    id: paperCanvas
+
+    readonly property bool fullWorkspace: Preferences.paperOverWorkspace
+
+    radius: fullWorkspace ? 0 : 12
+    showShadow: !fullWorkspace
+    baseColor: fullWorkspace ? Theme.background : Theme.surface
+
+    anchors {
+      fill: fullWorkspace ? parent : undefined
+      top: fullWorkspace ? undefined : parent.top
+      bottom: fullWorkspace ? undefined : parent.bottom
+      horizontalCenter: fullWorkspace ? undefined : parent.horizontalCenter
+      topMargin: fullWorkspace ? 0 : 40
+      bottomMargin: fullWorkspace ? 0 : 40
+    }
+    width: fullWorkspace ? parent.width : Math.min(root.contentWidth + 64, parent.width - 24)
+
+    Behavior on radius {
+      NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
+    }
+  }
+
   // Document content
 
   // Clicks in the margin left of the document are still visually part of the
@@ -1086,14 +1111,10 @@ Item {
             return
           }
 
-          // Check if block has empty content. For Callout (type 10), check clean body
-          const isCallout = currentType === 10
-          const isCleanEmpty = isCallout
-                               ? ((renderer.block && "cleanBody" in renderer.block) ? renderer.block.cleanBody.trim().length === 0 : (currentText.trim() === "" || currentText.indexOf("\n") < 0))
-                               : (currentText.length === 0)
-
-          // don't get confused, it first removes the blockType and then removes the block
-          if ( isCleanEmpty && currentType !== 0 ) {
+          // If this is a specialized block (Quote, List, Todo, Callout), pressing backspace
+          // at cursor position 0 should demote it to a Paragraph first instead of
+          // immediately merging into the previous block and deleting the current block!
+          if (currentType !== 0) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
               root.focusDelegateAt(currentIndex, 0)
             }
@@ -1101,10 +1122,10 @@ Item {
           }
 
           if (currentIndex === 0)
-          return
+            return
 
           if (currentText.length === 0) {
-            if ( root.model.removeBlock(delegateRoot.blockId)) {
+            if (root.model.removeBlock(delegateRoot.blockId)) {
               root.focusDelegateAt(currentIndex - 1, -1)
             }
             return

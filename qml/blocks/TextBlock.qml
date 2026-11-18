@@ -1629,6 +1629,34 @@ Item {
               return
             }
 
+            // quote -> callout ([!NOTE], [!TIP], [!WARNING], etc. typed inside Quote)
+            const quoteCalloutMatch = /^\[!([a-zA-Z]+)\]\s*/.exec(text)
+            if (root.blockType === 5 && quoteCalloutMatch) {
+              root.transformingShortcut = true
+
+              const kind = quoteCalloutMatch[1].toLowerCase()
+              const calloutContent = text.substring(quoteCalloutMatch[0].length)
+
+              root.model.changeBlockType(
+                root.blockId,
+                10, // BlockType::Callout
+                0
+              )
+
+              if (root.model.setBlockCalloutType) {
+                root.model.setBlockCalloutType(root.blockId, kind)
+              }
+
+              root.model.updateBlockText(
+                root.blockId,
+                calloutContent
+              )
+
+              root.transformingShortcut = false
+              root.focusRequested(-1)
+              return
+            }
+
             // paragraph -> quote
             if (root.blockType === 0 && text.startsWith("> ")) {
               root.transformingShortcut = true

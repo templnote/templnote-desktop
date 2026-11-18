@@ -84,6 +84,7 @@ qt_add_qml_module(templnote
   qml/Theme.qml
   qml/BlockSpacing.qml
   qml/Preferences.qml
+  qml/PaperSheet.qml
   qml/HomeScreen.qml
   qml/DocumentHeader.qml
   qml/Editor.qml
@@ -109,6 +110,7 @@ qt_add_qml_module(templnote
   qml/settings/PluginsSettings.qml
   qml/settings/SettingToggle.qml
   qml/settings/SettingChoice.qml
+  qml/settings/SettingSlider.qml
 
   qml/blocks/TextBlock.qml
   qml/blocks/ParagraphBlock.qml
@@ -125,6 +127,7 @@ qt_add_qml_module(templnote
   qml/SearchService/HighlightService.qml
 
   RESOURCES
+  qml/shaders/paper.frag.qsb
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg
   assets/icons/ic_fluent_developer_board_20_regular.svg

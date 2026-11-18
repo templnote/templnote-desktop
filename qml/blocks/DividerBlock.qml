@@ -37,6 +37,7 @@ Item {
   signal searchDismissed()
   signal searchEditStarted()
   property bool searchNavigationActive: false
+  property bool commandMenuActive: false
 
   function focusEditor(position) {
     editor.focus = true
