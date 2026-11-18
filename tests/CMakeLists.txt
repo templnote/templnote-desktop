@@ -71,6 +71,12 @@ set_source_files_properties(
     QT_RESOURCE_ALIAS "qml/BlockSpacing.qml"
 )
 
+set_source_files_properties(
+    "${TEST_QML_DIR}/Preferences.qml" PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+    QT_RESOURCE_ALIAS "qml/Preferences.qml"
+)
+
 foreach(qml_file
     Editor.qml
     BlockRenderer.qml
@@ -87,6 +93,7 @@ foreach(qml_file
     blocks/HeadingBlock.qml
     blocks/BulletBlock.qml
     blocks/NumberedBlock.qml
+    blocks/TodoBlock.qml
 )
     set_source_files_properties(
         "${TEST_QML_DIR}/${qml_file}" PROPERTIES
@@ -106,6 +113,7 @@ qt_add_qml_module(tst_editor
     EditorTestWindow.qml
     ${TEST_QML_DIR}/Theme.qml
     ${TEST_QML_DIR}/BlockSpacing.qml
+    ${TEST_QML_DIR}/Preferences.qml
     ${TEST_QML_DIR}/Editor.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
     ${TEST_QML_DIR}/CommandMenu.qml
@@ -115,6 +123,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/HeadingBlock.qml
     ${TEST_QML_DIR}/blocks/BulletBlock.qml
     ${TEST_QML_DIR}/blocks/NumberedBlock.qml
+    ${TEST_QML_DIR}/blocks/TodoBlock.qml
 )
 
 target_link_libraries(tst_editor PRIVATE

@@ -56,6 +56,11 @@ Item {
   property bool renderCacheSyntax: false
   property bool renderCacheValid: false
 
+  // The last HTML/width combination that was measured. Re-measuring the same
+  // content is expensive (forceLayout) and cannot change the height.
+  property string measuredHtml: ""
+  property real measuredWidth: -1
+
   // Custom caret geometry, in editorLine coordinates. The real caret belongs
   // to the invisible TextArea, whose raw layout differs from the rendered
   // rich text whenever a <sub>/<sup> span shrinks its contents.
@@ -69,6 +74,15 @@ Item {
     interval: 0
     repeat: false
     onTriggered: root.measureRenderedHeight()
+  }
+
+  // Coalesce rapid text changes into one render per event-loop turn so fast
+  // typing does not re-parse the whole block for every keystroke.
+  Timer {
+    id: renderTimer
+    interval: 0
+    repeat: false
+    onTriggered: root.refreshRenderedHtml()
   }
 
   Timer {
@@ -114,6 +128,13 @@ Item {
     if (availableWidth <= 0)
       return
 
+    if (availableWidth === root.measuredWidth &&
+        root.renderedHtml === root.measuredHtml)
+      return
+
+    root.measuredWidth = availableWidth
+    root.measuredHtml = root.renderedHtml
+
     measureText.width = availableWidth
     measureText.text = root.renderedHtml
     measureText.forceLayout()
@@ -140,10 +161,9 @@ Item {
     renderCacheSyntax = syntax
     renderCacheValid = true
     renderedHtml = markdownToHtml(raw, syntax)
-    measureRenderedHeight()
 
-    // The delegate's width can still be settling when the first content
-    // arrives, so measure once more after the current layout pass.
+    // Measurement is deferred until the current layout pass has settled the
+    // available width; measuring here as well would force layout twice.
     measureTimer.restart()
   }
 
@@ -353,6 +373,23 @@ Item {
 
   function markdownToHtml(raw, includeSyntax) {
     if (!raw) return ""
+
+    // Fast path: without inline tags or markdown markers the tag tree and
+    // regex pipeline cannot add any styling, so only escaping, line breaks
+    // and whitespace preservation are needed. This is the common case while
+    // typing ordinary prose.
+    if (raw.indexOf("*") < 0 && raw.indexOf("~") < 0 &&
+        raw.indexOf("<") < 0 && raw.indexOf(">") < 0) {
+      let plain = escapeInlineText(raw)
+      plain = plain.replace(/\n/g, "<br/>")
+      plain = plain.replace(/  +/g, function(match) {
+        return " " + "&nbsp;".repeat(match.length - 1)
+      })
+      if (root.showTodo && root.isChecked)
+        plain = "<s>" + plain + "</s>"
+      return plain
+    }
+
     const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
     const spanClose = "</span>"
 
@@ -982,14 +1019,24 @@ Item {
   implicitHeight: contentColumn.implicitHeight + root.verticalPadding * 2
 
   // Clicking the block's padding/gutter should move the caret into this block
-  // instead of leaving focus on the previously edited block.
+  // instead of leaving focus on the previously edited block. The area extends
+  // a little into the left gutter so clicks next to the text still land here.
   MouseArea {
+    id: paddingArea
+
     anchors.fill: parent
+    anchors.leftMargin: -24
     acceptedButtons: Qt.LeftButton
 
     onClicked: {
       editor.forceActiveFocus()
-      editor.cursorPosition = editor.length
+      editor.cursorVisible = true
+
+      // Place the caret on the clicked line, as close to the click as the
+      // rendered text allows.
+      const point = paddingArea.mapToItem(slideLayer, mouse.x, mouse.y)
+      editor.cursorPosition = root.viewerPositionAt(point.x, point.y)
+      root.updateCaretGeometry()
     }
   }
 
@@ -1261,6 +1308,8 @@ Item {
 
         // The caret belongs to the invisible TextArea, so draw our own at the
         // matching rich-text position.
+        // Uses GPU-accelerated smooth flow (subtle spring/ease glide) and
+        // smooth sinusoidal breathing pulse when idle.
         Rectangle {
           id: customCaret
 
@@ -1273,6 +1322,61 @@ Item {
           visible: editor.activeFocus && editor.cursorVisible &&
                    editor.selectionStart === editor.selectionEnd
           z: 5
+
+          // Smooth glide/flow when moving across characters or lines
+          Behavior on x {
+            enabled: editor.activeFocus
+            NumberAnimation {
+              duration: 75
+              easing.type: Easing.OutCubic
+            }
+          }
+
+          Behavior on y {
+            enabled: editor.activeFocus
+            NumberAnimation {
+              duration: 90
+              easing.type: Easing.OutCubic
+            }
+          }
+
+          Behavior on height {
+            NumberAnimation {
+              duration: 90
+              easing.type: Easing.OutCubic
+            }
+          }
+
+          // Smooth sinusoidal breathing pulse (GPU animated opacity)
+          SequentialAnimation on opacity {
+            id: caretPulseAnim
+            running: customCaret.visible
+            loops: Animation.Infinite
+
+            // Hold full visibility briefly at peak
+            PauseAnimation { duration: 180 }
+            // Smooth sinusoidal fade out
+            NumberAnimation {
+              to: 0.15
+              duration: 420
+              easing.type: Easing.InOutSine
+            }
+            // Smooth sinusoidal fade in
+            NumberAnimation {
+              to: 1.0
+              duration: 400
+              easing.type: Easing.InOutSine
+            }
+          }
+
+          // Reset opacity to 1.0 immediately whenever typing or navigating
+          Connections {
+            target: editor
+            function onCursorPositionChanged() {
+              customCaret.opacity = 1.0
+              caretPulseAnim.restart()
+            }
+          }
         }
 
         // The TextArea still owns text input and keyboard navigation, but all
@@ -1419,8 +1523,8 @@ Item {
 
           onTextChanged: {
             // Keep the formatted overlay in sync even while the model is
-            // being updated programmatically.
-            root.refreshRenderedHtml()
+            // being updated programmatically. Coalesce bursts of edits.
+            renderTimer.restart()
 
             if (root.transformingShortcut || root.syncingFromModel)
               return

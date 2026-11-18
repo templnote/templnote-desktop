@@ -64,11 +64,18 @@ public:
   // Returns matching blocks grouped and ordered by the best rank per
   // document. Plain text queries are split into whitespace-separated terms;
   // every term must prefix-match a token in the block text (FTS5 AND).
-  QVector<Result> search(const QString &query) const;
+  // At most 200 results are returned; when `truncated` is non-null it is set
+  // to true if more matches existed.
+  QVector<Result> search(const QString &query,
+                         bool *truncated = nullptr) const;
 
   // Reconciles the index with files on disk. Used at startup, before opening
   // global search, and after destructive document-list operations.
   Q_INVOKABLE void syncIncremental();
+
+  // Runs the same reconciliation on the writer pool instead of blocking the
+  // caller. Emits indexUpdated() when the scan finishes.
+  Q_INVOKABLE void syncIncrementalAsync();
 
   // Drops the complete index and rebuilds it from disk.
   Q_INVOKABLE void rebuild();
@@ -76,6 +83,7 @@ public:
 signals:
   void blockModelChanged();
   void documentListChanged();
+  void indexUpdated();
 
 private:
   struct BlockRecord {
@@ -156,5 +164,7 @@ private:
   BlockModel *m_blockModel = nullptr;
   DocumentListModel *m_documentList = nullptr;
   QString m_currentDocumentPath;
+  bool m_syncRunning = false;
+  bool m_syncQueued = false;
 };
 } // namespace Templnote

@@ -6,8 +6,8 @@ Rectangle {
   id: root
 
   property bool expanded: true
-  property bool agentRunning: false
-  property string currentTask: ""
+  property bool agentRunning: true
+  property string currentTask: "Generating..."
   property string statusText: agentRunning
     ? (currentTask.length > 0 ? selectedModel + " • " + currentTask : selectedModel)
     : "Meow"
@@ -87,10 +87,9 @@ Rectangle {
     onClicked: root.expanded = true
   }
 
-  Text {
-    id: statusDisplay
+  Item {
+    id: statusDisplayContainer
     visible: !root.expanded
-
     anchors {
       left: collapsedCatIcon.right
       leftMargin: 8
@@ -98,11 +97,48 @@ Rectangle {
       rightMargin: 8
       verticalCenter: parent.verticalCenter
     }
+    height: statusDisplay.implicitHeight
+    clip: true
 
-    text: root.statusText
-    color: Theme.textMuted
-    font.pixelSize: 13
-    elide: Text.ElideRight
+    Text {
+      id: statusDisplay
+      anchors.fill: parent
+      text: root.statusText
+      color: root.agentRunning ? Theme.accent : Theme.textMuted
+      font.pixelSize: 13
+      elide: Text.ElideRight
+
+      Behavior on color {
+        ColorAnimation { duration: 200 }
+      }
+    }
+
+    // Text shimmer wave across status text when agent is running
+    Rectangle {
+      id: textShimmerSweep
+      visible: root.agentRunning
+      width: 48
+      height: parent.height
+      y: 0
+      x: -width
+      opacity: 0.65
+
+      gradient: Gradient {
+        orientation: Gradient.Horizontal
+        GradientStop { position: 0.0; color: "transparent" }
+        GradientStop { position: 0.5; color: Theme.accent }
+        GradientStop { position: 1.0; color: "transparent" }
+      }
+
+      NumberAnimation on x {
+        running: textShimmerSweep.visible
+        from: -textShimmerSweep.width
+        to: statusDisplayContainer.width
+        duration: 1800
+        loops: Animation.Infinite
+        easing.type: Easing.InOutQuad
+      }
+    }
   }
 
   // --- EXPANDED VIEW: TOP/MAIN TEXT INPUT ---
@@ -364,6 +400,94 @@ Rectangle {
         radius: 6
         color: micButton.hovered ? Theme.surfaceHover : "transparent"
       }
+    }
+  }
+
+  // --- STREAMING PERIMETER SHIMMER (Curves around rounded top corners and traces perimeter) ---
+  Canvas {
+    id: perimeterShimmerCanvas
+    anchors.fill: parent
+    z: 2
+    antialiasing: true
+    renderTarget: Canvas.FramebufferObject
+    renderStrategy: Canvas.Cooperative
+    visible: root.agentRunning
+    opacity: root.agentRunning ? 1.0 : 0.0
+
+    Behavior on opacity {
+      NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
+    }
+
+    property real shimmerPhase: 0.0
+
+    // Smooth, slow progression from bottom-left to bottom-right
+    NumberAnimation on shimmerPhase {
+      running: perimeterShimmerCanvas.visible
+      from: 0.0
+      to: 1.0
+      duration: 5200
+      loops: Animation.Infinite
+    }
+
+    onShimmerPhaseChanged: requestPaint()
+    onWidthChanged: requestPaint()
+    onHeightChanged: requestPaint()
+    onVisibleChanged: if (visible) requestPaint()
+
+    Connections {
+      target: Theme
+      function onAccentChanged() { perimeterShimmerCanvas.requestPaint() }
+    }
+
+    // Open path starting at bottom-left, going up, around the corners, and ending at bottom-right
+    function roundedTopArchPath(ctx, x, y, w, h, r) {
+      ctx.beginPath()
+      ctx.moveTo(x, y + h)
+      ctx.lineTo(x, y + r)
+      ctx.arcTo(x, y, x + r, y, r)
+      ctx.lineTo(x + w - r, y)
+      ctx.arcTo(x + w, y, x + w, y + r, r)
+      ctx.lineTo(x + w, y + h)
+    }
+
+    onPaint: {
+      const ctx = getContext("2d")
+      ctx.clearRect(0, 0, width, height)
+
+      if (!root.agentRunning || width <= 0 || height <= 0)
+        return
+
+      const w = width
+      const h = height
+      const r = root.topLeftRadius // 8
+
+      // Exposed perimeter length (left wall + top-left curve + top wall + top-right curve + right wall):
+      // Left vertical: (h - r)
+      // Top-left arc: (PI * r / 2)
+      // Top horizontal: (w - 2 * r)
+      // Top-right arc: (PI * r / 2)
+      // Right vertical: (h - r)
+      const arcLen = Math.PI * r * 0.5
+      const totalLen = (h - r) + arcLen + (w - 2 * r) + arcLen + (h - r)
+      if (totalLen <= 0)
+        return
+
+      // Length of the glowing shimmer beam
+      const beamLen = Math.max(90, Math.min(220, totalLen * 0.22))
+      // Starts emerging at bottom-left (-beamLen) and completes exiting at bottom-right (totalLen)
+      const offset = -beamLen + shimmerPhase * (totalLen + beamLen)
+
+      ctx.save()
+      ctx.lineWidth = 1.5
+      ctx.lineCap = "round"
+      ctx.lineJoin = "round"
+      ctx.strokeStyle = Theme.accent
+      ctx.setLineDash([beamLen, totalLen * 2])
+      ctx.lineDashOffset = -offset
+
+      roundedTopArchPath(ctx, 0.75, 0.75, w - 1.5, h - 0.75, Math.max(0, r - 0.75))
+      ctx.stroke()
+      ctx.restore()
     }
   }
 

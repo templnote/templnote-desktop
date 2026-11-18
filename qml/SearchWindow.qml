@@ -40,6 +40,15 @@ Item {
     onTriggered: root.runSearch()
   }
 
+  Connections {
+    target: root.searchIndex
+
+    function onIndexUpdated() {
+      if (root.visible)
+        root.runSearch()
+    }
+  }
+
   function open() {
     if (root.visible) {
       searchField.forceActiveFocus()
@@ -50,7 +59,7 @@ Item {
     root.previousFocus = Window.window ? Window.window.activeFocusItem : null
 
     if (root.searchIndex)
-      root.searchIndex.syncIncremental()
+      root.searchIndex.syncIncrementalAsync()
 
     root.visible = true
     searchField.forceActiveFocus()
@@ -151,15 +160,19 @@ Item {
   }
 
   function openDocumentAtTop(path) {
-    if (!path || path.length === 0)
+    if (!path || path.length === 0 || !root.blockModel)
+      return
+
+    const switching = root.blockModel.currentFilePath !== path
+
+    // Keep unsaved edits when jumping to another document from search.
+    if (switching && root.blockModel.isModified &&
+        !root.blockModel.saveCurrentDocument())
       return
 
     root.close(false)
 
-    if (!root.blockModel)
-      return
-
-    if (root.blockModel.currentFilePath !== path) {
+    if (switching) {
       if (!root.blockModel.loadDocument(path))
         return
 
@@ -174,20 +187,18 @@ Item {
     })
   }
 
+  // Keyboard navigation only visits actual results. Document headers are a
+  // visual grouping and are reachable with the mouse, but selecting one with
+  // Up/Down would leave currentIndex at -1.
   function navigationItems() {
     const items = []
-    if (!root.resultsModel || root.resultsModel.count === 0)
+    if (!root.resultsModel)
       return items
 
-    let lastPath = ""
     for (let i = 0; i < root.resultsModel.count; ++i) {
       const res = root.resultsModel.resultAt(i)
-      if (!res) continue
-      if (res.documentPath !== lastPath) {
-        lastPath = res.documentPath
-        items.push({ type: "doc", path: lastPath })
-      }
-      items.push({ type: "result", index: i, result: res })
+      if (res)
+        items.push({ type: "result", index: i, result: res })
     }
     return items
   }
@@ -199,17 +210,9 @@ Item {
 
     let currentPos = -1
     for (let i = 0; i < items.length; ++i) {
-      const it = items[i]
-      if (root.selectedDocumentPath.length > 0) {
-        if (it.type === "doc" && it.path === root.selectedDocumentPath) {
-          currentPos = i
-          break
-        }
-      } else if (root.currentIndex >= 0) {
-        if (it.type === "result" && it.index === root.currentIndex) {
-          currentPos = i
-          break
-        }
+      if (root.currentIndex >= 0 && items[i].index === root.currentIndex) {
+        currentPos = i
+        break
       }
     }
 
@@ -221,12 +224,7 @@ Item {
     if (nextPos < 0)
       nextPos += items.length
 
-    const target = items[nextPos]
-    if (target.type === "doc") {
-      root.selectDocument(target.path)
-    } else {
-      root.selectResult(target.index)
-    }
+    root.selectResult(items[nextPos].index)
   }
 
   function accept() {
@@ -394,6 +392,14 @@ Item {
             color: Theme.textMuted
             font.pixelSize: 11
           }
+        }
+
+        Text {
+          visible: root.resultsModel ? root.resultsModel.truncated : false
+          Layout.fillWidth: true
+          text: "Showing first 200 matches"
+          color: Theme.textFaint
+          font.pixelSize: 11
         }
       }
 

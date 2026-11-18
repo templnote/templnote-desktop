@@ -37,7 +37,7 @@ QtObject {
     property bool smartQuotes: false
 
     // Developer
-    property bool showBlockDebugBorders: true
+    property bool showBlockDebugBorders: false
     property bool showBlockTypeBadge: false
     property bool showDragDropBounds: false
     property bool showFpsOverlay: false

@@ -5,6 +5,8 @@
 #include <QFileSystemWatcher>
 #include <QVariantList>
 #include <QVector>
+#include <atomic>
+#include <memory>
 #include <qtmetamacros.h>
 
 namespace Templnote {
@@ -105,6 +107,10 @@ signals:
   void directoryChanged();
   void currentFilePathChanged();
 
+  // Emitted before a refresh triggered by the filesystem watcher. The view can
+  // preserve its scroll position across the model reset that follows.
+  void refreshedExternally();
+
   // Emitted after a file or folder has been renamed on disk. The search index
   // uses this to move every indexed path below the old location.
   void pathRenamed(const QString &oldPath, const QString &newPath);
@@ -117,8 +123,9 @@ signals:
   void searchCompleted(const QString &query, const QVariantList &results);
 
 private:
-  static QVariantList searchEntriesInRoot(const QString &rootDirectory,
-                                          const QString &needle);
+  static QVariantList searchEntriesInRoot(
+      const QString &rootDirectory, const QString &needle,
+      const std::atomic_bool *cancelled = nullptr);
 
   struct Entry {
     QString name;
@@ -136,5 +143,6 @@ private:
   QVector<Entry> m_entries;
   QFileSystemWatcher *m_watcher = nullptr;
   quint64 m_searchGeneration = 0;
+  std::shared_ptr<std::atomic_bool> m_searchCancel;
 };
 } // namespace Templnote

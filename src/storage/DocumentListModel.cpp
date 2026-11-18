@@ -12,9 +12,12 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QSaveFile>
+#include <QSet>
 #include <QVariantMap>
 #include <QtConcurrent>
 #include <algorithm>
+#include <atomic>
+#include <memory>
 #include <utility>
 
 namespace Templnote {
@@ -33,7 +36,10 @@ DocumentListModel::DocumentListModel(const QString &directory, QObject *parent)
   refresh();
 
   connect(m_watcher, &QFileSystemWatcher::directoryChanged, this,
-          [this](const QString &) { refresh(); });
+          [this](const QString &) {
+            emit refreshedExternally();
+            refresh();
+          });
 }
 
 void DocumentListModel::setupWatcher() {
@@ -206,9 +212,118 @@ void DocumentListModel::refresh() {
 
   const bool countChangedNow = combined.size() != m_entries.size();
 
-  beginResetModel();
-  m_entries = std::move(combined);
-  endResetModel();
+  // Fast path: same entries in the same order. Watcher notifications are
+  // usually caused by a single file, so only refresh rows whose metadata
+  // actually changed instead of resetting the whole model.
+  bool sameOrder = combined.size() == m_entries.size();
+
+  if (sameOrder) {
+    for (int i = 0; i < combined.size(); ++i) {
+      if (combined[i].filePath != m_entries[i].filePath) {
+        sameOrder = false;
+        break;
+      }
+    }
+  }
+
+  if (sameOrder) {
+    for (int i = 0; i < combined.size(); ++i) {
+      const Entry &current = m_entries[i];
+      const Entry &updated = combined[i];
+
+      if (current.name == updated.name &&
+          current.modified == updated.modified &&
+          current.isFolder == updated.isFolder) {
+        continue;
+      }
+
+      m_entries[i] = updated;
+
+      emit dataChanged(index(i), index(i),
+                       {NameRole, IsFolderRole, ModifiedRole});
+    }
+
+    return;
+  }
+
+  // Remove entries that no longer exist, then insert the new ones. The
+  // surviving entries must keep their relative order; otherwise this is a
+  // reorder and the model is reset.
+  QSet<QString> wantedPaths;
+  wantedPaths.reserve(combined.size());
+
+  for (const Entry &entry : std::as_const(combined))
+    wantedPaths.insert(entry.filePath);
+
+  for (int i = m_entries.size() - 1; i >= 0; --i) {
+    if (wantedPaths.contains(m_entries[i].filePath))
+      continue;
+
+    beginRemoveRows({}, i, i);
+    m_entries.removeAt(i);
+    endRemoveRows();
+  }
+
+  int searchFrom = 0;
+
+  for (const Entry &entry : std::as_const(combined)) {
+    int existing = -1;
+
+    for (int i = searchFrom; i < m_entries.size(); ++i) {
+      if (m_entries[i].filePath == entry.filePath) {
+        existing = i;
+        break;
+      }
+    }
+
+    if (existing < 0) {
+      // Not found after the previous match: it is either new or an entry
+      // that moved before an already-processed one.
+      for (const Entry &old : std::as_const(m_entries)) {
+        if (old.filePath != entry.filePath)
+          continue;
+
+        beginResetModel();
+        m_entries = std::move(combined);
+        endResetModel();
+
+        if (countChangedNow)
+          emit countChanged();
+
+        return;
+      }
+
+      continue;
+    }
+
+    searchFrom = existing + 1;
+  }
+
+  int insertAt = 0;
+
+  for (int i = 0; i < combined.size(); ++i) {
+    if (insertAt < m_entries.size() &&
+        m_entries[insertAt].filePath == combined[i].filePath) {
+      const Entry &current = m_entries[insertAt];
+      const Entry &updated = combined[i];
+
+      if (current.name != updated.name ||
+          current.modified != updated.modified ||
+          current.isFolder != updated.isFolder) {
+        m_entries[insertAt] = updated;
+        emit dataChanged(index(insertAt), index(insertAt),
+                         {NameRole, IsFolderRole, ModifiedRole});
+      }
+
+      ++insertAt;
+      continue;
+    }
+
+    beginInsertRows({}, insertAt, insertAt);
+    m_entries.insert(insertAt, combined[i]);
+    endInsertRows();
+    ++insertAt;
+  }
 
   if (countChangedNow)
     emit countChanged();
@@ -228,6 +343,10 @@ bool DocumentListModel::enterFolder(const QString &path) {
   m_directory = absolute;
   // Any in-flight recursive search now targets the old tree.
   ++m_searchGeneration;
+
+  if (m_searchCancel)
+    m_searchCancel->store(true, std::memory_order_relaxed);
+
   setupWatcher();
   emit directoryChanged();
   refresh();
@@ -518,7 +637,8 @@ QString DocumentListModel::filePathAt(int row) const {
 }
 
 QVariantList DocumentListModel::searchEntriesInRoot(
-    const QString &rootDirectory, const QString &needle) {
+    const QString &rootDirectory, const QString &needle,
+    const std::atomic_bool *cancelled) {
   if (needle.isEmpty() || rootDirectory.isEmpty())
     return {};
 
@@ -532,6 +652,9 @@ QVariantList DocumentListModel::searchEntriesInRoot(
       QDirIterator::Subdirectories);
 
   while (iterator.hasNext()) {
+    if (cancelled && cancelled->load(std::memory_order_relaxed))
+      return {};
+
     iterator.next();
 
     const QFileInfo info = iterator.fileInfo();
@@ -608,17 +731,24 @@ void DocumentListModel::searchEntriesAsync(const QString &query) {
   const QString needle = query.trimmed();
   const quint64 generation = ++m_searchGeneration;
 
+  // Stop the previous scan instead of letting it run to completion.
+  if (m_searchCancel)
+    m_searchCancel->store(true, std::memory_order_relaxed);
+
   if (needle.isEmpty() || m_rootDirectory.isEmpty()) {
+    m_searchCancel.reset();
     emit searchCompleted(query, {});
     return;
   }
 
   const QString rootDirectory = m_rootDirectory;
+  auto cancel = std::make_shared<std::atomic_bool>(false);
+  m_searchCancel = cancel;
 
   auto *watcher = new QFutureWatcher<QVariantList>(this);
 
   connect(watcher, &QFutureWatcherBase::finished, this,
-          [this, watcher, generation, query]() {
+          [this, watcher, generation, query, cancel]() {
             const QVariantList results = watcher->result();
             watcher->deleteLater();
 
@@ -629,8 +759,8 @@ void DocumentListModel::searchEntriesAsync(const QString &query) {
             emit searchCompleted(query, results);
           });
 
-  watcher->setFuture(QtConcurrent::run([rootDirectory, needle]() {
-    return searchEntriesInRoot(rootDirectory, needle);
+  watcher->setFuture(QtConcurrent::run([rootDirectory, needle, cancel]() {
+    return searchEntriesInRoot(rootDirectory, needle, cancel.get());
   }));
 }
 } // namespace Templnote

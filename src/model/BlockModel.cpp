@@ -95,14 +95,14 @@ int BlockModel::rowCount(const QModelIndex &parent) const {
 bool BlockModel::canUndo() const { return !m_undoStack.isEmpty(); }
 bool BlockModel::canRedo() const { return !m_redoStack.isEmpty(); }
 
-void BlockModel::saveHistory(const QVector<Block> &before,
+void BlockModel::saveHistory(const QVector<PatchOp> &patch,
                              const QString &focusBeforeId,
                              const QString &focusAfterId) {
   HistoryEntry entry;
   entry.kind = HistoryEntry::Kind::StructuralEdit;
   entry.focusBeforeId = focusBeforeId;
   entry.focusAfterId = focusAfterId;
-  entry.patch = buildPatch(before, m_document.blocks());
+  entry.patch = patch;
 
   m_undoStack.append(entry);
   m_redoStack.clear();
@@ -286,8 +286,9 @@ QString BlockModel::appendBlock(int type, const QString &text) {
     return {};
 
   const int row = m_document.count();
-
-  const QVector<Block> before = m_document.snapshot();
+  const QString focusBeforeId =
+      m_document.count() > 0 ? m_document.blockAt(m_document.count() - 1)->id
+                             : QString();
 
   invalidateNumberIndices();
 
@@ -301,8 +302,11 @@ QString BlockModel::appendBlock(int type, const QString &text) {
 
   endInsertRows();
 
-  const QString focusBeforeId = before.isEmpty() ? QString() : before.last().id;
-  saveHistory(before, focusBeforeId, id);
+  PatchOp op;
+  op.type = PatchOp::Type::Insert;
+  op.to = row;
+  op.block = block;
+  saveHistory({op}, focusBeforeId, id);
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -318,7 +322,11 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
     return false;
   }
 
-  const QVector<Block> before = m_document.snapshot();
+  QString focusBeforeId;
+
+  if (m_document.count() > 0)
+    focusBeforeId = m_document.blockAt(qBound(0, row - 1,
+                                              m_document.count() - 1))->id;
 
   invalidateNumberIndices();
 
@@ -334,20 +342,17 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
   if (!success)
     return false;
 
-  QString focusBeforeId;
-
-  if (!before.isEmpty())
-    focusBeforeId = before[qBound(0, row - 1, before.size() - 1)].id;
-
-  saveHistory(before, focusBeforeId, id);
+  PatchOp op;
+  op.type = PatchOp::Type::Insert;
+  op.to = row;
+  op.block = block;
+  saveHistory({op}, focusBeforeId, id);
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
-  if (row + 1 < m_document.count()) {
-    emit dataChanged(index(row + 1), index(m_document.count() - 1),
-                     {NumberIndexRole});
-  }
+  if (row + 1 < m_document.count())
+    emitNumberIndexChanged(row + 1);
 
   markModified();
   emit countChanged();
@@ -361,7 +366,7 @@ bool BlockModel::removeBlock(const QString &id) {
   if (row < 0)
     return false;
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block removed = *m_document.blockAt(row);
 
   invalidateNumberIndices();
 
@@ -381,15 +386,17 @@ bool BlockModel::removeBlock(const QString &id) {
     focusAfterId = m_document.blockAt(focusRow)->id;
   }
 
-  saveHistory(before, id, focusAfterId);
+  PatchOp op;
+  op.type = PatchOp::Type::Remove;
+  op.from = row;
+  op.block = removed;
+  saveHistory({op}, id, focusAfterId);
 
   if (success && row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
-  if (success && row < m_document.count()) {
-    emit dataChanged(index(row), index(m_document.count() - 1),
-                     {NumberIndexRole});
-  }
+  if (success)
+    emitNumberIndexChanged(row);
 
   markModified();
   emit countChanged();
@@ -428,7 +435,7 @@ QString BlockModel::splitBlock(const QString &id, int position,
   if (row < 0)
     return {};
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block beforeBlock = *m_document.blockAt(row);
 
   if (!editorText.isNull() &&
       !m_document.updateBlockText(id, editorText)) {
@@ -452,15 +459,26 @@ QString BlockModel::splitBlock(const QString &id, int position,
   if (newId.isEmpty())
     return {};
 
-  saveHistory(before, id, newId);
+  QVector<PatchOp> patch;
+
+  PatchOp update;
+  update.type = PatchOp::Type::Update;
+  update.beforeBlock = beforeBlock;
+  update.block = *m_document.blockAt(row);
+  patch.append(update);
+
+  PatchOp insert;
+  insert.type = PatchOp::Type::Insert;
+  insert.to = row + 1;
+  insert.block = *m_document.blockAt(row + 1);
+  patch.append(insert);
+
+  saveHistory(patch, id, newId);
 
   emit dataChanged(index(row), index(row),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
 
-  if (row + 2 < m_document.count()) {
-    emit dataChanged(index(row + 2), index(m_document.count() - 1),
-                     {NumberIndexRole});
-  }
+  emitNumberIndexChanged(row + 2);
 
   markModified();
   return newId;
@@ -473,12 +491,14 @@ bool BlockModel::mergeWithPrevious(const QString &id,
   if (row <= 0)
     return false;
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block beforePrevious = *m_document.blockAt(row - 1);
 
   if (!editorText.isNull() &&
       !m_document.updateBlockText(id, editorText)) {
     return false;
   }
+
+  const Block removed = *m_document.blockAt(row);
 
   invalidateNumberIndices();
 
@@ -492,15 +512,27 @@ bool BlockModel::mergeWithPrevious(const QString &id,
     return false;
 
   const QString focusAfterId = m_document.blockAt(row - 1)->id;
-  saveHistory(before, id, focusAfterId);
+
+  QVector<PatchOp> patch;
+
+  PatchOp update;
+  update.type = PatchOp::Type::Update;
+  update.beforeBlock = beforePrevious;
+  update.block = *m_document.blockAt(row - 1);
+  patch.append(update);
+
+  PatchOp remove;
+  remove.type = PatchOp::Type::Remove;
+  remove.from = row;
+  remove.block = removed;
+  patch.append(remove);
+
+  saveHistory(patch, id, focusAfterId);
 
   emit dataChanged(index(row - 1), index(row - 1),
                    {ContentRole, Qt::DisplayRole, NextBlockTypeRole});
 
-  if (row - 1 < m_document.count()) {
-    emit dataChanged(index(row - 1), index(m_document.count() - 1),
-                     {NumberIndexRole});
-  }
+  emitNumberIndexChanged(row - 1);
 
   markModified();
   emit countChanged();
@@ -518,7 +550,7 @@ bool BlockModel::changeBlockType(const QString &id, int type,
   if (row < 0)
     return false;
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block beforeBlock = *m_document.blockAt(row);
 
   invalidateNumberIndices();
 
@@ -527,9 +559,13 @@ bool BlockModel::changeBlockType(const QString &id, int type,
     return false;
   }
 
-  saveHistory(before, id, id);
-  emit dataChanged(index(row), index(m_document.count() - 1),
-                   {BlockTypeRole, HeadingLevelRole, NumberIndexRole});
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row), {BlockTypeRole, HeadingLevelRole});
+  emitNumberIndexChanged(row);
 
   if (row > 0)
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
@@ -560,12 +596,16 @@ bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
   if ((currentAlign.isEmpty() && targetAlign == QLatin1String("left")) || currentAlign == targetAlign)
     return true;
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block beforeBlock = *block;
 
   if (!m_document.updateBlockAlignment(id, targetAlign))
     return false;
 
-  saveHistory(before, id, id);
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
   emit dataChanged(index(row), index(row), {MetadataRole, AlignmentRole});
 
   markModified();
@@ -586,12 +626,16 @@ bool BlockModel::setBlockChecked(const QString &id, bool checked) {
   if (currentChecked == checked)
     return true;
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block beforeBlock = *block;
 
   if (!m_document.updateBlockChecked(id, checked))
     return false;
 
-  saveHistory(before, id, id);
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
   emit dataChanged(index(row), index(row), {MetadataRole, CheckedRole});
 
   markModified();
@@ -608,7 +652,7 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
   if (source == destination)
     return true;
 
-  const QVector<Block> before = m_document.snapshot();
+  const Block moved = *m_document.blockAt(source);
 
   invalidateNumberIndices();
 
@@ -622,7 +666,12 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
   endMoveRows();
 
   if (success) {
-    saveHistory(before, id, id);
+    PatchOp op;
+    op.type = PatchOp::Type::Move;
+    op.from = source;
+    op.to = destination;
+    op.block = moved;
+    saveHistory({op}, id, id);
 
     const int first = qMin(source, destination);
     const int last = qMin(m_document.count() - 1, qMax(source, destination));
@@ -631,8 +680,7 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
       emit dataChanged(index(first), index(last), {NextBlockTypeRole});
 
     if (first < m_document.count())
-      emit dataChanged(index(first), index(m_document.count() - 1),
-                       {NumberIndexRole});
+      emitNumberIndexChanged(first);
 
     markModified();
   }
@@ -693,6 +741,15 @@ QString BlockModel::lastError() const { return m_lastError; }
 void BlockModel::markModified() {
   setModified(true);
   scheduleAutosave();
+}
+
+void BlockModel::emitNumberIndexChanged(int firstRow) {
+  for (int row = qMax(0, firstRow); row < m_document.count(); ++row) {
+    const Block *block = m_document.blockAt(row);
+
+    if (block && block->type == BlockType::NumberedList)
+      emit dataChanged(index(row), index(row), {NumberIndexRole});
+  }
 }
 
 void BlockModel::setModified(bool modified) {
@@ -1057,130 +1114,6 @@ void BlockModel::applyHistoryEntry(const HistoryEntry &entry, bool undo) {
   applyPatch(entry.patch, undo);
 }
 
-QVector<BlockModel::PatchOp>
-BlockModel::buildPatch(const QVector<Block> &before,
-                       const QVector<Block> &after) {
-  QVector<PatchOp> ops;
-  QVector<Block> working = before;
-
-  // Remove blocks that no longer exist in the target document.
-  QSet<QString> targetIds;
-  targetIds.reserve(after.size());
-
-  for (const Block &block : after)
-    targetIds.insert(block.id);
-
-  int row = 0;
-
-  while (row < working.size()) {
-    if (!targetIds.contains(working[row].id)) {
-      PatchOp op;
-      op.type = PatchOp::Type::Remove;
-      op.from = row;
-      op.block = working[row];
-      ops.append(op);
-      working.removeAt(row);
-    } else {
-      ++row;
-    }
-  }
-
-  // Align block order: move existing blocks and insert new ones. A position
-  // map avoids rescanning the vector for every row.
-  QHash<QString, int> position;
-  position.reserve(working.size());
-
-  for (int i = 0; i < working.size(); ++i)
-    position.insert(working[i].id, i);
-
-  row = 0;
-
-  while (row < working.size()) {
-    if (row >= after.size()) {
-      while (working.size() > row) {
-        PatchOp op;
-        op.type = PatchOp::Type::Remove;
-        op.from = row;
-        op.block = working[row];
-        ops.append(op);
-        working.removeAt(row);
-      }
-      break;
-    }
-
-    if (working[row].id == after[row].id) {
-      ++row;
-      continue;
-    }
-
-    const int existing = position.value(after[row].id, -1);
-
-    if (existing >= 0) {
-      PatchOp op;
-      op.type = PatchOp::Type::Move;
-      op.from = existing;
-      op.to = row;
-      op.block = working[existing];
-      ops.append(op);
-
-      const Block moved = working.takeAt(existing);
-      working.insert(row, moved);
-
-      const int first = qMin(existing, row);
-      const int last = qMax(existing, row);
-
-      for (int i = first; i <= last; ++i)
-        position.insert(working[i].id, i);
-    } else {
-      PatchOp op;
-      op.type = PatchOp::Type::Insert;
-      op.to = row;
-      op.block = after[row];
-      ops.append(op);
-      working.insert(row, after[row]);
-
-      for (int i = row; i < working.size(); ++i)
-        position.insert(working[i].id, i);
-    }
-
-    ++row;
-  }
-
-  // Append blocks that only exist in the target.
-  while (working.size() < after.size()) {
-    const int appendRow = working.size();
-
-    PatchOp op;
-    op.type = PatchOp::Type::Insert;
-    op.to = appendRow;
-    op.block = after[appendRow];
-    ops.append(op);
-    working.append(after[appendRow]);
-    position.insert(after[appendRow].id, appendRow);
-  }
-
-  // Update text and block properties for blocks present in both documents.
-  for (int r = 0; r < after.size() && r < working.size(); ++r) {
-    const Block &current = working[r];
-    const Block &wanted = after[r];
-
-    if (current.text == wanted.text && current.type == wanted.type &&
-        current.headingLevel == wanted.headingLevel &&
-        current.parentId == wanted.parentId &&
-        current.metadata == wanted.metadata) {
-      continue;
-    }
-
-    PatchOp op;
-    op.type = PatchOp::Type::Update;
-    op.block = wanted;
-    op.beforeBlock = current;
-    ops.append(op);
-  }
-
-  return ops;
-}
-
 void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
   bool structureChanged = false;
 
@@ -1195,11 +1128,26 @@ void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
   }
 
   if (structureChanged) {
-    if (m_document.count() > 0) {
-      // Neighbour-dependent roles change for every affected row.
-      emit dataChanged(index(0), index(m_document.count() - 1),
-                       {NextBlockTypeRole, NumberIndexRole});
+    // Only rows next to a structural operation can have a different
+    // nextBlockType; notifying every row made all delegates re-evaluate.
+    QSet<int> affectedRows;
+
+    for (const PatchOp &op : patch) {
+      for (int offset = -2; offset <= 2; ++offset) {
+        const int fromRow = op.from + offset;
+        const int toRow = op.to + offset;
+
+        if (fromRow >= 0 && fromRow < m_document.count())
+          affectedRows.insert(fromRow);
+        if (toRow >= 0 && toRow < m_document.count())
+          affectedRows.insert(toRow);
+      }
     }
+
+    for (int row : std::as_const(affectedRows))
+      emit dataChanged(index(row), index(row), {NextBlockTypeRole});
+
+    emitNumberIndexChanged(0);
 
     emit countChanged();
   }
@@ -1289,10 +1237,7 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
     // Neighbour-dependent roles also change when a block type changes: the
     // previous block's "next type" and the numbering of following rows.
     if (typeChanged) {
-      if (row + 1 < m_document.count()) {
-        emit dataChanged(index(row + 1), index(m_document.count() - 1),
-                         {NumberIndexRole});
-      }
+      emitNumberIndexChanged(row + 1);
 
       if (row > 0)
         emit dataChanged(index(row - 1), index(row - 1),

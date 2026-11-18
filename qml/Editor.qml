@@ -152,7 +152,7 @@ Item {
       root.selectionToolbarAbove = flippedAbove
       root.selectionToolbarAnchorY = pos.y
       selectionToolbar.y = toolbarY
-      selectionToolbar.visible = true
+      selectionToolbar.showToolbar = true
     }
   }
 
@@ -545,6 +545,35 @@ Item {
 
   // Document content
 
+  // Clicks in the margin left of the document are still visually part of the
+  // block gutter. Focus the block at that height so clicking beside a block
+  // does not leave the caret in the previous one.
+  MouseArea {
+    id: leftMarginClickArea
+
+    width: documentView.x
+    anchors {
+      top: documentView.top
+      bottom: documentView.bottom
+      left: parent.left
+    }
+
+    acceptedButtons: Qt.LeftButton
+
+    onClicked: function(mouse) {
+      const point = documentView.mapFromItem(leftMarginClickArea, mouse.x,
+                                             mouse.y)
+      const contentY = point.y + documentView.contentY
+      let row = documentView.indexAt(documentView.width / 2, contentY)
+
+      if (row < 0 && root.model)
+        row = contentY < 0 ? 0 : root.model.count - 1
+
+      if (row >= 0 && root.model && row < root.model.count)
+        root.focusDelegateAt(row, 0)
+    }
+  }
+
   ListView {
     id: documentView
 
@@ -776,13 +805,27 @@ Item {
         y: delegateRoot.isBeingDragged ? root.draggingVisualY : delegateRoot.visualDisplacement
         Behavior on y {
           enabled: !delegateRoot.isBeingDragged
-          NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+          NumberAnimation {
+            duration: 220
+            easing.type: Easing.OutBack
+            easing.overshoot: 1.15
+          }
         }
       }
 
-      opacity: isBeingDragged ? 0.85 : 1.0
+      // Gentle scale-lift and opacity when grabbing to reorder
+      scale: isBeingDragged ? 1.02 : 1.0
+      opacity: isBeingDragged ? 0.90 : 1.0
+
+      Behavior on scale {
+        NumberAnimation {
+          duration: 160
+          easing.type: Easing.OutCubic
+        }
+      }
+
       Behavior on opacity {
-        NumberAnimation { duration: 120 }
+        NumberAnimation { duration: 140 }
       }
 
       function focusBlock(position) {
@@ -949,7 +992,7 @@ Item {
             selectionTimer.stop()
             root.pendingSelection = null
             if (root.activeSelectionDelegate === delegateRoot && !selectionToolbar.hasActivePopup) {
-              selectionToolbar.visible = false
+              selectionToolbar.showToolbar = false
               root.activeSelectionDelegate = null
             }
             return
@@ -957,7 +1000,7 @@ Item {
 
           // If toolbar is currently visible, hide it while actively selecting/adjusting
           if (root.activeSelectionDelegate !== delegateRoot) {
-            selectionToolbar.visible = false
+            selectionToolbar.showToolbar = false
           }
 
           root.pendingSelection = {
@@ -968,7 +1011,7 @@ Item {
             cursorHeight: cursorHeight
           }
 
-          if (selectionToolbar.visible && root.activeSelectionDelegate === delegateRoot) {
+          if (selectionToolbar.showToolbar && root.activeSelectionDelegate === delegateRoot) {
             selectionTimer.stop()
             selectionTimer.triggered()
           } else {

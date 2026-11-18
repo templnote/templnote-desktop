@@ -66,6 +66,8 @@ QHash<int, QByteArray> SearchResultsModel::roleNames() const {
 
 int SearchResultsModel::count() const { return m_results.size(); }
 
+bool SearchResultsModel::truncated() const { return m_truncated; }
+
 SearchIndex *SearchResultsModel::index() const { return m_index; }
 
 void SearchResultsModel::setIndex(SearchIndex *index) {
@@ -78,19 +80,34 @@ void SearchResultsModel::setIndex(SearchIndex *index) {
   m_results.clear();
   endResetModel();
 
+  const bool hadTruncated = m_truncated;
+  m_truncated = false;
+
   emit countChanged();
+
+  if (hadTruncated)
+    emit truncatedChanged();
+
   emit indexChanged();
 }
 
 void SearchResultsModel::search(const QString &query) {
+  bool truncated = false;
   const QVector<SearchIndex::Result> results =
-      m_index ? m_index->search(query) : QVector<SearchIndex::Result>();
+      m_index ? m_index->search(query, &truncated)
+              : QVector<SearchIndex::Result>();
+
+  const bool truncationChanged = m_truncated != truncated;
 
   beginResetModel();
   m_results = results;
+  m_truncated = truncated;
   endResetModel();
 
   emit countChanged();
+
+  if (truncationChanged)
+    emit truncatedChanged();
 }
 
 QVariantMap SearchResultsModel::resultAt(int row) const {

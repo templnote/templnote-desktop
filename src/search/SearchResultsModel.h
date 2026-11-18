@@ -16,6 +16,7 @@ namespace Templnote {
 class SearchResultsModel : public QAbstractListModel {
   Q_OBJECT
   Q_PROPERTY(int count READ count NOTIFY countChanged)
+  Q_PROPERTY(bool truncated READ truncated NOTIFY truncatedChanged)
   Q_PROPERTY(SearchIndex *index READ index WRITE setIndex NOTIFY indexChanged)
 
 public:
@@ -43,6 +44,7 @@ public:
   QHash<int, QByteArray> roleNames() const override;
 
   int count() const;
+  bool truncated() const;
 
   SearchIndex *index() const;
   void setIndex(SearchIndex *index);
@@ -59,6 +61,7 @@ public:
 
 signals:
   void countChanged();
+  void truncatedChanged();
   void indexChanged();
 
 private:
@@ -66,5 +69,6 @@ private:
 
   SearchIndex *m_index = nullptr;
   QVector<SearchIndex::Result> m_results;
+  bool m_truncated = false;
 };
 } // namespace Templnote

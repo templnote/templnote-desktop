@@ -158,6 +158,9 @@ signals:
 
 private:
   void markModified();
+  // Only numbered blocks have a meaningful numberIndex, so avoid notifying
+  // every row after them when the numbering changes.
+  void emitNumberIndexChanged(int firstRow);
   void setModified(bool modified);
   void scheduleAutosave();
   void autosave();
@@ -188,7 +191,7 @@ private:
     QVector<PatchOp> patch;
   };
 
-  void saveHistory(const QVector<Block> &before,
+  void saveHistory(const QVector<PatchOp> &patch,
                    const QString &focusBeforeId = {},
                    const QString &focusAfterId = {});
   void saveTextHistory(const QString &id, const QString &before,
@@ -197,11 +200,6 @@ private:
   void trimHistory();
   void applyHistoryEntry(const HistoryEntry &entry, bool undo);
 
-  // Derives the compact list of block operations that turns `before` into
-  // `after`, so structural history does not need to keep two full document
-  // snapshots per edit.
-  static QVector<PatchOp> buildPatch(const QVector<Block> &before,
-                                     const QVector<Block> &after);
   void applyPatch(const QVector<PatchOp> &patch, bool undo);
   bool applyPatchOp(const PatchOp &op, bool inverse);
 

@@ -53,7 +53,13 @@ bool Document::insertBlock(int index, const Block &block) {
     return false;
 
   m_blocks.insert(index, block);
-  rebuildIdIndex();
+
+  // Only rows after the insertion point shift; update them instead of
+  // rebuilding the whole id map.
+  for (int i = m_blocks.size() - 1; i > index; --i)
+    m_idIndex[m_blocks[i].id] = i;
+
+  m_idIndex.insert(block.id, index);
   return true;
 }
 
@@ -68,7 +74,10 @@ bool Document::removeBlock(const QString &id) {
     return false;
 
   m_blocks.removeAt(index);
-  rebuildIdIndex();
+  m_idIndex.remove(id);
+
+  for (int i = index; i < m_blocks.size(); ++i)
+    m_idIndex[m_blocks[i].id] = i;
 
   return true;
 }
@@ -91,16 +100,21 @@ bool Document::updateBlockType(const QString &id, BlockType type,
   if (index < 0)
     return false;
 
-  m_blocks[index].type = type;
-  // keeps headingLevel consistent with the block type
+  // Validate before mutating so a rejected heading level leaves the block
+  // untouched.
   if (type == BlockType::Heading) {
     if (headingLevel == 0)
       headingLevel = 1;
 
     if (headingLevel < 1 || headingLevel > 6)
       return false;
+  }
+
+  m_blocks[index].type = type;
+  // keeps headingLevel consistent with the block type
+  if (type == BlockType::Heading)
     m_blocks[index].headingLevel = headingLevel;
-  } else
+  else
     m_blocks[index].headingLevel = 0;
 
   return true;
@@ -142,10 +156,13 @@ bool Document::setBlock(int index, const Block &block) {
     return false;
 
   const bool idChanged = m_blocks[index].id != block.id;
+  const QString previousId = m_blocks[index].id;
   m_blocks[index] = block;
 
-  if (idChanged)
-    rebuildIdIndex();
+  if (idChanged) {
+    m_idIndex.remove(previousId);
+    m_idIndex.insert(block.id, index);
+  }
 
   return true;
 }
@@ -162,7 +179,12 @@ bool Document::moveBlock(const QString &id, int destination) {
 
   Block block = m_blocks.takeAt(source);
   m_blocks.insert(destination, block);
-  rebuildIdIndex();
+
+  const int first = qMin(source, destination);
+  const int last = qMax(source, destination);
+
+  for (int i = first; i <= last; ++i)
+    m_idIndex[m_blocks[i].id] = i;
 
   return true;
 }
@@ -193,7 +215,10 @@ QString Document::splitBlock(const QString &id, int position) {
   const QString newId = newBlock.id;
 
   m_blocks.insert(index + 1, newBlock);
-  rebuildIdIndex();
+
+  for (int i = index + 1; i < m_blocks.size(); ++i)
+    m_idIndex[m_blocks[i].id] = i;
+
   return newId;
 }
 
@@ -209,7 +234,10 @@ bool Document::mergeWithPrevious(const QString &id) {
   previous.text += current.text;
 
   m_blocks.removeAt(index);
-  rebuildIdIndex();
+  m_idIndex.remove(current.id);
+
+  for (int i = index - 1; i < m_blocks.size(); ++i)
+    m_idIndex[m_blocks[i].id] = i;
 
   return true;
 }

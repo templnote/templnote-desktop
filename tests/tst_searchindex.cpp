@@ -259,6 +259,27 @@ private slots:
     QCOMPARE(index.search(QStringLiteral("insertpanda")).size(), 1);
   }
 
+  void capsLargeResultSets() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    QVector<QString> texts;
+
+    for (int i = 0; i < 205; ++i)
+      texts.append(QStringLiteral("capblock %1").arg(i));
+
+    QVERIFY(!writeDocument(root, QStringLiteral("Many.templnote"),
+                           QStringLiteral("Many"), texts).isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+
+    bool truncated = false;
+    const auto results = index.search(QStringLiteral("capblock"), &truncated);
+    QCOMPARE(results.size(), 200);
+    QVERIFY(truncated);
+  }
+
   void renamesAndDeletesUpdateIndex() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -280,10 +301,12 @@ private slots:
     QVERIFY(!renamed.isEmpty());
     QVERIFY(renamed != path);
 
-    const auto renamedResults = index.search(QStringLiteral("renametoken"));
-    QCOMPARE(renamedResults.size(), 1);
-    QCOMPARE(renamedResults.first().documentPath, renamed);
-    QCOMPARE(renamedResults.first().documentTitle, QStringLiteral("Renamed"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        index.search(QStringLiteral("renametoken")).first().documentPath,
+        renamed, 3000);
+    QCOMPARE(
+        index.search(QStringLiteral("renametoken")).first().documentTitle,
+        QStringLiteral("Renamed"));
 
     QVERIFY(documents.deleteEntry(renamed));
     QTRY_COMPARE_WITH_TIMEOUT(

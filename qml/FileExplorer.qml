@@ -22,6 +22,11 @@ Rectangle {
   property int searchIndex: -1
   property int selectedIndex: -1
 
+  // State captured across a watcher-triggered model reset.
+  property bool preserveScrollOnReset: false
+  property real savedContentY: 0
+  property string savedSelectedPath: ""
+
   readonly property bool searchHasResults: searchResults.length > 0
 
   // Deletion confirmation requested signal to display centered floating dialog at window level.
@@ -155,8 +160,85 @@ Rectangle {
       return
     }
 
-    if (root.documentModel && root.documentModel.loadDocument(path)) {
+    if (root.openDocument(path)) {
       root.documentList.currentFilePath = path
+    }
+  }
+
+  // Switching documents must not silently discard edits: save first and
+  // abort the switch if the save fails.
+  function openDocument(path) {
+    if (!root.documentModel || !path || path.length === 0)
+      return false
+
+    if (root.documentModel.isModified &&
+        !root.documentModel.saveCurrentDocument())
+      return false
+
+    return root.documentModel.loadDocument(path)
+  }
+
+  Connections {
+    target: root.documentList
+
+    function onRefreshedExternally() {
+      root.preserveScrollOnReset = true
+    }
+
+    function onModelAboutToBeReset() {
+      if (root.documentList) {
+        root.savedContentY = documentView.contentY
+        root.savedSelectedPath =
+            (root.selectedIndex >= 0 && root.selectedIndex < root.documentList.count)
+            ? root.documentList.filePathAt(root.selectedIndex) : ""
+      }
+    }
+
+    function onModelReset() {
+      if (!root.documentList)
+        return
+
+      const savedY = root.savedContentY
+      const shouldRestoreScroll = root.preserveScrollOnReset
+      root.preserveScrollOnReset = false
+
+      if (root.documentList.count === 0) {
+        root.selectedIndex = -1
+      } else {
+        // A refresh can remove or reorder rows; follow the previously selected
+        // entry or at least clamp the selection into the new range.
+        let selected = -1
+        const preferredPaths = [root.savedSelectedPath,
+                                root.documentModel ? root.documentModel.currentFilePath : ""]
+
+        for (let p = 0; p < preferredPaths.length && selected < 0; ++p) {
+          const path = preferredPaths[p]
+          if (path.length === 0)
+            continue
+
+          for (let i = 0; i < root.documentList.count; ++i) {
+            if (root.documentList.filePathAt(i) === path) {
+              selected = i
+              break
+            }
+          }
+        }
+
+        if (selected < 0)
+          selected = root.selectedIndex
+
+        if (selected >= root.documentList.count)
+          selected = root.documentList.count - 1
+
+        root.selectedIndex = selected
+      }
+
+      if (shouldRestoreScroll) {
+        Qt.callLater(function() {
+          const maxY = Math.max(0, documentView.contentHeight - documentView.height)
+          documentView.contentY = Math.max(0, Math.min(savedY, maxY))
+        })
+      }
     }
   }
 
@@ -210,7 +292,7 @@ Rectangle {
         root.documentList.navigateTo(parentDirectory)
     }
 
-    if (root.documentModel.loadDocument(result.filePath))
+    if (root.openDocument(result.filePath))
       root.documentList.currentFilePath = result.filePath
   }
 
@@ -833,8 +915,7 @@ Rectangle {
                 return
               }
 
-              if (entry.explorerRoot.documentModel &&
-                  entry.explorerRoot.documentModel.loadDocument(entry.filePath)) {
+              if (entry.explorerRoot.openDocument(entry.filePath)) {
                 entry.explorerRoot.documentList.currentFilePath = entry.filePath
               }
             }

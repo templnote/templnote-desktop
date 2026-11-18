@@ -34,19 +34,50 @@ Rectangle {
   signal fontSizeChanged(int size)
   signal alignmentSelected(string align)
 
+  property bool showToolbar: false
+
   height: 40
+  width: implicitWidth
   implicitWidth: mainRow.implicitWidth + 16
   radius: 8
   color: Theme.surface
   border.color: Theme.border
   border.width: 1
-  visible: false
+  visible: opacity > 0.0
+  opacity: showToolbar ? 1.0 : 0.0
+  scale: showToolbar ? 1.0 : 0.94
   z: 25
 
+  // Kinetic slide tracking across selections
   Behavior on x {
     NumberAnimation {
-      duration: 300
-      easing.type: Easing.InOutCubic
+      duration: 220
+      easing.type: Easing.OutBack
+      easing.overshoot: 1.15
+    }
+  }
+
+  Behavior on y {
+    NumberAnimation {
+      duration: 220
+      easing.type: Easing.OutBack
+      easing.overshoot: 1.15
+    }
+  }
+
+  // Micro-spring scale and fade pop-in
+  Behavior on opacity {
+    NumberAnimation {
+      duration: 160
+      easing.type: Easing.OutQuad
+    }
+  }
+
+  Behavior on scale {
+    NumberAnimation {
+      duration: 200
+      easing.type: Easing.OutBack
+      easing.overshoot: 1.25
     }
   }
 
@@ -72,6 +103,7 @@ Rectangle {
 
   Row {
     id: mainRow
+    z: 2
     anchors.verticalCenter: parent.verticalCenter
     anchors.left: parent.left
     anchors.leftMargin: 8
