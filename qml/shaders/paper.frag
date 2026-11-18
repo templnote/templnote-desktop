@@ -3,16 +3,23 @@
 layout(location = 0) in vec2 qt_TexCoord0;
 layout(location = 0) out vec4 fragColor;
 
+layout(binding = 1) uniform sampler2D wallpaperSource;
+
 layout(std140, binding = 0) uniform buf {
     mat4 qt_Matrix;
     float qt_Opacity;
     vec4 paperColor;
     vec4 grainColor;
+    vec4 gradientColor1;
+    vec4 gradientColor2;
     vec2 resolution;
     float grainIntensity;
     float vignetteIntensity;
     float shadowIntensity;
     float cornerRadius;
+    int bgMode; // 0 = Solid Theme Color, 1 = Gradient, 2 = Wallpaper Image
+    float wallpaperDim; // 0.0 to 1.0 dimming / blending toward paperColor
+    float gradientAngle; // angle in degrees
 } ubuf;
 
 // High-frequency pseudo-random hash
@@ -50,6 +57,21 @@ float roundedBoxSDF(vec2 centerPos, vec2 halfSize, float r) {
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
+// Soft-Light blending function for realistic paper ink/fiber absorption
+float blendSoftLightComponent(float base, float blend) {
+    return (blend < 0.5) 
+        ? (2.0 * base * blend + base * base * (1.0 - 2.0 * blend)) 
+        : (sqrt(base) * (2.0 * blend - 1.0) + 2.0 * base * (1.0 - blend));
+}
+
+vec3 blendSoftLight(vec3 base, vec3 blend) {
+    return vec3(
+        blendSoftLightComponent(base.r, blend.r),
+        blendSoftLightComponent(base.g, blend.g),
+        blendSoftLightComponent(base.b, blend.b)
+    );
+}
+
 void main() {
     vec2 pixelPos = qt_TexCoord0 * ubuf.resolution;
     vec2 halfSize = ubuf.resolution * 0.5;
@@ -59,29 +81,43 @@ void main() {
     float alpha = 1.0;
     if (ubuf.cornerRadius > 0.5) {
         float dist = roundedBoxSDF(centerPos, halfSize, ubuf.cornerRadius);
-        // Antialias over 1.5 pixels
         alpha = clamp(0.5 - dist, 0.0, 1.0);
         if (alpha <= 0.0) {
             discard;
         }
     }
 
-    // 1. Procedural Grain & Pulp fibers
-    float fiber = paperGrain(pixelPos * 0.85);
-    float fiberOffset = (fiber - 0.5) * ubuf.grainIntensity;
+    // 1. Determine base substrate color (Solid, Gradient, or Wallpaper Texture)
+    vec3 baseSubstrate = ubuf.paperColor.rgb;
 
-    // 2. Subtle organic vignette (aging/depth)
+    if (ubuf.bgMode == 1) {
+        // Linear gradient at specified angle
+        float rad = radians(ubuf.gradientAngle);
+        vec2 dir = vec2(cos(rad), sin(rad));
+        float t = clamp(dot(qt_TexCoord0 - vec2(0.5), dir) + 0.5, 0.0, 1.0);
+        vec3 grad = mix(ubuf.gradientColor1.rgb, ubuf.gradientColor2.rgb, t);
+        baseSubstrate = mix(grad, ubuf.paperColor.rgb, ubuf.wallpaperDim);
+    } else if (ubuf.bgMode == 2) {
+        // Custom wallpaper texture
+        vec4 img = texture(wallpaperSource, qt_TexCoord0);
+        // Dim / blend toward paper color to ensure text legibility
+        baseSubstrate = mix(img.rgb, ubuf.paperColor.rgb, clamp(ubuf.wallpaperDim, 0.0, 0.95));
+    }
+
+    // 2. Procedural Grain & Pulp fibers
+    float fiber = paperGrain(pixelPos * 0.85);
+    // Normalized fiber tone centered around 0.5 for Soft-Light blending
+    float fiberBlendVal = clamp(0.5 + (fiber - 0.5) * (ubuf.grainIntensity * 6.0), 0.0, 1.0);
+
+    // Apply Soft-Light substrate blend
+    vec3 col = blendSoftLight(baseSubstrate, vec3(fiberBlendVal));
+
+    // 3. Subtle organic vignette (aging/depth around paper boundaries)
     vec2 uv = qt_TexCoord0;
     vec2 edgeDist = uv * (1.0 - uv);
     float vignette = edgeDist.x * edgeDist.y * 16.0;
     vignette = clamp(pow(vignette, 0.18), 0.0, 1.0);
     float edgeShadow = mix(1.0 - ubuf.vignetteIntensity, 1.0, vignette);
-
-    // 3. Combine base paper tint with fibers and edge depth
-    vec3 base = ubuf.paperColor.rgb;
-    vec3 grain = ubuf.grainColor.rgb;
-
-    vec3 col = mix(base, grain, fiberOffset * 2.0);
     col *= edgeShadow;
 
     fragColor = vec4(col, ubuf.paperColor.a * alpha) * ubuf.qt_Opacity;

@@ -12,6 +12,11 @@ Item {
   property real elevation: 1.0
   property bool showShadow: true
 
+  // Mode: 0 = Solid, 1 = Gradient, 2 = Wallpaper
+  readonly property int bgMode: Preferences.paperBgMode === "Wallpaper" && Preferences.paperWallpaperPath.length > 0
+                                  ? 2
+                                  : (Preferences.paperBgMode === "Gradient" ? 1 : 0)
+
   // Ambient Drop Shadow for paper elevation off the desk
   Rectangle {
     visible: root.showShadow
@@ -40,6 +45,26 @@ Item {
     id: backing
     anchors.fill: parent
 
+    // Wallpaper source image (cropped and scaled smoothly)
+    Image {
+      id: wallpaperImg
+      anchors.fill: parent
+      visible: false
+      source: Preferences.paperWallpaperPath
+      fillMode: Image.PreserveAspectCrop
+      asynchronous: true
+      cache: true
+      mipmap: true
+    }
+
+    ShaderEffectSource {
+      id: wallpaperSourceItem
+      sourceItem: wallpaperImg
+      hideSource: true
+      visible: false
+      live: true
+    }
+
     // GPU-accelerated paper fiber shader with built-in sub-pixel SDF rounded corners
     ShaderEffect {
       id: paperShader
@@ -47,11 +72,20 @@ Item {
 
       property color paperColor: root.baseColor
       property color grainColor: root.grainColor
+      property color gradientColor1: Preferences.paperGradientColor1
+      property color gradientColor2: Preferences.paperGradientColor2
       property vector2d resolution: Qt.vector2d(Math.max(1, width), Math.max(1, height))
+      property vector2d mousePos: Qt.vector2d(root.mouseX, root.mouseY)
       property real grainIntensity: root.grainIntensity
       property real vignetteIntensity: root.vignetteIntensity
       property real shadowIntensity: 0.05
       property real cornerRadius: root.radius
+      property int bgMode: root.bgMode
+      property real wallpaperDim: Preferences.paperWallpaperDim
+      property real gradientAngle: Preferences.paperGradientAngle
+
+      // Texture sampler for custom wallpaper
+      property var wallpaperSource: wallpaperSourceItem
 
       fragmentShader: "shaders/paper.frag.qsb"
     }
@@ -67,3 +101,4 @@ Item {
     }
   }
 }
+
