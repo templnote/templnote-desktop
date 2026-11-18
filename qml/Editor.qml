@@ -640,6 +640,7 @@ Item {
       required property int numberIndex
       required property string alignment
       required property bool checked
+      required property string calloutType
       required property int index
 
       readonly property real bottomGap: BlockSpacing.bottomGap(
@@ -844,8 +845,16 @@ Item {
         if (!command)
           return
         root.model.updateBlockText(delegateRoot.blockId, "")
-        if (root.model.changeBlockType(delegateRoot.blockId, command.type, command.level))
-          root.focusDelegateAt(delegateRoot.index, 0)
+        if (root.model.changeBlockType(delegateRoot.blockId, command.type, command.level)) {
+          if (command.type === 7 /* Divider */) {
+            // Insert a new paragraph below the divider so typing can immediately continue
+            const row = delegateRoot.index
+            root.model.insertBlock(row + 1, 0, "")
+            root.focusDelegateAt(row + 1, 0)
+          } else {
+            root.focusDelegateAt(delegateRoot.index, 0)
+          }
+        }
       }
 
       function closeCommandMenu() {
@@ -871,6 +880,7 @@ Item {
         numberIndex: delegateRoot.numberIndex
         alignment: delegateRoot.alignment
         isChecked: delegateRoot.checked
+        calloutType: delegateRoot.calloutType || "note"
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive
@@ -893,6 +903,14 @@ Item {
           // Typing or pressing Enter ends the navigation session before the
           // text change reaches the model.
           root.dismissSearchHighlights()
+        }
+
+        onFocusRequested: function(position) {
+          root.focusDelegateAt(delegateRoot.index, position)
+        }
+
+        onFocusDelegateRequested: function(row, position) {
+          root.focusDelegateAt(row, position)
         }
 
         onMoveFocusRequested: function(direction, xPosition) {
@@ -1020,12 +1038,24 @@ Item {
         }
 
         onEnterPressed: {
+          if (delegateRoot.blockType === 7 /* Divider */) {
+            const nextRow = delegateRoot.index + 1
+            root.model.insertBlock(nextRow, 0, "")
+            root.focusDelegateAt(nextRow, 0)
+            return
+          }
 
           const currentText = renderer.editorText
           const cursorPosition = renderer.cursorPosition
           
-          // for a smoother markdown behaviour
-          if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3 || delegateRoot.blockType === 4) && renderer.editorText.length === 0) {
+          // for a smoother markdown behaviour:
+          // Check if block is empty. For Callout (type 10), check if content is empty ignoring prefix.
+          const isCallout = delegateRoot.blockType === 10
+          const isCleanEmpty = isCallout
+                               ? ((renderer.block && "cleanBody" in renderer.block) ? renderer.block.cleanBody.trim().length === 0 : (currentText.trim() === "" || currentText.indexOf("\n") < 0))
+                               : (currentText.length === 0)
+
+          if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3 || delegateRoot.blockType === 4 || delegateRoot.blockType === 5 || delegateRoot.blockType === 10) && isCleanEmpty) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
               root.focusDelegateAt(delegateRoot.index, 0)
             }
@@ -1049,8 +1079,21 @@ Item {
           const currentText = renderer.editorText
           const currentType = delegateRoot.blockType
 
+          if (currentType === 7 /* Divider */) {
+            if (root.model.removeBlock(delegateRoot.blockId)) {
+              root.focusDelegateAt(Math.max(0, currentIndex - 1), -1)
+            }
+            return
+          }
+
+          // Check if block has empty content. For Callout (type 10), check clean body
+          const isCallout = currentType === 10
+          const isCleanEmpty = isCallout
+                               ? ((renderer.block && "cleanBody" in renderer.block) ? renderer.block.cleanBody.trim().length === 0 : (currentText.trim() === "" || currentText.indexOf("\n") < 0))
+                               : (currentText.length === 0)
+
           // don't get confused, it first removes the blockType and then removes the block
-          if ( currentText.length === 0 && currentType !== 0 ) {
+          if ( isCleanEmpty && currentType !== 0 ) {
             if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
               root.focusDelegateAt(currentIndex, 0)
             }

@@ -49,7 +49,10 @@ Rectangle {
       {label: "Small header", detail: "Heading 3", shortcut: "### Space", type: 1, level: 3},
       {label: "Bulleted list", detail: "Unordered list", shortcut: "- Space", type: 2, level: 0},
       {label: "Numbered list", detail: "Ordered list", shortcut: "1. Space", type: 3, level: 0},
-      {label: "To-do list", detail: "Checklist", shortcut: "[] Space", type: 4, level: 0}
+      {label: "To-do list", detail: "Checklist", shortcut: "[] Space", type: 4, level: 0},
+      {label: "Quote", detail: "Capture a quote", shortcut: "> Space", type: 5, level: 0},
+      {label: "Divider", detail: "Visual divider line", shortcut: "---", type: 7, level: 0},
+      {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0}
     ]
     for (let i = 0; i < commands.length; ++i) {
       const command = commands[i]

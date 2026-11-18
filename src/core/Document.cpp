@@ -151,6 +151,21 @@ bool Document::updateBlockChecked(const QString &id, bool checked) {
   return true;
 }
 
+bool Document::updateBlockCalloutType(const QString &id, const QString &calloutType) {
+  const int index = indexOf(id);
+
+  if (index < 0)
+    return false;
+
+  if (!calloutType.isEmpty() && calloutType != QLatin1String("note")) {
+    m_blocks[index].metadata.insert(QStringLiteral("calloutType"), calloutType);
+  } else {
+    m_blocks[index].metadata.remove(QStringLiteral("calloutType"));
+  }
+
+  return true;
+}
+
 bool Document::setBlock(int index, const Block &block) {
   if (index < 0 || index >= m_blocks.size())
     return false;
@@ -205,7 +220,8 @@ QString Document::splitBlock(const QString &id, int position) {
 
   const BlockType newType = (current.type == BlockType::Bullet ||
                              current.type == BlockType::NumberedList ||
-                             current.type == BlockType::Todo)
+                             current.type == BlockType::Todo ||
+                             current.type == BlockType::Quote)
                                 ? current.type
                                 : BlockType::Paragraph;
 

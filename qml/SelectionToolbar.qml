@@ -91,6 +91,12 @@ Rectangle {
       return "Bulleted List"
     } else if (type === 3) {
       return "Numbered List"
+    } else if (type === 4) {
+      return "To-do List"
+    } else if (type === 5) {
+      return "Quote"
+    } else if (type === 10) {
+      return "Callout"
     }
     return "Paragraph"
   }
@@ -218,6 +224,30 @@ Rectangle {
             root.currentBlockType = 3
             root.currentHeadingLevel = 0
             root.blockTypeSelected(3, 0)
+          }
+        }
+        Action {
+          text: "To-do list"
+          onTriggered: {
+            root.currentBlockType = 4
+            root.currentHeadingLevel = 0
+            root.blockTypeSelected(4, 0)
+          }
+        }
+        Action {
+          text: "Quote"
+          onTriggered: {
+            root.currentBlockType = 5
+            root.currentHeadingLevel = 0
+            root.blockTypeSelected(5, 0)
+          }
+        }
+        Action {
+          text: "Callout"
+          onTriggered: {
+            root.currentBlockType = 10
+            root.currentHeadingLevel = 0
+            root.blockTypeSelected(10, 0)
           }
         }
 

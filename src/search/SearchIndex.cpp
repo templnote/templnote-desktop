@@ -14,6 +14,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QPair>
 #include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -76,15 +77,60 @@ bool isTokenCharacter(QChar character) {
   return character.isLetterOrNumber();
 }
 
+// Deletes the FTS rows belonging to `path` through the rowid map. Deleting
+// from an FTS5 table by a non-rowid column scans the whole table, so every
+// document/block removal goes through search_rows instead.
+bool row_deleteDocumentRows(QSqlDatabase &db, const QString &path) {
+  QSqlQuery removeIndex(db);
+  removeIndex.prepare(QStringLiteral(
+      "DELETE FROM search_index WHERE rowid IN "
+      "(SELECT rowid FROM search_rows WHERE document_path = ?)"));
+  removeIndex.addBindValue(path);
+
+  QSqlQuery removeRows(db);
+  removeRows.prepare(
+      QStringLiteral("DELETE FROM search_rows WHERE document_path = ?"));
+  removeRows.addBindValue(path);
+
+  return removeIndex.exec() && removeRows.exec();
+}
+
+bool row_deleteBlockRow(QSqlDatabase &db, const QString &path,
+                        const QString &blockId) {
+  QSqlQuery removeIndex(db);
+  removeIndex.prepare(QStringLiteral(
+      "DELETE FROM search_index WHERE rowid IN "
+      "(SELECT rowid FROM search_rows WHERE document_path = ? AND "
+      "block_id = ?)"));
+  removeIndex.addBindValue(path);
+  removeIndex.addBindValue(blockId);
+
+  QSqlQuery removeRows(db);
+  removeRows.prepare(QStringLiteral(
+      "DELETE FROM search_rows WHERE document_path = ? AND block_id = ?"));
+  removeRows.addBindValue(path);
+  removeRows.addBindValue(blockId);
+
+  return removeIndex.exec() && removeRows.exec();
+}
+
 bool row_removePathPrefix(QSqlDatabase &db, const QString &path) {
   const QString prefix = escapeLike(path) + QStringLiteral("/%");
 
   QSqlQuery removeIndex(db);
   removeIndex.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ? OR document_path "
-      "LIKE ? ESCAPE '\\'"));
+      "DELETE FROM search_index WHERE rowid IN "
+      "(SELECT rowid FROM search_rows WHERE document_path = ? OR "
+      "document_path LIKE ? ESCAPE '\\')"));
   removeIndex.addBindValue(path);
   removeIndex.addBindValue(prefix);
+
+  QSqlQuery removeRows(db);
+  removeRows.prepare(QStringLiteral(
+      "DELETE FROM search_rows WHERE document_path = ? OR "
+      "document_path LIKE ? ESCAPE '\\'"));
+  removeRows.addBindValue(path);
+  removeRows.addBindValue(prefix);
 
   QSqlQuery removeMeta(db);
   removeMeta.prepare(QStringLiteral(
@@ -93,7 +139,7 @@ bool row_removePathPrefix(QSqlDatabase &db, const QString &path) {
   removeMeta.addBindValue(path);
   removeMeta.addBindValue(prefix);
 
-  return removeIndex.exec() && removeMeta.exec();
+  return removeIndex.exec() && removeRows.exec() && removeMeta.exec();
 }
 
 bool row_renamePath(QSqlDatabase &db, const QString &oldPath,
@@ -111,13 +157,23 @@ bool row_renamePath(QSqlDatabase &db, const QString &oldPath,
       "document_path = ? || substr(document_path, ?), "
       "document_title = CASE WHEN document_path = ? THEN ? "
       "ELSE document_title END "
-      "WHERE document_path = ? OR document_path LIKE ? ESCAPE '\\'"));
+      "WHERE rowid IN (SELECT rowid FROM search_rows "
+      "WHERE document_path = ? OR document_path LIKE ? ESCAPE '\\')"));
   updateIndex.addBindValue(newPath);
   updateIndex.addBindValue(suffixStart);
   updateIndex.addBindValue(oldPath);
   updateIndex.addBindValue(newTitle);
   updateIndex.addBindValue(oldPath);
   updateIndex.addBindValue(prefix);
+
+  QSqlQuery updateRows(db);
+  updateRows.prepare(QStringLiteral(
+      "UPDATE search_rows SET document_path = ? || substr(document_path, ?) "
+      "WHERE document_path = ? OR document_path LIKE ? ESCAPE '\\'"));
+  updateRows.addBindValue(newPath);
+  updateRows.addBindValue(suffixStart);
+  updateRows.addBindValue(oldPath);
+  updateRows.addBindValue(prefix);
 
   QSqlQuery updateMeta(db);
   updateMeta.prepare(QStringLiteral(
@@ -133,38 +189,36 @@ bool row_renamePath(QSqlDatabase &db, const QString &oldPath,
   updateMeta.addBindValue(oldPath);
   updateMeta.addBindValue(prefix);
 
-  return updateIndex.exec() && updateMeta.exec();
+  return updateIndex.exec() && updateRows.exec() && updateMeta.exec();
 }
 
 bool row_removeDocument(QSqlDatabase &db, const QString &path) {
-  QSqlQuery removeIndex(db);
-  removeIndex.prepare(
-      QStringLiteral("DELETE FROM search_index WHERE document_path = ?"));
-  removeIndex.addBindValue(path);
+  if (!row_deleteDocumentRows(db, path))
+    return false;
 
   QSqlQuery removeMeta(db);
   removeMeta.prepare(
       QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
   removeMeta.addBindValue(path);
 
-  return removeIndex.exec() && removeMeta.exec();
+  return removeMeta.exec();
 }
 
 bool row_replaceDocument(QSqlDatabase &db, const QString &path,
                          const QString &title,
                          const QVector<WriteBlock> &blocks, bool updateMeta) {
-  QSqlQuery remove(db);
-  remove.prepare(
-      QStringLiteral("DELETE FROM search_index WHERE document_path = ?"));
-  remove.addBindValue(path);
-
-  if (!remove.exec())
+  if (!row_deleteDocumentRows(db, path))
     return false;
 
   QSqlQuery insert(db);
   insert.prepare(QStringLiteral(
       "INSERT INTO search_index(document_path, document_title, block_id, "
       "block_text) VALUES(?, ?, ?, ?)"));
+
+  QSqlQuery insertRow(db);
+  insertRow.prepare(QStringLiteral(
+      "INSERT INTO search_rows(document_path, block_id, rowid) "
+      "VALUES(?, ?, ?)"));
 
   for (const WriteBlock &block : blocks) {
     if (block.text.isEmpty())
@@ -176,6 +230,13 @@ bool row_replaceDocument(QSqlDatabase &db, const QString &path,
     insert.addBindValue(block.text);
 
     if (!insert.exec())
+      return false;
+
+    insertRow.addBindValue(path);
+    insertRow.addBindValue(block.blockId);
+    insertRow.addBindValue(insert.lastInsertId().toLongLong());
+
+    if (!insertRow.exec())
       return false;
   }
 
@@ -273,24 +334,6 @@ bool row_removeBlock(QSqlDatabase &db, const QString &path,
   return invalidate.exec();
 }
 
-bool row_readMeta(QSqlDatabase &db, const QString &path, qint64 *modifiedMs,
-                  qint64 *size) {
-  QSqlQuery query(db);
-  query.prepare(QStringLiteral(
-      "SELECT modified_ms, size FROM search_meta WHERE document_path = ?"));
-  query.addBindValue(path);
-
-  if (!query.exec() || !query.next())
-    return false;
-
-  if (modifiedMs)
-    *modifiedMs = query.value(0).toLongLong();
-  if (size)
-    *size = query.value(1).toLongLong();
-
-  return true;
-}
-
 bool replaceFromFile(QSqlDatabase &db, const QString &path) {
   const QString normalized = normalizePath(path);
   QFile file(normalized);
@@ -346,6 +389,24 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
   bool ok = true;
   QSet<QString> found;
 
+  // Read all metadata in one query instead of issuing one SELECT per file.
+  // The scan below only needs the previously recorded timestamp/size.
+  QHash<QString, QPair<qint64, qint64>> metadata;
+  {
+    QSqlQuery query(db);
+
+    if (query.exec(QStringLiteral(
+            "SELECT document_path, modified_ms, size FROM search_meta"))) {
+      metadata.reserve(256);
+
+      while (query.next()) {
+        metadata.insert(query.value(0).toString(),
+                        {query.value(1).toLongLong(),
+                         query.value(2).toLongLong()});
+      }
+    }
+  }
+
   QDirIterator it(root, QDir::Files | QDir::Readable,
                   QDirIterator::Subdirectories);
 
@@ -366,15 +427,14 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
       continue;
     }
 
-    qint64 modifiedMs = 0;
-    qint64 size = 0;
-
-    const bool known = row_readMeta(db, path, &modifiedMs, &size);
+    const auto meta = metadata.constFind(path);
     const qint64 currentModified = info.lastModified().toMSecsSinceEpoch();
     const qint64 currentSize = info.size();
 
-    if (!known || modifiedMs != currentModified || size != currentSize)
+    if (meta == metadata.constEnd() || meta->first != currentModified ||
+        meta->second != currentSize) {
       ok = replaceFromFile(db, path);
+    }
   }
 
   // Remove index entries and metadata for files that disappeared.

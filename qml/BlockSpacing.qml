@@ -30,6 +30,10 @@ QtObject {
     if (isListType(currentType) && currentType === nextType)
       return 2
 
+    // 1b. Consecutive quote blocks
+    if (currentType === 5 /* Quote */ && nextType === 5 /* Quote */)
+      return 2
+
     // 2. List item transitioning to another list item of a different type
     if (isListType(currentType) && isListType(nextType))
       return 4
@@ -43,6 +47,14 @@ QtObject {
     // Add extra breathing room before a new section heading starts.
     if (isHeading(nextType))
       return 18
+
+    // 4b. Divider spacing: give a divider breathing space above and below
+    if (currentType === 7 /* Divider */ || nextType === 7 /* Divider */)
+      return 8
+
+    // 4c. Callout spacing: comfortable margin around callout boxes
+    if (currentType === 10 /* Callout */ || nextType === 10 /* Callout */)
+      return 10
 
     // 5. List -> Paragraph or Paragraph -> List:
     // Moderate separation between list blocks and standard body text.

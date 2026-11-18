@@ -12,6 +12,7 @@ Item {
   property int numberIndex: 1
   property string alignment: "left"
   property bool isChecked: false
+  property string calloutType: "note"
   property bool showPlaceholder: false
   property var model: null
 
@@ -23,6 +24,7 @@ Item {
 
   signal enterPressed()
   signal backspacePressed()
+  signal focusRequested(int position)
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
@@ -43,6 +45,7 @@ Item {
   signal searchNavigated(int direction)
   signal searchDismissed()
   signal searchEditStarted()
+  signal focusDelegateRequested(int row, int position)
 
   property int pendingFocus: -1
 
@@ -89,6 +92,7 @@ Item {
 
     if (loader.status === Loader.Ready && loader.item)
       applyPendingFocus()
+    root.focusRequested(position)
   }
 
   function applyPendingFocus() {
@@ -115,6 +119,12 @@ Item {
       return numberedComponent
     case 4: // BlockType::Todo
       return todoComponent
+    case 5: // BlockType::Quote
+      return quoteComponent
+    case 7: // BlockType::Divider
+      return dividerComponent
+    case 10: // BlockType::Callout
+      return calloutComponent
     default: // BlockType::Paragraph, and future types until implemented
       return paragraphComponent
     }
@@ -147,6 +157,21 @@ Item {
     TodoBlock {}
   }
 
+  Component {
+    id: quoteComponent
+    QuoteBlock {}
+  }
+
+  Component {
+    id: dividerComponent
+    DividerBlock {}
+  }
+
+  Component {
+    id: calloutComponent
+    CalloutBlock {}
+  }
+
   Loader {
     id: loader
     anchors.fill: parent
@@ -160,6 +185,8 @@ Item {
       item.numberIndex = Qt.binding(function() { return root.numberIndex })
       item.alignment = Qt.binding(function() { return root.alignment })
       item.isChecked = Qt.binding(function() { return root.isChecked })
+      if ("calloutType" in item)
+        item.calloutType = Qt.binding(function() { return root.calloutType })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
@@ -181,6 +208,8 @@ Item {
       item.searchNavigated.connect(root.searchNavigated)
       item.searchDismissed.connect(root.searchDismissed)
       item.searchEditStarted.connect(root.searchEditStarted)
+      if (item.focusDelegateRequested)
+        item.focusDelegateRequested.connect(root.focusDelegateRequested)
 
       root.applyPendingFocus()
     }

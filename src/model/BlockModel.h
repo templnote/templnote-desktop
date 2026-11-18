@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QByteArray>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QTimer>
@@ -37,6 +38,7 @@ public:
     MetadataRole,
     AlignmentRole,
     CheckedRole,
+    CalloutTypeRole,
     NextBlockTypeRole,
     NumberIndexRole
   };
@@ -75,6 +77,8 @@ public:
   Q_INVOKABLE bool setBlockAlignment(const QString &id, const QString &align);
 
   Q_INVOKABLE bool setBlockChecked(const QString &id, bool checked);
+
+  Q_INVOKABLE bool setBlockCalloutType(const QString &id, const QString &calloutType);
 
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
 
@@ -218,6 +222,11 @@ private:
   QDateTime m_lastModified;
   bool m_modified = false;
   QString m_lastError;
+
+  // Exact bytes and path of the last successful save. Autosave can skip
+  // re-serializing/writing when the document content has not changed since.
+  QByteArray m_lastSavedData;
+  QString m_lastSavedPath;
 
   // Numbered-list indices are cached and rebuilt lazily after any structural
   // or block-type change instead of being recomputed on every role lookup.

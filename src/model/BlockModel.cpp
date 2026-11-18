@@ -238,6 +238,11 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
     return block->metadata.value(QStringLiteral("checked"), false).toBool();
   }
 
+  case CalloutTypeRole: {
+    const QString type = block->metadata.value(QStringLiteral("calloutType")).toString();
+    return type.isEmpty() ? QStringLiteral("note") : type;
+  }
+
   case NextBlockTypeRole: {
     if (index.row() + 1 >= m_document.count())
       return -1;
@@ -277,6 +282,7 @@ QHash<int, QByteArray> BlockModel::roleNames() const {
           {MetadataRole, "metadata"},
           {AlignmentRole, "alignment"},
           {CheckedRole, "checked"},
+          {CalloutTypeRole, "calloutType"},
           {NextBlockTypeRole, "nextBlockType"},
           {NumberIndexRole, "numberIndex"}};
 }
@@ -642,6 +648,36 @@ bool BlockModel::setBlockChecked(const QString &id, bool checked) {
   return true;
 }
 
+bool BlockModel::setBlockCalloutType(const QString &id, const QString &calloutType) {
+  const int row = m_document.indexOf(id);
+
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block || block->type != BlockType::Callout)
+    return false;
+
+  const QString currentType = block->metadata.value(QStringLiteral("calloutType"), QStringLiteral("note")).toString();
+  if (currentType == calloutType)
+    return true;
+
+  const Block beforeBlock = *block;
+
+  if (!m_document.updateBlockCalloutType(id, calloutType))
+    return false;
+
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, CalloutTypeRole});
+
+  markModified();
+  return true;
+}
+
 bool BlockModel::moveBlock(const QString &id, int destination) {
   const int source = m_document.indexOf(id);
 
@@ -844,6 +880,10 @@ bool BlockModel::resetDocument(Document document) {
   m_lastHistoryBlockId.clear();
   m_lastHistoryCursorPosition = -1;
 
+  // The cache belongs to the previous document; force the next save to write.
+  m_lastSavedData.clear();
+  m_lastSavedPath.clear();
+
   endResetModel();
 
   emit countChanged();
@@ -881,28 +921,42 @@ bool BlockModel::saveDocument(const QString &path) {
   json.insert(QStringLiteral("title"),
               QFileInfo(absolutePath).completeBaseName());
   json.insert(QStringLiteral("createdAt"), m_createdAt);
-  json.insert(QStringLiteral("modifiedAt"), now);
 
-  const QByteArray data =
-      QJsonDocument(json).toJson(QJsonDocument::Indented);
+  // Compare the document content without the timestamp so an autosave that
+  // did not change anything does not rewrite the file.
+  const QByteArray contentKey =
+      QJsonDocument(json).toJson(QJsonDocument::Compact);
+  const bool unchanged = absolutePath == m_lastSavedPath &&
+                         contentKey == m_lastSavedData &&
+                         QFileInfo::exists(absolutePath);
 
-  // QSaveFile writes to a temporary file and renames it into place, so an
-  // interrupted save can never truncate an existing document.
-  QSaveFile file(absolutePath);
+  if (!unchanged) {
+    json.insert(QStringLiteral("modifiedAt"), now);
 
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
-    return setError(file.errorString());
+    const QByteArray data =
+        QJsonDocument(json).toJson(QJsonDocument::Indented);
 
-  if (file.write(data) != data.size()) {
-    file.cancelWriting();
-    return setError(file.errorString());
+    // QSaveFile writes to a temporary file and renames it into place, so an
+    // interrupted save can never truncate an existing document.
+    QSaveFile file(absolutePath);
+
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+      return setError(file.errorString());
+
+    if (file.write(data) != data.size()) {
+      file.cancelWriting();
+      return setError(file.errorString());
+    }
+
+    if (!file.commit())
+      return setError(file.errorString());
+
+    m_lastSavedData = contentKey;
+    m_lastSavedPath = absolutePath;
+    setLastModified(modified.toLocalTime());
   }
 
-  if (!file.commit())
-    return setError(file.errorString());
-
   setCurrentFilePath(absolutePath);
-  setLastModified(modified.toLocalTime());
   setModified(false);
 
   m_lastError.clear();
@@ -1223,7 +1277,7 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
     if (textChanged)
       roles << ContentRole << Qt::DisplayRole;
     if (typeChanged)
-      roles << BlockTypeRole << HeadingLevelRole;
+      roles << BlockTypeRole << HeadingLevelRole << NumberIndexRole;
     if (current->parentId != wanted.parentId ||
         current->metadata != wanted.metadata)
       roles << ParentIdRole << MetadataRole << AlignmentRole << CheckedRole;
@@ -1237,11 +1291,13 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
     // Neighbour-dependent roles also change when a block type changes: the
     // previous block's "next type" and the numbering of following rows.
     if (typeChanged) {
-      emitNumberIndexChanged(row + 1);
+      emitNumberIndexChanged(row);
 
       if (row > 0)
         emit dataChanged(index(row - 1), index(row - 1),
                          {NextBlockTypeRole});
+
+      return true;
     }
 
     return false;

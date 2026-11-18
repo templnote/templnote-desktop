@@ -38,6 +38,7 @@ public:
   bool updateBlockAlignment(const QString &id, const QString &align);
 
   bool updateBlockChecked(const QString &id, bool checked);
+  bool updateBlockCalloutType(const QString &id, const QString &calloutType);
 
   bool setBlock(int index, const Block &block);
 

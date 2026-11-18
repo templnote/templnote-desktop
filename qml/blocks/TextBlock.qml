@@ -18,7 +18,9 @@ Item {
   property bool showBullet: false
   property bool showNumbered: false
   property bool showTodo: false
+  property bool showQuote: false
   property bool isChecked: false
+  property string calloutType: "note"
   property bool showPlaceholder: false
   property string numberPrefix: numberIndex + "."
   property int verticalPadding: 0
@@ -27,7 +29,7 @@ Item {
   property real fontPixelSize: 16
   property bool fontBold: false
   readonly property real firstLineHeight: Math.max(rowHeight, Math.round(fontPixelSize * 1.35))
-  readonly property int textAlignment: (root.showBullet || root.showNumbered || root.showTodo)
+  readonly property int textAlignment: (root.showBullet || root.showNumbered || root.showTodo || root.showQuote)
                                        ? Text.AlignLeft
                                        : (root.alignment === "center"
                                           ? Text.AlignHCenter
@@ -862,6 +864,7 @@ Item {
   signal enterPressed()
   signal backspacePressed()
   signal focusRequested(int position)
+  signal focusDelegateRequested(int row, int position)
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
@@ -1047,7 +1050,7 @@ Item {
     anchors.rightMargin: root.horizontalPadding
     anchors.topMargin: root.verticalPadding
     anchors.bottomMargin: root.verticalPadding
-    spacing: (root.showBullet || root.showNumbered || root.showTodo) ? 0 : 5
+    spacing: (root.showBullet || root.showNumbered || root.showTodo || root.showQuote) ? 0 : 5
 
     Row {
       width: parent.width
@@ -1060,6 +1063,36 @@ Item {
         return Math.max(root.rowHeight, textH)
       }
       spacing: 0
+
+      Item {
+        id: quoteBar
+        width: root.showQuote ? (editor.activeFocus ? 26 : 16) : 0
+        visible: root.showQuote
+        height: parent.height
+
+        Rectangle {
+          width: 3
+          height: parent.height
+          anchors.left: parent.left
+          anchors.leftMargin: 2
+          color: Theme.accent
+          radius: 1.5
+        }
+
+        Text {
+          visible: editor.activeFocus
+          anchors.left: parent.left
+          anchors.leftMargin: 10
+          anchors.top: parent.top
+          anchors.topMargin: editor.topPadding
+          text: ">"
+          color: Theme.textMuted
+          font.pixelSize: root.fontPixelSize
+          font.weight: root.fontBold ? Font.Bold : Font.Normal
+          height: root.firstLineHeight
+          verticalAlignment: Text.AlignVCenter
+        }
+      }
 
       Item {
         id: bulletGutter
@@ -1129,7 +1162,7 @@ Item {
 
       Item {
         id: editorLine
-        width: parent.width - bulletGutter.width
+        width: parent.width - bulletGutter.width - quoteBar.width
         height: parent.height
         clip: false
 
@@ -1564,6 +1597,84 @@ Item {
               // Changing the type makes the dispatcher reload the block
               // renderer, so focus has to move to the new editor.
               root.focusRequested(bulletText.length)
+              return
+            }
+
+            // paragraph -> callout (> [!NOTE], > [!TIP], > [!WARNING], > [!DANGER], etc.)
+            const calloutMatch = /^>\s*\[!([a-zA-Z]+)\]\s*/.exec(text)
+            if (root.blockType === 0 && calloutMatch) {
+              root.transformingShortcut = true
+
+              const kind = calloutMatch[1].toLowerCase()
+              const calloutContent = text.substring(calloutMatch[0].length)
+
+              root.model.changeBlockType(
+                root.blockId,
+                10, // BlockType::Callout
+                0
+              )
+
+              if (root.model.setBlockCalloutType) {
+                root.model.setBlockCalloutType(root.blockId, kind)
+              }
+
+              root.model.updateBlockText(
+                root.blockId,
+                calloutContent
+              )
+
+              root.transformingShortcut = false
+              // Focus at the end of the callout (after the prefix or existing text)
+              root.focusRequested(-1)
+              return
+            }
+
+            // paragraph -> quote
+            if (root.blockType === 0 && text.startsWith("> ")) {
+              root.transformingShortcut = true
+
+              const quoteText = text.substring(2)
+
+              root.model.changeBlockType(
+                root.blockId,
+                5, // BlockType::Quote
+                0
+              )
+
+              root.model.updateBlockText(
+                root.blockId,
+                quoteText
+              )
+
+              root.transformingShortcut = false
+
+              // Changing the type makes the dispatcher reload the block
+              // renderer, so focus has to move to the new editor.
+              root.focusRequested(quoteText.length)
+              return
+            }
+
+            // paragraph -> divider (--- or ***)
+            if (root.blockType === 0 && (text === "---" || text === "***")) {
+              root.transformingShortcut = true
+
+              root.model.updateBlockText(root.blockId, "")
+              root.model.changeBlockType(
+                root.blockId,
+                7, // BlockType::Divider
+                0
+              )
+
+              // Insert a new paragraph below the divider so the user can continue typing
+              const row = root.model.indexOfBlock(root.blockId)
+              if (row >= 0) {
+                root.model.insertBlock(row + 1, 0, "")
+                root.transformingShortcut = false
+                root.focusDelegateRequested(row + 1, 0)
+                return
+              }
+
+              root.transformingShortcut = false
               return
             }
 

@@ -93,6 +93,9 @@ foreach(qml_file
     blocks/HeadingBlock.qml
     blocks/BulletBlock.qml
     blocks/NumberedBlock.qml
+    blocks/QuoteBlock.qml
+    blocks/DividerBlock.qml
+    blocks/CalloutBlock.qml
     blocks/TodoBlock.qml
 )
     set_source_files_properties(
@@ -123,6 +126,9 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/HeadingBlock.qml
     ${TEST_QML_DIR}/blocks/BulletBlock.qml
     ${TEST_QML_DIR}/blocks/NumberedBlock.qml
+    ${TEST_QML_DIR}/blocks/QuoteBlock.qml
+    ${TEST_QML_DIR}/blocks/DividerBlock.qml
+    ${TEST_QML_DIR}/blocks/CalloutBlock.qml
     ${TEST_QML_DIR}/blocks/TodoBlock.qml
 )
 

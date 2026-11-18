@@ -115,6 +115,9 @@ qt_add_qml_module(templnote
   qml/blocks/HeadingBlock.qml
   qml/blocks/BulletBlock.qml
   qml/blocks/NumberedBlock.qml
+  qml/blocks/QuoteBlock.qml
+  qml/blocks/DividerBlock.qml
+  qml/blocks/CalloutBlock.qml
   qml/blocks/TodoBlock.qml
 
   qml/SearchService/SearchService.qml
@@ -167,6 +170,9 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_checkbox_checked_20_regular.svg
   assets/icons/ic_fluent_checkbox_checked_20_filled.svg
   assets/icons/ic_fluent_checkbox_unchecked_20_regular.svg
+  assets/icons/ic_fluent_text_quote_20_regular.svg
+  assets/icons/ic_fluent_line_horizontal_1_20_regular.svg
+  assets/icons/ic_fluent_lightbulb_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE
