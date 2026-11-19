@@ -13,13 +13,15 @@ Rectangle {
     : "Meow"
   property string selectedModel: "Claude 3.5 Sonnet"
   property var availableModels: [
-    "Claude 3.5 Sonnet",
-    "GPT-4o",
-    "Gemini 1.5 Pro",
+    "Claude",
+    "GPT",
+    "Gemini",
     "Ollama (Local)"
   ]
 
-  property real expandedWidth: 820
+  property real defaultExpandedWidth: 600
+  readonly property real responsiveExpandedWidth: parent ? Math.min(defaultExpandedWidth, parent.width - 48) : defaultExpandedWidth
+  property real expandedWidth: responsiveExpandedWidth
   readonly property real minCollapsedWidth: 120
   readonly property real maxCollapsedWidth: 420
 

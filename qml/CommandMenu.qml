@@ -54,7 +54,8 @@ Rectangle {
       {label: "Code block", detail: "Code with syntax highlighting", shortcut: "``` Space", type: 6, level: 0},
       {label: "Divider", detail: "Visual divider line", shortcut: "---", type: 7, level: 0},
       {label: "Image", detail: "Upload or embed with a link", shortcut: "/image", type: 8, level: 0},
-      {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0}
+      {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0},
+      {label: "Table", detail: "Add a flexible table", shortcut: "/table", type: 11, level: 0}
     ]
     for (let i = 0; i < commands.length; ++i) {
       const command = commands[i]

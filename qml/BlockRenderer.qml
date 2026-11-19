@@ -16,6 +16,7 @@ Item {
   property string codeLanguage: ""
   property string imageSource: ""
   property real imageWidthRatio: 1.0
+  property var blockMetadata: null
   property bool isBlockHovered: false
   property bool showPlaceholder: false
   property var model: null
@@ -133,6 +134,8 @@ Item {
       return imageComponent
     case 10: // BlockType::Callout
       return calloutComponent
+    case 11: // BlockType::Table
+      return tableComponent
     default: // BlockType::Paragraph, and future types until implemented
       return paragraphComponent
     }
@@ -190,6 +193,11 @@ Item {
     CalloutBlock {}
   }
 
+  Component {
+    id: tableComponent
+    TableBlock {}
+  }
+
   Loader {
     id: loader
     anchors.fill: parent
@@ -211,6 +219,8 @@ Item {
         item.imageSource = Qt.binding(function() { return root.imageSource })
       if ("imageWidthRatio" in item)
         item.imageWidthRatio = Qt.binding(function() { return root.imageWidthRatio })
+      if ("blockMetadata" in item)
+        item.blockMetadata = Qt.binding(function() { return root.blockMetadata })
       if ("isBlockHovered" in item)
         item.isBlockHovered = Qt.binding(function() { return root.isBlockHovered })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })

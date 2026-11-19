@@ -60,6 +60,10 @@ QtObject {
     if (currentType === 8 /* Image */ || nextType === 8 /* Image */)
       return 12
 
+    // 4e. Table spacing: comfortable margin around tables
+    if (currentType === 11 /* Table */ || nextType === 11 /* Table */)
+      return 12
+
     // 5. List -> Paragraph or Paragraph -> List:
     // Moderate separation between list blocks and standard body text.
     if (isListType(currentType) || isListType(nextType))

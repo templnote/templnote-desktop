@@ -206,6 +206,15 @@ bool Document::updateBlockImageWidthRatio(const QString &id, double ratio) {
   return true;
 }
 
+bool Document::updateBlockMetadata(const QString &id, const QVariantMap &metadata) {
+  const int index = indexOf(id);
+  if (index < 0)
+    return false;
+
+  m_blocks[index].metadata = metadata;
+  return true;
+}
+
 bool Document::setBlock(int index, const Block &block) {
   if (index < 0 || index >= m_blocks.size())
     return false;

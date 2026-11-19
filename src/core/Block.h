@@ -31,6 +31,28 @@ struct Block {
     if (type == BlockType::Heading)
       block.headingLevel = 1;
 
+    if (type == BlockType::Table) {
+      QVariantList cols;
+      cols.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("c1")}, {QStringLiteral("width"), 160}});
+      cols.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("c2")}, {QStringLiteral("width"), 160}});
+      cols.append(QVariantMap{{QStringLiteral("id"), QStringLiteral("c3")}, {QStringLiteral("width"), 160}});
+      QVariantList rows;
+      for (int r = 1; r <= 3; ++r) {
+        QVariantMap row;
+        row[QStringLiteral("id")] = QStringLiteral("r%1").arg(r);
+        QVariantMap cells;
+        cells[QStringLiteral("c1")] = QStringLiteral("");
+        cells[QStringLiteral("c2")] = QStringLiteral("");
+        cells[QStringLiteral("c3")] = QStringLiteral("");
+        row[QStringLiteral("cells")] = cells;
+        rows.append(row);
+      }
+      QVariantMap tableData;
+      tableData[QStringLiteral("columns")] = cols;
+      tableData[QStringLiteral("rows")] = rows;
+      block.metadata[QStringLiteral("table")] = tableData;
+    }
+
     return block;
   }
 

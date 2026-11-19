@@ -783,6 +783,38 @@ bool BlockModel::setBlockImageWidthRatio(const QString &id, double ratio) {
   return true;
 }
 
+bool BlockModel::setBlockMetadata(const QString &id, const QVariantMap &metadata) {
+  const int row = m_document.indexOf(id);
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block)
+    return false;
+
+  if (block->metadata == metadata)
+    return true;
+
+  const Block beforeBlock = *block;
+
+  if (!m_document.updateBlockMetadata(id, metadata))
+    return false;
+
+  if (metadata.contains(QStringLiteral("plainText"))) {
+    m_document.updateBlockText(id, metadata.value(QStringLiteral("plainText")).toString());
+  }
+
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, ContentRole, Qt::DisplayRole});
+
+  markModified();
+  return true;
+}
+
 QString BlockModel::importAttachment(const QUrl &fileUrl) {
   const QString localPath = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString();
   if (!QFileInfo::exists(localPath))

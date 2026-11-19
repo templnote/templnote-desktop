@@ -92,6 +92,8 @@ public:
 
   Q_INVOKABLE bool setBlockImageWidthRatio(const QString &id, double ratio);
 
+  Q_INVOKABLE bool setBlockMetadata(const QString &id, const QVariantMap &metadata);
+
   Q_INVOKABLE QString importAttachment(const QUrl &fileUrl);
 
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);

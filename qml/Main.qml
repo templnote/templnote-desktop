@@ -339,7 +339,6 @@ ApplicationWindow {
       id: promptPanel
       z: 1
       visible: window.hasDocument
-      expandedWidth: workspace.contentWidth
       anchors {
         horizontalCenter: parent.horizontalCenter
         bottom: parent.bottom

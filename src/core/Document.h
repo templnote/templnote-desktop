@@ -42,6 +42,7 @@ public:
   bool updateBlockCodeLanguage(const QString &id, const QString &language);
   bool updateBlockImageSource(const QString &id, const QString &source);
   bool updateBlockImageWidthRatio(const QString &id, double ratio);
+  bool updateBlockMetadata(const QString &id, const QVariantMap &metadata);
 
   bool setBlock(int index, const Block &block);
 

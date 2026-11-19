@@ -132,6 +132,7 @@ qt_add_qml_module(templnote
   qml/blocks/CalloutBlock.qml
   qml/blocks/TodoBlock.qml
   qml/blocks/ImageBlock.qml
+  qml/blocks/TableBlock.qml
 
   qml/SearchService/SearchService.qml
   qml/SearchService/LocalSearchService.qml

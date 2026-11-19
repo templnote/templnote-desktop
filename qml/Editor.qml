@@ -749,6 +749,7 @@ Item {
       required property string codeLanguage
       required property string imageSource
       required property real imageWidthRatio
+      required property var metadata
       required property int index
 
       readonly property real bottomGap: BlockSpacing.bottomGap(
@@ -993,6 +994,7 @@ Item {
         codeLanguage: delegateRoot.codeLanguage || ""
         imageSource: delegateRoot.imageSource || ""
         imageWidthRatio: delegateRoot.imageWidthRatio !== undefined ? delegateRoot.imageWidthRatio : 1.0
+        blockMetadata: delegateRoot.metadata
         isBlockHovered: delegateRoot.isHovered
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
