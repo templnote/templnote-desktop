@@ -3,9 +3,12 @@
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QtTest>
+#include <qtestwheel.h>
 
 #include <algorithm>
+#include <functional>
 
+#include "../src/core/CodeHighlighter.h"
 #include "../src/model/BlockModel.h"
 
 using namespace Templnote;
@@ -149,6 +152,7 @@ private slots:
     QCoreApplication::setOrganizationName("TemplnoteTest");
     QCoreApplication::setApplicationName("TemplnoteEditorTest");
     qmlRegisterType<BlockModel>("Templnote", 1, 0, "BlockModel");
+    qmlRegisterType<CodeHighlighter>("Templnote", 1, 0, "CodeHighlighter");
   }
 
   void init() {
@@ -451,6 +455,116 @@ private slots:
     QCOMPARE(editor->property("searchMatches").toList().size(), 0);
     QCOMPARE(blockModel->document().blockAt(0)->text,
              QStringLiteral("x one alpha"));
+  }
+
+  void unfocusedMarkdownSearchOffsetsMapToRenderedText() {
+    BlockModel *blockModel = model();
+    const QString firstId =
+        blockModel->data(blockModel->index(0, 0), BlockModel::BlockIdRole)
+            .toString();
+    QVERIFY(blockModel->updateBlockText(firstId, "**bold** plain"));
+    QTest::qWait(100);
+
+    QQuickItem *block = nullptr;
+    const auto delegates = listDelegates();
+
+    std::function<QQuickItem *(QQuickItem *)> findBlock =
+        [&findBlock](QQuickItem *item) -> QQuickItem * {
+      if (item->metaObject()->indexOfMethod(
+              "rawToRenderedIndex(QVariant,QVariant)") >= 0)
+        return item;
+
+      for (QQuickItem *child : item->childItems()) {
+        if (QQuickItem *found = findBlock(child))
+          return found;
+      }
+
+      return nullptr;
+    };
+
+    for (QQuickItem *delegate : delegates) {
+      block = findBlock(delegate);
+
+      if (block)
+        break;
+    }
+
+    QVERIFY(block);
+
+    const auto mapIndex = [block](const QString &text, int index) {
+      QVariant result;
+      const bool ok = QMetaObject::invokeMethod(
+          block, "rawToRenderedIndex", Q_RETURN_ARG(QVariant, result),
+          Q_ARG(QVariant, text), Q_ARG(QVariant, index));
+      return ok ? result.toInt() : -1;
+    };
+
+    // Unfocused blocks hide ** markers, so raw offsets shift left by four.
+    QCOMPARE(mapIndex(QStringLiteral("**bold** plain"), 0), 0);
+    QCOMPARE(mapIndex(QStringLiteral("**bold** plain"), 2), 0);
+    QCOMPARE(mapIndex(QStringLiteral("**bold** plain"), 6), 4);
+    QCOMPARE(mapIndex(QStringLiteral("**bold** plain"), 10), 6);
+    QCOMPARE(mapIndex(QStringLiteral("**bold** plain"), 14), 10);
+
+    // Unmatched inline tags stay literal, so only matched pairs are removed.
+    QCOMPARE(mapIndex(QStringLiteral("<u>ok</u> <u>bad"), 0), 0);
+    QCOMPARE(mapIndex(QStringLiteral("<u>ok</u> <u>bad"), 3), 0);
+    QCOMPARE(mapIndex(QStringLiteral("<u>ok</u> <u>bad"), 9), 2);
+    QCOMPARE(mapIndex(QStringLiteral("<u>ok</u> <u>bad"), 13), 6);
+    QCOMPARE(mapIndex(QStringLiteral("<u>ok</u> <u>bad"), 16), 9);
+  }
+
+  void wheelScrollingStopsWhileOverlaysAreOpen() {
+    BlockModel *blockModel = model();
+
+    for (int i = 0; i < 30; ++i) {
+      QVERIFY(!blockModel->appendBlock(static_cast<int>(BlockType::Paragraph),
+                                       QStringLiteral("scroll line %1").arg(i))
+                   .isEmpty());
+    }
+
+    QTest::qWait(300);
+
+    QQuickItem *view = m_window->findChild<QQuickItem *>("documentView");
+    QVERIFY(view);
+
+    const QPoint center =
+        view->mapToScene(QPointF(view->width() / 2, view->height() / 2))
+            .toPoint();
+    const auto scrollOnce = [&]() {
+      QTest::wheelEvent(m_window, center, QPoint(0, -120));
+      QTest::qWait(250);
+    };
+
+    // Baseline: an unobstructed editor scrolls with the wheel.
+    view->setProperty("contentY", 0);
+    QTest::qWait(50);
+    scrollOnce();
+    QVERIFY(view->property("contentY").toReal() > 0);
+
+    QQuickItem *editor = editorItem();
+    QVERIFY(editor);
+
+    // A host surface covering the editor (settings, global search, dialogs)
+    // disables background scrolling.
+    view->setProperty("contentY", 0);
+    editor->setProperty("scrollingEnabled", false);
+    QTest::qWait(50);
+    scrollOnce();
+    QCOMPARE(view->property("contentY").toReal(), 0.0);
+    editor->setProperty("scrollingEnabled", true);
+    QTest::qWait(50);
+
+    // The selection toolbar is open.
+    QQuickItem *toolbar =
+        m_window->findChild<QQuickItem *>("selectionToolbar");
+    QVERIFY(toolbar);
+    view->setProperty("contentY", 0);
+    toolbar->setProperty("showToolbar", true);
+    QTest::qWait(50);
+    scrollOnce();
+    QCOMPARE(view->property("contentY").toReal(), 0.0);
+    toolbar->setProperty("showToolbar", false);
   }
 };
 

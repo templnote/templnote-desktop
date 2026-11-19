@@ -332,12 +332,17 @@ Item {
     return out
   }
 
-  function findSyntaxTokens(text) {
+  // Syntax tokens that markdownToHtml() drops when a block is not focused.
+  // Unlike the focused render, unmatched inline tags stay visible as literal
+  // text, so only *matched* tag pairs may be skipped here.
+  function findSyntaxTokens(text, hiddenOnly) {
     if (!text) return []
     let tokens = []
     const parsedTags = parseInlineTags(text)
     for (let i = 0; i < parsedTags.tokens.length; ++i) {
       const token = parsedTags.tokens[i]
+      if (hiddenOnly && !token.matched)
+        continue
       tokens.push({ start: token.start, end: token.end })
     }
     let m
@@ -480,6 +485,24 @@ Item {
     if (!renderedViewer || end <= start)
       return
 
+    // Search ranges are raw-text offsets. While the block is focused the
+    // rendered text keeps the syntax markers, so positions match the editor.
+    // Unfocused blocks drop them, and painting the raw offsets directly would
+    // shift every highlight left by the hidden marker length.
+    const raw = editor.text
+    let rangeStart = start
+    let rangeEnd = end
+
+    if (!editor.activeFocus) {
+      rangeStart = rawToRenderedIndex(raw, start)
+      rangeEnd = rawToRenderedIndex(raw, end)
+    }
+
+    if (rangeEnd <= rangeStart)
+      return
+
+    const plain = renderedViewer.getText(0, renderedViewer.length)
+
     ctx.fillStyle = color
 
     const offsetX = renderedViewer.x
@@ -502,13 +525,20 @@ Item {
 
     // positionToRectangle() returns a 1px caret rect, not a full character
     // cell. Use the next caret position to find the right edge of each
-    // character and merge cells that share a line.
-    for (let i = start; i < end; ++i) {
-      if (editor.text.charAt(i) === "\n")
-        continue
+    // character and merge cells that share a line. Each iteration's "next"
+    // rect becomes the current rect of the following character, so the whole
+    // range costs one layout query per character instead of two.
+    let rect = renderedViewer.positionToRectangle(rangeStart)
 
-      const rect = renderedViewer.positionToRectangle(i)
+    for (let i = rangeStart; i < rangeEnd; ++i) {
       const nextRect = renderedViewer.positionToRectangle(i + 1)
+      const character = plain.charAt(i)
+
+      if (character === "\n" || character === "\u2028") {
+        rect = nextRect
+        continue
+      }
+
       const sameLine = Math.abs(nextRect.y - rect.y) < 1
       const cellRight = (sameLine
           ? Math.max(rect.x + 1, nextRect.x)
@@ -527,6 +557,8 @@ Item {
         runTop = rect.y + offsetY
         runHeight = rect.height
       }
+
+      rect = nextRect
     }
 
     flushRun()
@@ -551,6 +583,35 @@ Item {
       rawIdx++
     }
     return raw.length
+  }
+
+  // Maps a raw editor position to the position in renderedViewer's plain text.
+  // Unfocused blocks hide markdown markers and matched inline tags, so raw
+  // search offsets must be shifted by the hidden characters before they can be
+  // drawn against the rendered layout.
+  function rawToRenderedIndex(raw, rawIndex) {
+    if (!raw || rawIndex <= 0)
+      return 0
+
+    const tokens = findSyntaxTokens(raw, true)
+    let removed = 0
+
+    for (let i = 0; i < tokens.length; ++i) {
+      const token = tokens[i]
+
+      if (rawIndex <= token.start)
+        break
+
+      if (rawIndex < token.end) {
+        // A range boundary inside a hidden marker collapses to the start of
+        // the marker, which is the same visual position.
+        return token.start - removed
+      }
+
+      removed += token.end - token.start
+    }
+
+    return rawIndex - removed
   }
 
   function isFormatActive(type) {
@@ -1654,6 +1715,34 @@ Item {
 
               root.transformingShortcut = false
               root.focusRequested(-1)
+              return
+            }
+
+            // paragraph -> code block (``` or ```language)
+            const codeFenceMatch = /^```([a-zA-Z0-9_+#.-]*)(?:\s|\n|$)/.exec(text)
+            if (root.blockType === 0 && codeFenceMatch && (text.endsWith(" ") || text.endsWith("\n") || text === "```")) {
+              root.transformingShortcut = true
+
+              const lang = codeFenceMatch[1].trim()
+              const remaining = text.substring(codeFenceMatch[0].length)
+
+              root.model.changeBlockType(
+                root.blockId,
+                6, // BlockType::Code
+                0
+              )
+
+              if (root.model.setBlockCodeLanguage && lang.length > 0) {
+                root.model.setBlockCodeLanguage(root.blockId, lang)
+              }
+
+              root.model.updateBlockText(
+                root.blockId,
+                remaining
+              )
+
+              root.transformingShortcut = false
+              root.focusRequested(0)
               return
             }
 

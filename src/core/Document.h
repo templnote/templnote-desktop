@@ -39,6 +39,7 @@ public:
 
   bool updateBlockChecked(const QString &id, bool checked);
   bool updateBlockCalloutType(const QString &id, const QString &calloutType);
+  bool updateBlockCodeLanguage(const QString &id, const QString &language);
 
   bool setBlock(int index, const Block &block);
 

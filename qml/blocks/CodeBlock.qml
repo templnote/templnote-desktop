@@ -1,0 +1,426 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Controls.impl
+import Templnote
+
+Item {
+  id: root
+
+  property string blockId: ""
+  property int blockType: 6 // BlockType::Code
+  property string content: ""
+  property int headingLevel: 0
+  property int numberIndex: 1
+  property string alignment: "left"
+  property bool isChecked: false
+  property string codeLanguage: ""
+  property bool showPlaceholder: false
+  property var model: null
+  property var searchHighlights: []
+
+  readonly property int cursorPosition: editor.cursorPosition
+  readonly property string editorText: editor.text
+  readonly property bool isFocused: editor.activeFocus
+  readonly property real firstLineHeight: 22
+
+  signal enterPressed()
+  signal backspacePressed()
+  signal undoRequested()
+  signal redoRequested()
+  signal moveFocusRequested(int direction, real xPosition)
+  signal caretMoved(int position, real cursorGlobalY, real cursorHeight)
+  signal commandMenuRequested(string query, real xPosition, real yPosition, real cursorHeight)
+  signal commandMenuDismissed()
+  signal commandMenuAccepted()
+  signal commandMenuNavigated(int direction)
+  signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
+  signal focusDelegateRequested(int row, int position)
+  signal focusRequested(int position)
+  signal searchNavigated(int direction)
+  signal searchDismissed()
+  signal searchEditStarted()
+  property bool searchNavigationActive: false
+
+  property bool internalUpdating: false
+  property bool copiedNotification: false
+
+  // Formats raw markdown into editor text when focused
+  function getRawMarkdown() {
+    const lang = (root.codeLanguage || "").trim()
+    const header = "```" + lang
+    const body = root.content || ""
+    const footer = "```"
+    if (body.length === 0) {
+      return header + "\n" + footer
+    }
+    return header + "\n" + body + "\n" + footer
+  }
+
+  // Parses the editor text back into language and code body
+  function parseEditorText(raw) {
+    const lines = (raw || "").split("\n")
+    if (lines.length === 0) {
+      return { lang: "", body: "" }
+    }
+
+    let lang = ""
+    let bodyStartIndex = 0
+    let bodyEndIndex = lines.length
+
+    if (lines[0].startsWith("```")) {
+      lang = lines[0].substring(3).trim()
+      bodyStartIndex = 1
+    }
+
+    if (lines.length > 1 && lines[lines.length - 1].trim() === "```") {
+      bodyEndIndex = lines.length - 1
+    }
+
+    const bodyLines = lines.slice(bodyStartIndex, bodyEndIndex)
+    return {
+      lang: lang,
+      body: bodyLines.join("\n")
+    }
+  }
+
+  function syncToEditor() {
+    if (internalUpdating)
+      return
+    internalUpdating = true
+    if (root.isFocused) {
+      const prevPos = editor.cursorPosition
+      editor.text = getRawMarkdown()
+      editor.cursorPosition = Math.min(prevPos, editor.text.length)
+    } else {
+      editor.text = root.content || ""
+    }
+    internalUpdating = false
+  }
+
+  function focusEditor(position) {
+    editor.forceActiveFocus()
+    if (!root.isFocused)
+      return
+
+    if (position === -1) {
+      // Focus in the body just before the closing ```
+      const lines = editor.text.split("\n")
+      if (lines.length > 1 && lines[lines.length - 1].trim() === "```") {
+        const lastLineLen = lines[lines.length - 1].length
+        const targetPos = Math.max(0, editor.text.length - (lastLineLen + 1))
+        editor.cursorPosition = targetPos
+      } else {
+        editor.cursorPosition = editor.text.length
+      }
+    } else {
+      // If position was requested relative to clean body, offset by first fence line
+      const firstLineEnd = editor.text.indexOf("\n")
+      const offset = (firstLineEnd >= 0) ? (firstLineEnd + 1) : 0
+      editor.cursorPosition = Math.min(offset + position, editor.text.length)
+    }
+    updateCaretGeometry()
+  }
+
+  function focusEditorAtX(xPosition) {
+    editor.forceActiveFocus()
+    const targetY = editor.cursorRectangle.y
+    editor.cursorPosition = editor.positionAt(xPosition, targetY)
+    updateCaretGeometry()
+  }
+
+  function focusEditorRange(start, end) {
+    editor.forceActiveFocus()
+    editor.select(start, end)
+    updateCaretGeometry()
+  }
+
+  function refreshFromModel() {
+    syncToEditor()
+  }
+
+  function updateCaretGeometry() {
+    if (editor.activeFocus) {
+      const cRect = editor.cursorRectangle
+      const mapped = editor.mapToItem(null, cRect.x, cRect.y)
+      root.caretMoved(editor.cursorPosition, mapped ? mapped.y : 0, Math.max(18, cRect.height))
+    }
+  }
+
+  function isCursorOnFirstLine() {
+    const textBefore = editor.text.substring(0, editor.cursorPosition)
+    return textBefore.indexOf("\n") < 0
+  }
+
+  function isCursorOnLastLine() {
+    const textAfter = editor.text.substring(editor.cursorPosition)
+    return textAfter.indexOf("\n") < 0
+  }
+
+  onContentChanged: syncToEditor()
+  onCodeLanguageChanged: {
+    highlighter.language = root.codeLanguage || ""
+    syncToEditor()
+  }
+
+  onIsFocusedChanged: {
+    internalUpdating = true
+    if (isFocused) {
+      const prevPos = editor.cursorPosition
+      editor.text = getRawMarkdown()
+      const firstLineEnd = editor.text.indexOf("\n")
+      const firstLineLen = (firstLineEnd >= 0) ? (firstLineEnd + 1) : 0
+      editor.cursorPosition = Math.min(firstLineLen + prevPos, Math.max(firstLineLen, editor.text.length))
+      Qt.callLater(updateCaretGeometry)
+    } else {
+      const parsed = parseEditorText(editor.text)
+      if (root.model && root.blockId.length > 0) {
+        if (parsed.lang !== root.codeLanguage) {
+          root.model.setBlockCodeLanguage(root.blockId, parsed.lang)
+        }
+        root.model.updateBlockText(root.blockId, parsed.body)
+      }
+      editor.text = parsed.body
+    }
+    internalUpdating = false
+  }
+
+  implicitHeight: cardBackground.height + 12
+
+  Rectangle {
+    id: cardBackground
+    x: 0
+    y: 6
+    width: root.width
+    height: Math.max(editor.implicitHeight + 24, 48)
+    radius: 6
+    color: Theme.codeBlockBackground || (Theme.isDark ? "#1e1e24" : "#f4f4f6")
+    border.color: root.isFocused ? Theme.accent : (Theme.border || (Theme.isDark ? "#2e2e38" : "#e0e0e4"))
+    border.width: root.isFocused ? 1.5 : 1
+
+    Behavior on border.color {
+      ColorAnimation { duration: 150 }
+    }
+
+    // Top-Right Language / Copy controls (visible when not focused, or on hover)
+    Row {
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.topMargin: 6
+      anchors.rightMargin: 8
+      spacing: 6
+      z: 10
+
+      // Language badge
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        visible: !root.isFocused && (root.codeLanguage && root.codeLanguage.length > 0)
+        text: root.codeLanguage.toUpperCase()
+        font.pixelSize: 11
+        font.weight: Font.DemiBold
+        font.family: "monospace"
+        color: Theme.isDark ? "#8b949e" : "#57606a"
+      }
+
+      // Copy Button
+      Rectangle {
+        id: copyBtn
+        width: 24
+        height: 24
+        radius: 4
+        visible: (!root.isFocused && (cardHoverArea.containsMouse || copyBtnArea.containsMouse)) || root.copiedNotification
+        color: copyBtnArea.containsMouse ? (Theme.isDark ? "#30363d" : "#e1e4e8") : "transparent"
+
+        Image {
+          anchors.centerIn: parent
+          width: 14
+          height: 14
+          sourceSize: Qt.size(14, 14)
+          source: root.copiedNotification
+                  ? "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_checkbox_checked_20_regular.svg"
+                  : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_copy_20_regular.svg"
+        }
+
+        MouseArea {
+          id: copyBtnArea
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: {
+            const rawBody = root.isFocused ? parseEditorText(editor.text).body : editor.text
+            ClipboardService.setText(rawBody)
+            root.copiedNotification = true
+            copyResetTimer.restart()
+          }
+        }
+
+        Timer {
+          id: copyResetTimer
+          interval: 1500
+          onTriggered: root.copiedNotification = false
+        }
+      }
+    }
+
+    TextArea {
+      id: editor
+      x: 12
+      y: 12
+      width: parent.width - 24
+      text: root.content
+      font.family: "JetBrains Mono, Consolas, Fira Code, Source Code Pro, monospace"
+      font.pixelSize: 14
+      font.letterSpacing: 0.2
+      wrapMode: TextArea.Wrap
+      textFormat: TextArea.PlainText
+      color: Theme.text
+      selectByMouse: true
+      padding: 0
+      topPadding: 0
+      bottomPadding: 0
+      leftPadding: 0
+      rightPadding: 0
+      background: null
+
+      Keys.priority: Keys.BeforeItem
+
+      CodeHighlighter {
+        id: highlighter
+        textDocument: editor.textDocument
+        language: root.codeLanguage || ""
+      }
+
+      Keys.onTabPressed: function(event) {
+        event.accepted = true
+        editor.insert(editor.cursorPosition, "  ")
+      }
+
+      Keys.onPressed: function(event) {
+        // Ctrl + Enter or Cmd + Enter: Exit code block and create a paragraph block below
+        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
+          event.accepted = true
+          exitCodeBlockBelow()
+          return
+        }
+
+        // Return / Enter key
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+          event.accepted = true
+
+          if (root.isFocused) {
+            // Check if cursor is on the closing ``` line
+            const currentText = editor.text
+            const pos = editor.cursorPosition
+            const lastLineIndex = currentText.lastIndexOf("\n")
+            if (lastLineIndex >= 0 && pos >= lastLineIndex) {
+              const lineContent = currentText.substring(lastLineIndex + 1).trim()
+              if (lineContent === "```") {
+                exitCodeBlockBelow()
+                return
+              }
+            }
+          }
+
+          // Normal newline inside code block
+          editor.insert(editor.cursorPosition, "\n")
+          return
+        }
+
+        // Up arrow: move to block above if on first visual line
+        if (event.key === Qt.Key_Up && root.isCursorOnFirstLine()) {
+          event.accepted = true
+          const cRect = editor.cursorRectangle
+          root.moveFocusRequested(-1, cRect.x + editor.x)
+          return
+        }
+
+        // Down arrow: move to block below if on last visual line
+        if (event.key === Qt.Key_Down && root.isCursorOnLastLine()) {
+          event.accepted = true
+          const cRect = editor.cursorRectangle
+          root.moveFocusRequested(1, cRect.x + editor.x)
+          return
+        }
+
+        if (event.key === Qt.Key_Backspace) {
+          // If completely empty or only fence lines left with empty body, backspace deletes or converts block
+          const parsed = parseEditorText(editor.text)
+          if (parsed.body.length === 0) {
+            // Check if cursor is near the start or whole block is effectively empty
+            if (editor.cursorPosition <= 3 || editor.text.trim() === "```" || editor.text.trim() === "``````" || parsed.body.length === 0) {
+              event.accepted = true
+              root.backspacePressed()
+              return
+            }
+          }
+        }
+
+        if (event.key === Qt.Key_Z && (event.modifiers & Qt.ControlModifier)) {
+          event.accepted = true
+          if (event.modifiers & Qt.ShiftModifier) {
+            root.redoRequested()
+          } else {
+            root.undoRequested()
+          }
+          return
+        }
+      }
+
+      onTextChanged: {
+        if (root.internalUpdating)
+          return
+
+        if (root.isFocused) {
+          const parsed = root.parseEditorText(editor.text)
+          root.internalUpdating = true
+          if (parsed.lang !== root.codeLanguage && root.model && root.blockId.length > 0) {
+            root.model.setBlockCodeLanguage(root.blockId, parsed.lang)
+          }
+          if (root.model && root.blockId.length > 0) {
+            root.model.updateBlockText(root.blockId, parsed.body)
+          }
+          root.internalUpdating = false
+        } else {
+          if (root.model && root.blockId.length > 0) {
+            root.internalUpdating = true
+            root.model.updateBlockText(root.blockId, editor.text)
+            root.internalUpdating = false
+          }
+        }
+      }
+
+      onCursorPositionChanged: {
+        root.updateCaretGeometry()
+      }
+    }
+
+    MouseArea {
+      id: cardHoverArea
+      anchors.fill: parent
+      hoverEnabled: true
+      acceptedButtons: Qt.NoButton
+    }
+  }
+
+  function exitCodeBlockBelow() {
+    if (!root.model)
+      return
+
+    // Strip the closing ``` if still in editor
+    const parsed = parseEditorText(editor.text)
+    root.internalUpdating = true
+    if (parsed.lang !== root.codeLanguage)
+      root.model.setBlockCodeLanguage(root.blockId, parsed.lang)
+    root.model.updateBlockText(root.blockId, parsed.body)
+    editor.text = parsed.body
+    root.internalUpdating = false
+
+    const row = root.model.indexOfBlock(root.blockId)
+    if (row >= 0) {
+      const nextRow = row + 1
+      root.model.insertBlock(nextRow, 0, "")
+      Qt.callLater(function() {
+        root.focusDelegateRequested(nextRow, 0)
+      })
+    }
+  }
+}

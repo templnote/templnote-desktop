@@ -1,13 +1,26 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QClipboard>
 #include <QtQml>
 #include <qguiapplication.h>
 #include <qqmlapplicationengine.h>
 
+#include "core/CodeHighlighter.h"
 #include "model/BlockModel.h"
 #include "search/SearchIndex.h"
 #include "search/SearchResultsModel.h"
 #include "storage/DocumentListModel.h"
+
+namespace {
+class ClipboardHelper : public QObject {
+  Q_OBJECT
+public:
+  explicit ClipboardHelper(QObject *parent = nullptr) : QObject(parent) {}
+  Q_INVOKABLE void setText(const QString &text) {
+    QGuiApplication::clipboard()->setText(text);
+  }
+};
+}
 
 int main(int argc, char *argv[]) {
   QGuiApplication app(argc, argv);
@@ -21,8 +34,12 @@ int main(int argc, char *argv[]) {
   qmlRegisterType<Templnote::SearchIndex>("Templnote", 1, 0, "SearchIndex");
   qmlRegisterType<Templnote::SearchResultsModel>("Templnote", 1, 0,
                                                  "SearchResultsModel");
+  qmlRegisterType<Templnote::CodeHighlighter>("Templnote", 1, 0, "CodeHighlighter");
 
   QQmlApplicationEngine engine;
+
+  ClipboardHelper clipboardHelper;
+  engine.rootContext()->setContextProperty("ClipboardService", &clipboardHelper);
 
   engine.loadFromModule("Templnote", "Main");
 
@@ -31,3 +48,5 @@ int main(int argc, char *argv[]) {
 
   return app.exec();
 }
+
+#include "main.moc"

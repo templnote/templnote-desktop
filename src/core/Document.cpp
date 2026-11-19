@@ -166,6 +166,22 @@ bool Document::updateBlockCalloutType(const QString &id, const QString &calloutT
   return true;
 }
 
+bool Document::updateBlockCodeLanguage(const QString &id, const QString &language) {
+  const int index = indexOf(id);
+
+  if (index < 0)
+    return false;
+
+  const QString trimmed = language.trimmed();
+  if (!trimmed.isEmpty()) {
+    m_blocks[index].metadata.insert(QStringLiteral("codeLanguage"), trimmed);
+  } else {
+    m_blocks[index].metadata.remove(QStringLiteral("codeLanguage"));
+  }
+
+  return true;
+}
+
 bool Document::setBlock(int index, const Block &block) {
   if (index < 0 || index >= m_blocks.size())
     return false;

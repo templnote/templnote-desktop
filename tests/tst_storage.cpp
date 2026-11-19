@@ -154,6 +154,32 @@ private slots:
                                     .absoluteFilePath());
   }
 
+  void renameFolderRetargetsOpenDocument() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    DocumentListModel model(directory.path());
+    const QString folder = model.createUntitledFolder();
+
+    const QString documentPath = QDir(folder).filePath("Note.templnote");
+    QFile document(documentPath);
+    QVERIFY(document.open(QIODevice::WriteOnly | QIODevice::Text));
+    document.write("{}");
+    document.close();
+
+    model.setCurrentFilePath(documentPath);
+
+    QSignalSpy renamed(&model, &DocumentListModel::pathRenamed);
+    QVERIFY(model.renameFolder(folder, "Renamed"));
+    QCOMPARE(renamed.count(), 1);
+
+    const QString expected =
+        QFileInfo(QDir(directory.path()).filePath("Renamed/Note.templnote"))
+            .absoluteFilePath();
+    QCOMPARE(model.currentFilePath(), expected);
+    QVERIFY(QFileInfo::exists(expected));
+  }
+
   void navigationRejectsPathsOutsideRoot() {
     QTemporaryDir root;
     QTemporaryDir outside;
@@ -346,6 +372,32 @@ private slots:
     model.refresh();
     QCOMPARE(model.count(), 1);
     QCOMPARE(model.filePathAt(0), QDir::cleanPath(movedFilePath));
+  }
+
+  void deleteFolderRetargetsOpenDocument() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    DocumentListModel model(directory.path());
+    const QString folder = model.createUntitledFolder();
+
+    const QString documentPath = QDir(folder).filePath("Inner.templnote");
+    QFile document(documentPath);
+    QVERIFY(document.open(QIODevice::WriteOnly | QIODevice::Text));
+    document.write("{}");
+    document.close();
+
+    model.setCurrentFilePath(documentPath);
+
+    QSignalSpy renamed(&model, &DocumentListModel::pathRenamed);
+    QVERIFY(model.deleteEntry(folder));
+    QCOMPARE(renamed.count(), 1);
+
+    const QString expected =
+        QFileInfo(QDir(directory.path()).filePath("Inner.templnote"))
+            .absoluteFilePath();
+    QCOMPARE(model.currentFilePath(), expected);
+    QVERIFY(QFileInfo::exists(expected));
   }
 
   void renameDocumentRoundTrip() {

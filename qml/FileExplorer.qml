@@ -348,10 +348,8 @@ Rectangle {
     } else {
       const newPath = root.documentList.renameDocument(path, name)
       if (newPath.length > 0) {
-        // If current document in editor was renamed, update it
-        if (root.documentModel && root.documentModel.currentFilePath === path) {
-          root.documentModel.loadDocument(newPath)
-        }
+        // If this document is open, Main.qml's pathRenamed handler retargets
+        // it without reloading, so unsaved edits are preserved.
         root.editingEntryPath = ""
       }
     }

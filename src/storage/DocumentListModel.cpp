@@ -160,12 +160,30 @@ void DocumentListModel::setCurrentFilePath(const QString &path) {
   if (m_currentFilePath == normalized)
     return;
 
-  const bool hadCurrent = !m_currentFilePath.isEmpty();
+  const QString previous = m_currentFilePath;
   m_currentFilePath = normalized;
 
-  if ((hadCurrent || !normalized.isEmpty()) && !m_entries.isEmpty()) {
-    emit dataChanged(index(0), index(m_entries.size() - 1), {CurrentRole});
-  }
+  const auto rowForPath = [this](const QString &candidate) {
+    if (candidate.isEmpty())
+      return -1;
+
+    for (int row = 0; row < m_entries.size(); ++row) {
+      if (m_entries[row].filePath == candidate)
+        return row;
+    }
+
+    return -1;
+  };
+
+  // Only the rows whose current marker actually changed need a repaint.
+  const int previousRow = rowForPath(previous);
+  const int currentRow = rowForPath(normalized);
+
+  if (previousRow >= 0)
+    emit dataChanged(index(previousRow), index(previousRow), {CurrentRole});
+
+  if (currentRow >= 0 && currentRow != previousRow)
+    emit dataChanged(index(currentRow), index(currentRow), {CurrentRole});
 
   emit currentFilePathChanged();
 }
@@ -422,6 +440,12 @@ bool DocumentListModel::renameFolder(const QString &path,
     emit directoryChanged();
   }
 
+  // Keep the current-document marker pointing at the moved file as well.
+  if (m_currentFilePath == oldPath ||
+      m_currentFilePath.startsWith(oldPath + '/')) {
+    setCurrentFilePath(newPath + m_currentFilePath.mid(oldPath.size()));
+  }
+
   refresh();
   emit pathRenamed(oldPath, newPath);
   return true;
@@ -548,20 +572,35 @@ bool DocumentListModel::deleteEntry(const QString &path) {
         dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot);
 
     for (const QFileInfo &child : entries) {
+      const QString childPath = QDir::cleanPath(child.absoluteFilePath());
+      QString target;
+
       if (child.isDir()) {
-        const QString target =
+        target =
             AppPaths::uniqueDirectoryPath(m_rootDirectory, child.fileName());
-        if (!target.isEmpty()) {
-          QDir().rename(child.absoluteFilePath(), target);
-        }
+
+        if (target.isEmpty() || !QDir().rename(childPath, target))
+          continue;
       } else {
-        const QString base = child.completeBaseName();
-        const QString target =
-            AppPaths::uniqueDocumentPath(m_rootDirectory, base);
-        if (!target.isEmpty()) {
-          QFile::rename(child.absoluteFilePath(), target);
-        }
+        target = AppPaths::uniqueDocumentPath(m_rootDirectory,
+                                              child.completeBaseName());
+
+        if (target.isEmpty() || !QFile::rename(childPath, target))
+          continue;
       }
+
+      const QString newChildPath = QDir::cleanPath(target);
+
+      if (m_currentFilePath == childPath) {
+        setCurrentFilePath(newChildPath);
+      } else if (m_currentFilePath.startsWith(childPath + '/')) {
+        setCurrentFilePath(newChildPath +
+                           m_currentFilePath.mid(childPath.size()));
+      }
+
+      // Report the move so the open document and the search index can follow
+      // children that were rescued from the deleted folder.
+      emit pathRenamed(childPath, newChildPath);
     }
 
     // If the explorer is inside the folder being deleted, jump up to parent or root.

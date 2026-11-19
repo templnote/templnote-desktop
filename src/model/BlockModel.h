@@ -39,6 +39,7 @@ public:
     AlignmentRole,
     CheckedRole,
     CalloutTypeRole,
+    CodeLanguageRole,
     NextBlockTypeRole,
     NumberIndexRole
   };
@@ -80,6 +81,8 @@ public:
 
   Q_INVOKABLE bool setBlockCalloutType(const QString &id, const QString &calloutType);
 
+  Q_INVOKABLE bool setBlockCodeLanguage(const QString &id, const QString &language);
+
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
 
   // splits blocks on pressing enter (onPressedEnter)
@@ -119,6 +122,11 @@ public:
   // free "Name 2" variant is picked on collision. Only the base name is
   // accepted; a typed .templnote suffix is stripped.
   Q_INVOKABLE bool renameDocument(const QString &newBaseName);
+
+  // Retargets the open document after its file was moved or renamed outside
+  // this model (for example when the explorer renames its parent folder).
+  // The in-memory document and unsaved edits are preserved.
+  Q_INVOKABLE void adoptRenamedPath(const QString &newPath);
 
   // Writes the document as JSON. A missing .templnote extension is appended
   // and the parent directory is created when necessary. The write is atomic:

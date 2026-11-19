@@ -238,6 +238,10 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
     return block->metadata.value(QStringLiteral("checked"), false).toBool();
   }
 
+  case CodeLanguageRole: {
+    return block->metadata.value(QStringLiteral("codeLanguage"), QStringLiteral("")).toString();
+  }
+
   case CalloutTypeRole: {
     const QString type = block->metadata.value(QStringLiteral("calloutType")).toString();
     return type.isEmpty() ? QStringLiteral("note") : type;
@@ -283,6 +287,7 @@ QHash<int, QByteArray> BlockModel::roleNames() const {
           {AlignmentRole, "alignment"},
           {CheckedRole, "checked"},
           {CalloutTypeRole, "calloutType"},
+          {CodeLanguageRole, "codeLanguage"},
           {NextBlockTypeRole, "nextBlockType"},
           {NumberIndexRole, "numberIndex"}};
 }
@@ -673,6 +678,36 @@ bool BlockModel::setBlockCalloutType(const QString &id, const QString &calloutTy
   op.block = *m_document.blockAt(row);
   saveHistory({op}, id, id);
   emit dataChanged(index(row), index(row), {MetadataRole, CalloutTypeRole});
+
+  markModified();
+  return true;
+}
+
+bool BlockModel::setBlockCodeLanguage(const QString &id, const QString &language) {
+  const int row = m_document.indexOf(id);
+
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block || block->type != BlockType::Code)
+    return false;
+
+  const QString currentLang = block->metadata.value(QStringLiteral("codeLanguage"), QStringLiteral("")).toString();
+  if (currentLang == language.trimmed())
+    return true;
+
+  const Block beforeBlock = *block;
+
+  if (!m_document.updateBlockCodeLanguage(id, language))
+    return false;
+
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, CodeLanguageRole});
 
   markModified();
   return true;
@@ -1131,6 +1166,26 @@ bool BlockModel::renameDocument(const QString &newBaseName) {
   setError(QStringLiteral(
       "The document was renamed, but its title could not be updated."));
   return true;
+}
+
+void BlockModel::adoptRenamedPath(const QString &newPath) {
+  const QString trimmed = newPath.trimmed();
+
+  if (m_currentFilePath.isEmpty() || trimmed.isEmpty())
+    return;
+
+  const QString normalized = QFileInfo(trimmed).absoluteFilePath();
+
+  if (normalized == m_currentFilePath)
+    return;
+
+  // The file was moved on disk while it stayed open. Keep the document and
+  // its history intact and only retarget the path so autosave writes to the
+  // new location. A changed title is expected after a rename.
+  if (m_lastSavedPath == m_currentFilePath)
+    m_lastSavedPath = normalized;
+
+  setCurrentFilePath(normalized);
 }
 
 // undo redo functionality

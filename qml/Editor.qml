@@ -162,6 +162,11 @@ Item {
   property int activeSearchMatch: -1
   property bool searchActive: false
 
+  // Set by the host while a full-window surface (settings, global search,
+  // shortcuts, confirmations) covers the editor. Background scrolling must
+  // stop so wheel events cannot move the document underneath those surfaces.
+  property bool scrollingEnabled: true
+
   // blockId -> [{ start, length, active }]. Built once per search update so a
   // delegate only reads its own slice instead of scanning every match.
   property var searchHighlightsByBlock: ({})
@@ -602,6 +607,8 @@ Item {
   ListView {
     id: documentView
 
+    objectName: "documentView"
+
     width: Math.min(root.contentWidth, parent.width - 48)
 
     anchors {
@@ -641,8 +648,13 @@ Item {
         easing.type: Easing.OutCubic
       }
     }
-    // Keep the command menu anchored while it is open, and disable normal list scrolling while dragging
-    interactive: root.activeCommandDelegate === null && !root.isDraggingBlock
+    // Keep the command menu and selection toolbar anchored while they are
+    // open, and disable normal list scrolling while dragging or while a host
+    // surface covers the editor.
+    interactive: root.scrollingEnabled
+                 && root.activeCommandDelegate === null
+                 && !root.isDraggingBlock
+                 && !selectionToolbar.showToolbar
 
     NumberAnimation {
       id: scrollAnimation
@@ -666,6 +678,7 @@ Item {
       required property string alignment
       required property bool checked
       required property string calloutType
+      required property string codeLanguage
       required property int index
 
       readonly property real bottomGap: BlockSpacing.bottomGap(
@@ -906,6 +919,7 @@ Item {
         alignment: delegateRoot.alignment
         isChecked: delegateRoot.checked
         calloutType: delegateRoot.calloutType || "note"
+        codeLanguage: delegateRoot.codeLanguage || ""
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive
@@ -1304,6 +1318,8 @@ Item {
 
   SelectionToolbar {
     id: selectionToolbar
+
+    objectName: "selectionToolbar"
 
     function syncFormattingState() {
       if (!root.activeSelectionDelegate) return

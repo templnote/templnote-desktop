@@ -765,6 +765,34 @@ private slots:
     QVERIFY(!model.lastError().isEmpty());
   }
 
+  void adoptRenamedPathKeepsUnsavedEdits() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    QVERIFY(model.saveDocument(directory.filePath("Draft")));
+    const QString oldPath = model.currentFilePath();
+
+    QVERIFY(model.updateBlockText(model.blockIdAt(0), "unsaved text"));
+
+    // Simulate the explorer renaming the parent folder on disk.
+    const QString newPath =
+        QFileInfo(directory.filePath("Moved.templnote")).absoluteFilePath();
+    QVERIFY(QFile::rename(oldPath, newPath));
+
+    model.adoptRenamedPath(newPath);
+
+    QCOMPARE(model.currentFilePath(), newPath);
+    QCOMPARE(model.documentTitle(), QString("Moved"));
+    QVERIFY(model.isModified());
+
+    QVERIFY(model.saveCurrentDocument());
+    QVERIFY(QFile::exists(newPath));
+    QVERIFY(!QFile::exists(oldPath));
+    QCOMPARE(model.data(model.index(0, 0), BlockModel::ContentRole).toString(),
+             QString("unsaved text"));
+  }
+
   void documentFolderIsRelativeToTemplnote() {
     const QString documents = AppPaths::ensureDocumentsDirectory();
     QVERIFY(!documents.isEmpty());

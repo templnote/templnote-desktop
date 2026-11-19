@@ -6,6 +6,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
@@ -58,6 +60,13 @@ QStringList resultPaths(const QVector<SearchIndex::Result> &results) {
 
   return paths;
 }
+
+// Startup indexing runs on the writer pool now. Tests that inspect the index
+// immediately must let the queued scan finish first.
+void waitForInitialIndex(SearchIndex &index) {
+  QSignalSpy spy(&index, &SearchIndex::indexUpdated);
+  QVERIFY(spy.wait(5000));
+}
 } // namespace
 
 class SearchIndexTests : public QObject {
@@ -86,6 +95,7 @@ private slots:
     QVERIFY(!beta.isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
 
     const auto alphaResults = index.search(QStringLiteral("alpha"));
     QCOMPARE(alphaResults.size(), 1);
@@ -105,6 +115,61 @@ private slots:
     QCOMPARE(betaResults.first().documentTitle, QStringLiteral("Beta"));
   }
 
+  void legacyIndexWithoutRowidMapIsMigrated() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    const QString path = writeDocument(
+        root, QStringLiteral("Legacy.templnote"), QStringLiteral("Legacy"),
+        {QStringLiteral("legacy token")});
+    QVERIFY(!path.isEmpty());
+
+    const QString databasePath = temp.filePath("search.sqlite");
+
+    // Reproduce a database written before search_rows existed: FTS rows are
+    // present but there is no rowid map.
+    {
+      QSqlDatabase db =
+          QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                    QStringLiteral("legacy-index-setup"));
+      db.setDatabaseName(databasePath);
+      QVERIFY(db.open());
+
+      QSqlQuery query(db);
+      QVERIFY(query.exec(QStringLiteral(
+          "CREATE VIRTUAL TABLE search_index USING fts5("
+          "document_path UNINDEXED, document_title, block_id UNINDEXED, "
+          "block_text)")));
+      QVERIFY(query.exec(QStringLiteral(
+          "CREATE TABLE search_meta(document_path TEXT PRIMARY KEY, "
+          "document_title TEXT, modified_ms INTEGER, size INTEGER)")));
+
+      QSqlQuery insert(db);
+      QVERIFY(insert.prepare(QStringLiteral(
+          "INSERT INTO search_index(document_path, document_title, block_id, "
+          "block_text) VALUES(?, ?, ?, ?)")));
+      insert.addBindValue(QFileInfo(path).absoluteFilePath());
+      insert.addBindValue(QStringLiteral("Legacy"));
+      insert.addBindValue(QStringLiteral("legacy-block"));
+      insert.addBindValue(QStringLiteral("legacy token"));
+      QVERIFY(insert.exec());
+
+      db.close();
+    }
+
+    QSqlDatabase::removeDatabase(QStringLiteral("legacy-index-setup"));
+
+    SearchIndex index(root, databasePath);
+    waitForInitialIndex(index);
+
+    // The legacy row must be found through the rebuilt map and replaced, not
+    // duplicated next to the freshly indexed copy.
+    const auto results = index.search(QStringLiteral("legacy"));
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.first().documentPath, QFileInfo(path).absoluteFilePath());
+  }
+
   void prefixesAndAllTerms() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -116,6 +181,7 @@ private slots:
     QVERIFY(!path.isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
 
     QCOMPARE(index.search(QStringLiteral("mult")).size(), 1);
     QCOMPARE(index.search(QStringLiteral("edi")).size(), 1);
@@ -142,6 +208,7 @@ private slots:
     QVERIFY(!second.isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
 
     const auto results = index.search(QStringLiteral("needle"));
     QCOMPARE(results.size(), 3);
@@ -176,6 +243,7 @@ private slots:
     QVERIFY(!path.isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
 
     const auto results = index.search(QStringLiteral("cat"));
     QCOMPARE(results.size(), 1);
@@ -198,6 +266,7 @@ private slots:
     QVERIFY(!path.isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
     QCOMPARE(index.search(QStringLiteral("originalword")).size(), 1);
 
     writeDocument(root, QStringLiteral("External.templnote"),
@@ -227,6 +296,7 @@ private slots:
     QVERIFY(model.createDocument(path));
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
     index.setBlockModel(&model);
 
     const QString firstId =
@@ -273,6 +343,7 @@ private slots:
                            QStringLiteral("Many"), texts).isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
 
     bool truncated = false;
     const auto results = index.search(QStringLiteral("capblock"), &truncated);
@@ -292,6 +363,7 @@ private slots:
 
     DocumentListModel documents(root);
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
     index.setDocumentList(&documents);
 
     QCOMPARE(index.search(QStringLiteral("renametoken")).size(), 1);
@@ -330,6 +402,7 @@ private slots:
     database.close();
 
     SearchIndex index(root, databasePath);
+    waitForInitialIndex(index);
 
     const auto results = index.search(QStringLiteral("recovertoken"));
     QCOMPARE(results.size(), 1);
@@ -347,6 +420,7 @@ private slots:
     QVERIFY(!path.isEmpty());
 
     SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
     SearchResultsModel model;
     model.setIndex(&index);
     model.search(QStringLiteral("modelneedle"));

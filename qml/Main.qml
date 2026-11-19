@@ -139,8 +139,25 @@ ApplicationWindow {
     }
 
     function onDocumentLoaded() {
+      // onCurrentFilePathChanged already refreshes the explorer for path
+      // changes; a reload of the same file does not need another scan.
       documentList.currentFilePath = blockModel.currentFilePath
-      documentList.refresh()
+    }
+  }
+
+  Connections {
+    target: documentList
+
+    // Folder renames and folder deletions can move the open document without
+    // changing its content. Follow the move instead of reloading from disk so
+    // unsaved edits survive and autosave targets the new path.
+    function onPathRenamed(oldPath, newPath) {
+      const current = blockModel.currentFilePath
+
+      if (current === oldPath)
+        blockModel.adoptRenamedPath(newPath)
+      else if (current.startsWith(oldPath + "/"))
+        blockModel.adoptRenamedPath(newPath + current.substring(oldPath.length))
     }
   }
 
@@ -269,6 +286,13 @@ ApplicationWindow {
       bottomReservedSpace: promptPanel.height
       model: blockModel
       visible: window.hasDocument
+
+      // Full-window surfaces sit above the editor; wheel events must not move
+      // the document while one of them is open.
+      scrollingEnabled: !settingsWindow.visible && !searchWindow.visible
+                        && !shortcutsSheet.visible
+                        && !deleteConfirmationModal.visible
+                        && !saveConfirmationModal.visible
     }
 
     DocumentHeader {
@@ -563,12 +587,17 @@ ApplicationWindow {
               deleteConfirmationModal.close()
 
               if (pathToDelete.length > 0) {
-                documentList.deleteEntry(pathToDelete)
+                if (!documentList.deleteEntry(pathToDelete))
+                  return
 
-                // If the currently open document was deleted, switch to the
-                // most recent survivor; otherwise fall back to the home
-                // surface with no document open.
-                if (blockModel.currentFilePath === pathToDelete) {
+                // If the open document itself was deleted, switch to the most
+                // recent survivor; otherwise fall back to the home surface.
+                // Documents rescued from a deleted folder were retargeted by
+                // the pathRenamed handler above and stay open.
+                const current = blockModel.currentFilePath
+
+                if (current === pathToDelete ||
+                    current.startsWith(pathToDelete + "/")) {
                   const recent = documentList.mostRecentDocumentPath()
                   if (recent.length > 0 && blockModel.loadDocument(recent)) {
                     documentList.currentFilePath = recent

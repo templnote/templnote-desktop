@@ -77,8 +77,14 @@ set_source_files_properties(
     QT_RESOURCE_ALIAS "qml/Preferences.qml"
 )
 
+set_source_files_properties(
+    "${TEST_QML_DIR}/shaders/paper.frag.qsb" PROPERTIES
+    QT_RESOURCE_ALIAS "qml/shaders/paper.frag.qsb"
+)
+
 foreach(qml_file
     Editor.qml
+    PaperSheet.qml
     BlockRenderer.qml
     CommandMenu.qml
     SelectionToolbar.qml
@@ -94,6 +100,7 @@ foreach(qml_file
     blocks/BulletBlock.qml
     blocks/NumberedBlock.qml
     blocks/QuoteBlock.qml
+    blocks/CodeBlock.qml
     blocks/DividerBlock.qml
     blocks/CalloutBlock.qml
     blocks/TodoBlock.qml
@@ -118,6 +125,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/BlockSpacing.qml
     ${TEST_QML_DIR}/Preferences.qml
     ${TEST_QML_DIR}/Editor.qml
+    ${TEST_QML_DIR}/PaperSheet.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
     ${TEST_QML_DIR}/CommandMenu.qml
     ${TEST_QML_DIR}/SelectionToolbar.qml
@@ -127,9 +135,13 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/BulletBlock.qml
     ${TEST_QML_DIR}/blocks/NumberedBlock.qml
     ${TEST_QML_DIR}/blocks/QuoteBlock.qml
+    ${TEST_QML_DIR}/blocks/CodeBlock.qml
     ${TEST_QML_DIR}/blocks/DividerBlock.qml
     ${TEST_QML_DIR}/blocks/CalloutBlock.qml
     ${TEST_QML_DIR}/blocks/TodoBlock.qml
+
+    RESOURCES
+    ${TEST_QML_DIR}/shaders/paper.frag.qsb
 )
 
 target_link_libraries(tst_editor PRIVATE

@@ -44,6 +44,8 @@ add_library(templnote_core STATIC
   src/core/Block.h
   src/core/Block.cpp
   src/core/BlockTypes.h
+  src/core/CodeHighlighter.h
+  src/core/CodeHighlighter.cpp
   src/core/Document.h
   src/core/Document.cpp
 
@@ -67,6 +69,8 @@ target_include_directories(templnote_core PUBLIC
 
 target_link_libraries(templnote_core PUBLIC
   Qt6::Core
+  Qt6::Gui
+  Qt6::Quick
   Qt6::Concurrent
   Qt6::Sql
 )
@@ -118,6 +122,7 @@ qt_add_qml_module(templnote
   qml/blocks/BulletBlock.qml
   qml/blocks/NumberedBlock.qml
   qml/blocks/QuoteBlock.qml
+  qml/blocks/CodeBlock.qml
   qml/blocks/DividerBlock.qml
   qml/blocks/CalloutBlock.qml
   qml/blocks/TodoBlock.qml

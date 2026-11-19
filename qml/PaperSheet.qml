@@ -62,7 +62,19 @@ Item {
       sourceItem: wallpaperImg
       hideSource: true
       visible: false
-      live: true
+      // The wallpaper is a static image: updating the texture every frame
+      // would re-render it needlessly. The image loads asynchronously, so
+      // request one refresh once it is ready.
+      live: false
+    }
+
+    Connections {
+      target: wallpaperImg
+
+      function onStatusChanged() {
+        if (wallpaperImg.status === Image.Ready)
+          wallpaperSourceItem.scheduleUpdate()
+      }
     }
 
     // GPU-accelerated paper fiber shader with built-in sub-pixel SDF rounded corners

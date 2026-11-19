@@ -13,6 +13,7 @@ Item {
   property string alignment: "left"
   property bool isChecked: false
   property string calloutType: "note"
+  property string codeLanguage: ""
   property bool showPlaceholder: false
   property var model: null
 
@@ -121,6 +122,8 @@ Item {
       return todoComponent
     case 5: // BlockType::Quote
       return quoteComponent
+    case 6: // BlockType::Code
+      return codeComponent
     case 7: // BlockType::Divider
       return dividerComponent
     case 10: // BlockType::Callout
@@ -163,6 +166,11 @@ Item {
   }
 
   Component {
+    id: codeComponent
+    CodeBlock {}
+  }
+
+  Component {
     id: dividerComponent
     DividerBlock {}
   }
@@ -187,6 +195,8 @@ Item {
       item.isChecked = Qt.binding(function() { return root.isChecked })
       if ("calloutType" in item)
         item.calloutType = Qt.binding(function() { return root.calloutType })
+      if ("codeLanguage" in item)
+        item.codeLanguage = Qt.binding(function() { return root.codeLanguage })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
@@ -204,7 +214,10 @@ Item {
       item.commandMenuAccepted.connect(root.commandMenuAccepted)
       item.commandMenuNavigated.connect(root.commandMenuNavigated)
       item.selectionChanged.connect(root.selectionChanged)
-      item.commandMenuActive = Qt.binding(function() { return root.commandMenuActive })
+      // Not every renderer hosts the slash-command menu (callouts and code
+      // blocks do not), so only bind the property when it exists.
+      if ("commandMenuActive" in item)
+        item.commandMenuActive = Qt.binding(function() { return root.commandMenuActive })
       item.searchNavigated.connect(root.searchNavigated)
       item.searchDismissed.connect(root.searchDismissed)
       item.searchEditStarted.connect(root.searchEditStarted)

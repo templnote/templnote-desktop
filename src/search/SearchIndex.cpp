@@ -284,13 +284,9 @@ bool row_replaceDocument(QSqlDatabase &db, const QString &path,
 bool row_upsertBlock(QSqlDatabase &db, const QString &path,
                      const QString &title, const QString &blockId,
                      const QString &text) {
-  QSqlQuery remove(db);
-  remove.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ? AND block_id = ?"));
-  remove.addBindValue(path);
-  remove.addBindValue(blockId);
-
-  if (!remove.exec())
+  // Delete through the rowid map and update it when the new row is inserted,
+  // otherwise later document/block removals would miss this row.
+  if (!row_deleteBlockRow(db, path, blockId))
     return false;
 
   if (!text.isEmpty()) {
@@ -305,6 +301,17 @@ bool row_upsertBlock(QSqlDatabase &db, const QString &path,
 
     if (!insert.exec())
       return false;
+
+    QSqlQuery insertRow(db);
+    insertRow.prepare(QStringLiteral(
+        "INSERT INTO search_rows(document_path, block_id, rowid) "
+        "VALUES(?, ?, ?)"));
+    insertRow.addBindValue(path);
+    insertRow.addBindValue(blockId);
+    insertRow.addBindValue(insert.lastInsertId().toLongLong());
+
+    if (!insertRow.exec())
+      return false;
   }
 
   QSqlQuery invalidate(db);
@@ -317,13 +324,7 @@ bool row_upsertBlock(QSqlDatabase &db, const QString &path,
 
 bool row_removeBlock(QSqlDatabase &db, const QString &path,
                      const QString &blockId) {
-  QSqlQuery remove(db);
-  remove.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ? AND block_id = ?"));
-  remove.addBindValue(path);
-  remove.addBindValue(blockId);
-
-  if (!remove.exec())
+  if (!row_deleteBlockRow(db, path, blockId))
     return false;
 
   QSqlQuery invalidate(db);
@@ -599,7 +600,10 @@ SearchIndex::SearchIndex(const QString &documentsRoot,
   // rename, delete) wait for the worker before touching the database.
   m_writePool.setMaxThreadCount(1);
 
-  syncIncremental();
+  // Indexing the document tree must not block the UI thread during startup.
+  // The queued call also lets QML finish wiring the models before the scan
+  // reads the current document.
+  QTimer::singleShot(0, this, &SearchIndex::syncIncrementalAsync);
 }
 
 SearchIndex::~SearchIndex() {
@@ -675,6 +679,7 @@ bool SearchIndex::openDatabase() {
   QSqlQuery pragma(m_db);
   pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
   pragma.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
+  pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
 
   return true;
 }
@@ -702,6 +707,49 @@ bool SearchIndex::createSchema() {
     qWarning() << "SearchIndex: create search_meta failed:"
                << query.lastError().text();
     return false;
+  }
+
+  // The rowid map lets deletes and renames target FTS5 rows directly instead
+  // of scanning the whole index by unindexed document_path/block_id columns.
+  if (!query.exec(QStringLiteral(
+          "CREATE TABLE IF NOT EXISTS search_rows("
+          "rowid INTEGER PRIMARY KEY,"
+          "document_path TEXT NOT NULL,"
+          "block_id TEXT NOT NULL)"))) {
+    qWarning() << "SearchIndex: create search_rows failed:"
+               << query.lastError().text();
+    return false;
+  }
+
+  if (!query.exec(QStringLiteral(
+          "CREATE INDEX IF NOT EXISTS search_rows_document_path "
+          "ON search_rows(document_path)")) ||
+      !query.exec(QStringLiteral(
+          "CREATE INDEX IF NOT EXISTS search_rows_block "
+          "ON search_rows(document_path, block_id)"))) {
+    qWarning() << "SearchIndex: create search_rows indexes failed:"
+               << query.lastError().text();
+    return false;
+  }
+
+  // Databases written before search_rows existed already contain FTS rows.
+  // Rebuild the map from those rows once so deletes and renames find them.
+  QSqlQuery hasIndex(m_db);
+  if (hasIndex.exec(QStringLiteral("SELECT 1 FROM search_index LIMIT 1")) &&
+      hasIndex.next()) {
+    QSqlQuery hasRows(m_db);
+    if (hasRows.exec(QStringLiteral("SELECT 1 FROM search_rows LIMIT 1")) &&
+        !hasRows.next()) {
+      QSqlQuery rebuild(m_db);
+      if (!rebuild.exec(QStringLiteral(
+              "INSERT INTO search_rows(document_path, block_id, rowid) "
+              "SELECT document_path, block_id, rowid FROM search_index"))) {
+        // An unmappable legacy index is worse than no index: drop it so the
+        // startup sync rebuilds everything from disk.
+        query.exec(QStringLiteral("DELETE FROM search_index"));
+        query.exec(QStringLiteral("DELETE FROM search_meta"));
+      }
+    }
   }
 
   return true;
@@ -1598,13 +1646,16 @@ void SearchIndex::rebuild() {
   if (!m_db.isOpen())
     return;
 
+  // Clear through the writer pool first so no in-flight batch can reinsert
+  // rows after the wipe. The expensive rescan itself stays asynchronous.
   m_writePool.waitForDone();
 
   QSqlQuery query(m_db);
   query.exec(QStringLiteral("DELETE FROM search_index"));
+  query.exec(QStringLiteral("DELETE FROM search_rows"));
   query.exec(QStringLiteral("DELETE FROM search_meta"));
 
-  syncIncremental();
+  syncIncrementalAsync();
 }
 
 QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
