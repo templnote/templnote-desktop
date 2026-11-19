@@ -21,6 +21,10 @@ Item {
   property real selectionToolbarGap: 6
   property var pendingSelection: null
 
+  // Paper sheet width always stays at standard 800px column (+ 64px padding) so
+  // full width block mode does not alter paper/wallpaper sheet boundaries.
+  readonly property real sheetWidth: 800
+
   // Focus is applied once the target delegate exists (or is reused), instead
   // of polling/forcing synchronous layouts.
   property string pendingFocusBlockId: ""
@@ -66,17 +70,16 @@ Item {
       const viewPos = documentView.mapFromItem(null, 0, root.dragGlobalY)
       const topEdge = 40
       const bottomEdge = documentView.height - 40
-      const maxScroll = Math.max(0, documentView.contentHeight - documentView.height)
 
       if (viewPos.y < topEdge) {
         const factor = Math.max(0, Math.min(1, (topEdge - viewPos.y) / topEdge))
         const step = (factor * 12) + 2
-        documentView.contentY = Math.max(0, documentView.contentY - step)
+        documentView.contentY = documentView.clampY(documentView.contentY - step)
         root.updateDragTarget()
       } else if (viewPos.y > bottomEdge) {
         const factor = Math.max(0, Math.min(1, (viewPos.y - bottomEdge) / 40))
         const step = (factor * 12) + 2
-        documentView.contentY = Math.min(maxScroll, documentView.contentY + step)
+        documentView.contentY = documentView.clampY(documentView.contentY + step)
         root.updateDragTarget()
       }
     }
@@ -177,6 +180,12 @@ Item {
   // shortcuts, confirmations) covers the editor. Background scrolling must
   // stop so wheel events cannot move the document underneath those surfaces.
   property bool scrollingEnabled: true
+
+  // Stop any native flick when a full-window surface covers the editor.
+  onScrollingEnabledChanged: {
+    if (!scrollingEnabled && documentView)
+      documentView.cancelFlick()
+  }
 
   // blockId -> [{ start, length, active }]. Built once per search update so a
   // delegate only reads its own slice instead of scanning every match.
@@ -394,32 +403,15 @@ Item {
     const viewHeight = documentView.height
 
     // When the cursor gets close to the bottom (within bottom 35% of the view)
-    // or goes below the view, smoothly scroll so the cursor is centered.
+    // or goes below it, jump immediately so the cursor is centered.
     const triggerThreshold = viewHeight * 0.65
     if (localCursorY + cursorHeight > triggerThreshold) {
-      const currentContentY = scrollAnimation.running ? scrollAnimation.to : documentView.contentY
-      const targetContentY = currentContentY + (localCursorY - (viewHeight / 2))
-      const maxContentY = Math.max(0, documentView.contentHeight - viewHeight)
-      const clampedTarget = Math.max(0, Math.min(targetContentY, maxContentY))
-
-      if (Math.abs(clampedTarget - currentContentY) > 2) {
-        scrollAnimation.stop()
-        scrollAnimation.from = documentView.contentY
-        scrollAnimation.to = clampedTarget
-        scrollAnimation.start()
-      }
+      documentView.contentY = documentView.clampY(
+        documentView.contentY + localCursorY - (viewHeight / 2))
     } else if (localCursorY < 0) {
       // If cursor is scrolled above the view (e.g. arrow up), scroll up to keep it visible
-      const currentContentY = scrollAnimation.running ? scrollAnimation.to : documentView.contentY
-      const targetContentY = currentContentY + localCursorY - (viewHeight * 0.2)
-      const clampedTarget = Math.max(0, targetContentY)
-
-      if (Math.abs(clampedTarget - currentContentY) > 2) {
-        scrollAnimation.stop()
-        scrollAnimation.from = documentView.contentY
-        scrollAnimation.to = clampedTarget
-        scrollAnimation.start()
-      }
+      documentView.contentY = documentView.clampY(
+        documentView.contentY + localCursorY - (viewHeight * 0.2))
     }
   }
 
@@ -588,7 +580,7 @@ Item {
       topMargin: fullWorkspace ? 0 : 40
       bottomMargin: fullWorkspace ? 0 : 40
     }
-    width: fullWorkspace ? parent.width : Math.min(root.contentWidth + 64, parent.width - 24)
+    width: fullWorkspace ? parent.width : Math.min(root.sheetWidth + 64, parent.width - 24)
 
     Behavior on radius {
       NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
@@ -603,7 +595,7 @@ Item {
   MouseArea {
     id: leftMarginClickArea
 
-    width: documentView.x
+    width: Math.max(0, documentView.x - 30)
     anchors {
       top: documentView.top
       bottom: documentView.bottom
@@ -645,6 +637,75 @@ Item {
     model: root.model
     spacing: 0
     clip: false
+
+    // Mouse dragging stays disabled so text selection and block dragging work.
+    // Flickable still owns the scroll bounds, deceleration and origin handling;
+    // wheel input is injected as a flick from the handler below.
+    interactive: false
+    boundsBehavior: Flickable.StopAtBounds
+    flickableDirection: Flickable.VerticalFlick
+    pixelAligned: true
+    flickDeceleration: 32000
+    maximumFlickVelocity: 6000
+
+    // Dynamic edge fading mask (GPU shader effect)
+    readonly property real fadeZonePx: 44.0
+    // ListView may re-base its origin while recycling delegates, so the real
+    // end has to account for originY (this was the bottom-only overscroll bug).
+    readonly property real endContentY: Math.max(originY, originY + contentHeight - height)
+
+    function clampY(y) {
+      return Math.max(originY, Math.min(y, endContentY))
+    }
+
+    layer.enabled: false
+    layer.effect: ShaderEffect {
+      property real topFadeSize: documentView.height > 0 ? (documentView.fadeZonePx / documentView.height) : 0.0
+      property real bottomFadeSize: documentView.height > 0 ? (documentView.fadeZonePx / documentView.height) : 0.0
+      // Fade ramps in relative to Flickable's own origin-aware bounds.
+      property real topAlpha: Math.max(0.0, 1.0 - Math.min(1.0, Math.max(0.0, documentView.contentY - documentView.originY) / documentView.fadeZonePx))
+      property real bottomAlpha: Math.max(0.0, 1.0 - Math.min(1.0, Math.max(0.0, documentView.endContentY - documentView.contentY) / documentView.fadeZonePx))
+
+      fragmentShader: "shaders/edgefade.frag.qsb"
+    }
+
+    // Lines advanced per mouse-wheel notch. Change this single value to tune
+    // wheel speed; pixel distance is derived from the editor's average line height.
+    readonly property int wheelScrollLines: 17
+    readonly property real wheelLineHeightPx: 28
+    readonly property real wheelScrollPx: wheelScrollLines * wheelLineHeightPx
+    // Fixed conversion for trackpad pixel deltas. Using a measured interval
+    // made upward scrolling slow after a pause/reversal; a fixed frame keeps
+    // both directions identical regardless of event timing.
+    readonly property real wheelFrameSeconds: 0.0025
+
+    WheelHandler {
+      id: wheelHandler
+      target: null
+      acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+      onWheel: (event) => {
+        if (!root.scrollingEnabled || root.activeCommandDelegate !== null || root.isDraggingBlock || selectionToolbar.showToolbar)
+          return
+
+        let velocity
+        if (event.pixelDelta.y !== 0) {
+          // Trackpad: fixed px/s conversion (Qt's flick velocity is positive
+          // when scrolling up), symmetric for both directions.
+          velocity = event.pixelDelta.y / documentView.wheelFrameSeconds
+        } else {
+          // Mouse: each notch glides wheelScrollPx under Flickable's deceleration.
+          const notches = -(event.angleDelta.y / 120.0)
+          velocity = -Math.sign(notches) * Math.sqrt(
+            2 * documentView.flickDeceleration * documentView.wheelScrollPx * Math.abs(notches))
+        }
+
+        velocity = Math.max(-documentView.maximumFlickVelocity,
+                            Math.min(documentView.maximumFlickVelocity, velocity))
+        documentView.flick(0, velocity)
+        event.accepted = true
+      }
+    }
+
     // Recycle delegates instead of rebuilding the whole TextArea stack while
     // scrolling, and materialize a little ahead of the viewport.
     reuseItems: true
@@ -669,21 +730,6 @@ Item {
         duration: 150
         easing.type: Easing.OutCubic
       }
-    }
-    // Keep the command menu and selection toolbar anchored while they are
-    // open, and disable normal list scrolling while dragging or while a host
-    // surface covers the editor.
-    interactive: root.scrollingEnabled
-                 && root.activeCommandDelegate === null
-                 && !root.isDraggingBlock
-                 && !selectionToolbar.showToolbar
-
-    NumberAnimation {
-      id: scrollAnimation
-      target: documentView
-      property: "contentY"
-      duration: 180
-      easing.type: Easing.OutCubic
     }
 
     delegate: Item {
@@ -749,14 +795,14 @@ Item {
       Component.onCompleted: delegateFocusTimer.restart()
       onBlockIdChanged: delegateFocusTimer.restart()
 
-      // MouseArea covering the block AND extending 48px into the left gutter (across the drag handle and beyond)
+      // MouseArea covering the block AND extending 30px into the left gutter (across the drag handle and beyond)
       MouseArea {
         id: blockHoverArea
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.leftMargin: -48
+        anchors.leftMargin: -30
         hoverEnabled: true
         preventStealing: false
         propagateComposedEvents: true
@@ -1194,7 +1240,7 @@ Item {
         id: dragHandle
         width: 18
         height: 24
-        x: -28
+        x: -20
         y: Math.max(0, Math.round((renderer.firstLineHeight - height) / 2))
         z: 20
 
@@ -1320,9 +1366,10 @@ Item {
       }
     }
 
+    // Fixed breathing room after the final block (top stays flush).
     footer: Item {
       width: documentView.width
-      height: documentView.height * 0.8
+      height: 200
     }
   }
 
@@ -1348,6 +1395,11 @@ Item {
     id: selectionToolbar
 
     objectName: "selectionToolbar"
+
+    onShowToolbarChanged: {
+      if (showToolbar && documentView)
+        documentView.cancelFlick()
+    }
 
     function syncFormattingState() {
       if (!root.activeSelectionDelegate) return

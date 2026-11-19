@@ -1,3 +1,12 @@
+add_executable(benchmark_load
+    benchmark_load.cpp
+)
+
+target_link_libraries(benchmark_load PRIVATE
+    templnote_core
+    Qt6::Test
+)
+
 add_executable(tst_document
     tst_document.cpp
 )
@@ -81,6 +90,10 @@ set_source_files_properties(
     "${TEST_QML_DIR}/shaders/paper.frag.qsb" PROPERTIES
     QT_RESOURCE_ALIAS "qml/shaders/paper.frag.qsb"
 )
+set_source_files_properties(
+    "${TEST_QML_DIR}/shaders/edgefade.frag.qsb" PROPERTIES
+    QT_RESOURCE_ALIAS "qml/shaders/edgefade.frag.qsb"
+)
 
 foreach(qml_file
     Editor.qml
@@ -144,6 +157,7 @@ qt_add_qml_module(tst_editor
 
     RESOURCES
     ${TEST_QML_DIR}/shaders/paper.frag.qsb
+    ${TEST_QML_DIR}/shaders/edgefade.frag.qsb
 )
 
 target_link_libraries(tst_editor PRIVATE

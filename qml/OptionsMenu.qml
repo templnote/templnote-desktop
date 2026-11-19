@@ -31,10 +31,12 @@ Item {
 
   property bool searchActive: false
   property bool globalSearchActive: false
+  property bool fullWidthActive: false
 
   signal optionTriggered(string key)
   signal searchRequested()
   signal globalSearchRequested()
+  signal toggleFullWidthRequested()
 
   property var previousFocus: null
 
@@ -141,6 +143,56 @@ Item {
   }
 
   Rectangle {
+    id: globalSearchButton
+
+    anchors {
+      top: trigger.top
+      right: trigger.left
+      rightMargin: 6
+    }
+
+    width: 28
+    height: 28
+    radius: 8
+    color: globalSearchMouse.containsMouse || root.globalSearchActive
+           ? Theme.surfaceHover
+           : "transparent"
+
+    Behavior on color {
+      ColorAnimation {
+        duration: 150
+        easing.type: Easing.OutQuad
+      }
+    }
+
+    IconImage {
+      anchors.centerIn: parent
+      width: 20
+      height: 20
+      source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_globe_search_20_regular.svg"
+      sourceSize.width: 20
+      sourceSize.height: 20
+      color: root.globalSearchActive ? Theme.accent : Theme.textMuted
+    }
+
+    MouseArea {
+      id: globalSearchMouse
+
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+
+      onClicked: {
+        root.globalSearchRequested()
+      }
+    }
+
+    ToolTip.visible: globalSearchMouse.containsMouse
+    ToolTip.text: "Search all documents (Ctrl+Shift+/)"
+    ToolTip.delay: 500
+  }
+
+  Rectangle {
     id: searchButton
 
     anchors {
@@ -191,18 +243,18 @@ Item {
   }
 
   Rectangle {
-    id: globalSearchButton
+    id: fullWidthButton
 
     anchors {
       top: trigger.top
-      right: trigger.left
+      right: searchButton.left
       rightMargin: 6
     }
 
     width: 28
     height: 28
     radius: 8
-    color: globalSearchMouse.containsMouse || root.globalSearchActive
+    color: fullWidthMouse.containsMouse
            ? Theme.surfaceHover
            : "transparent"
 
@@ -217,26 +269,26 @@ Item {
       anchors.centerIn: parent
       width: 20
       height: 20
-      source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_globe_search_20_regular.svg"
+      source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_arrow_autofit_width_20_regular.svg"
       sourceSize.width: 20
       sourceSize.height: 20
-      color: root.globalSearchActive ? Theme.accent : Theme.textMuted
+      color: root.fullWidthActive ? Theme.accent : Theme.textMuted
     }
 
     MouseArea {
-      id: globalSearchMouse
+      id: fullWidthMouse
 
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
 
       onClicked: {
-        root.globalSearchRequested()
+        root.toggleFullWidthRequested()
       }
     }
 
-    ToolTip.visible: globalSearchMouse.containsMouse
-    ToolTip.text: "Search all documents (Ctrl+Shift+/)"
+    ToolTip.visible: fullWidthMouse.containsMouse
+    ToolTip.text: root.fullWidthActive ? "Use standard width" : "Use full width"
     ToolTip.delay: 500
   }
 

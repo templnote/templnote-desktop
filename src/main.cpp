@@ -10,6 +10,7 @@
 #include "search/SearchIndex.h"
 #include "search/SearchResultsModel.h"
 #include "storage/DocumentListModel.h"
+#include "tracking/MemoryTracker.h"
 
 namespace {
 class ClipboardHelper : public QObject {
@@ -35,6 +36,7 @@ int main(int argc, char *argv[]) {
   qmlRegisterType<Templnote::SearchResultsModel>("Templnote", 1, 0,
                                                  "SearchResultsModel");
   qmlRegisterType<Templnote::CodeHighlighter>("Templnote", 1, 0, "CodeHighlighter");
+  qmlRegisterType<Templnote::MemoryTracker>("Templnote", 1, 0, "MemoryTracker");
 
   QQmlApplicationEngine engine;
 

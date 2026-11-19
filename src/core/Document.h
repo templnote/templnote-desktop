@@ -60,6 +60,11 @@ public:
   // ids and unsupported format versions are rejected.
   bool fromJson(const QJsonObject &json, QString *error = nullptr);
 
+  bool isFullWidth() const { return m_fullWidth; }
+  void setFullWidth(bool fullWidth) { m_fullWidth = fullWidth; m_hasFullWidth = true; }
+  bool hasFullWidthSet() const { return m_hasFullWidth; }
+  void clearFullWidthSet() { m_hasFullWidth = false; m_fullWidth = false; }
+
 private:
   // Keeps id lookups O(1). Rebuilt after structural changes, which are
   // already O(n) because they shift the block vector.
@@ -67,5 +72,7 @@ private:
 
   QVector<Block> m_blocks;
   QHash<QString, int> m_idIndex;
+  bool m_fullWidth = false;
+  bool m_hasFullWidth = false;
 };
 } // namespace Templnote

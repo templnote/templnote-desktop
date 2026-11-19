@@ -37,9 +37,12 @@ QtObject {
 
     // Editor
     property string fontFamily: "System"
-    property string lineWidth: "Medium"
+    property string lineWidth: "Wide"
     property bool spellCheck: false
     property bool smartQuotes: false
+
+    // Columns: default column count for a new column layout (2-5).
+    property int columnCount: 2
 
     // Developer
     property bool showBlockDebugBorders: false
@@ -69,6 +72,7 @@ QtObject {
   property alias lineWidth: settings.lineWidth
   property alias spellCheck: settings.spellCheck
   property alias smartQuotes: settings.smartQuotes
+  property alias columnCount: settings.columnCount
 
   property alias showBlockDebugBorders: settings.showBlockDebugBorders
   property alias showBlockTypeBadge: settings.showBlockTypeBadge

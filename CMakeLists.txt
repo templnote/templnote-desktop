@@ -61,6 +61,11 @@ add_library(templnote_core STATIC
   src/search/SearchIndex.cpp
   src/search/SearchResultsModel.h
   src/search/SearchResultsModel.cpp
+
+  src/tracking/MemoryTracker.h
+  src/tracking/MemoryTracker.cpp
+  src/tracking/ScopedTimer.h
+  src/tracking/ScopedTimer.cpp
 )
 
 target_include_directories(templnote_core PUBLIC
@@ -134,6 +139,7 @@ qt_add_qml_module(templnote
 
   RESOURCES
   qml/shaders/paper.frag.qsb
+  qml/shaders/edgefade.frag.qsb
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_image_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg
@@ -161,6 +167,7 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_document_20_regular.svg
   assets/icons/ic_fluent_folder_add_20_regular.svg
   assets/icons/ic_fluent_line_horizontal_3_20_regular.svg
+  assets/icons/ic_fluent_arrow_autofit_width_20_regular.svg
   assets/icons/ic_fluent_globe_search_20_regular.svg
   assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
   assets/icons/ic_fluent_mic_pulse_20_regular.svg

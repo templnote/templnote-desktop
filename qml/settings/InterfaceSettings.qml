@@ -32,6 +32,19 @@ Column {
     }
   }
 
+  SettingSlider {
+    title: "Columns per layout"
+    description: "Number of columns created when you insert a column layout."
+    from: 2
+    to: 5
+    stepSize: 1
+    value: Preferences.columnCount
+    valueText: value.toFixed(0) + " columns"
+    onMoved: function(val) {
+      Preferences.columnCount = val
+    }
+  }
+
   Rectangle {
     width: parent.width
     height: 1

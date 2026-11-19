@@ -26,8 +26,8 @@ Column {
   SettingChoice {
     title: "Line width"
     description: "How wide the writing column becomes on large windows."
-    options: ["Narrow", "Medium", "Wide"]
-    value: Preferences.lineWidth
+    options: ["Narrow", "Wide"]
+    value: Preferences.lineWidth === "Narrow" ? "Narrow" : "Wide"
     onSelected: function(value) {
       Preferences.lineWidth = value
     }

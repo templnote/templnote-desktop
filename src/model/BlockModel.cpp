@@ -1,4 +1,6 @@
 #include "BlockModel.h"
+#include "../tracking/ScopedTimer.h"
+#include "../tracking/MemoryTracker.h"
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -1012,6 +1014,7 @@ bool BlockModel::resetDocument(Document document) {
 
   emit countChanged();
   emit historyChanged();
+  emit fullWidthChanged();
 
   return true;
 }
@@ -1097,6 +1100,7 @@ bool BlockModel::saveCurrentDocument() {
 }
 
 bool BlockModel::loadDocument(const QString &path) {
+  ScopedTimer loadTimer(QStringLiteral("BlockModel::loadDocument: ") + path);
   QString target = path.trimmed();
 
   if (target.isEmpty())
@@ -1152,6 +1156,7 @@ bool BlockModel::loadDocument(const QString &path) {
 
   m_lastError.clear();
   emit lastErrorChanged();
+  emit fullWidthChanged();
   emit documentLoaded();
 
   return true;
@@ -1185,8 +1190,26 @@ bool BlockModel::closeDocument() {
   setModified(false);
   setLastModified({});
   setCurrentFilePath({});
+  emit fullWidthChanged();
 
   return true;
+}
+
+bool BlockModel::isFullWidth() const {
+  return m_document.isFullWidth();
+}
+
+void BlockModel::setFullWidth(bool fullWidth) {
+  if (m_document.isFullWidth() == fullWidth && m_document.hasFullWidthSet())
+    return;
+
+  m_document.setFullWidth(fullWidth);
+  markModified();
+  emit fullWidthChanged();
+}
+
+bool BlockModel::hasFullWidthSet() const {
+  return m_document.hasFullWidthSet();
 }
 
 bool BlockModel::renameDocument(const QString &newBaseName) {

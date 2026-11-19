@@ -255,7 +255,16 @@ ApplicationWindow {
   Item {
     id: workspace
 
-    property real contentWidth: Math.min(width - 64, 820)
+    readonly property bool isFullWidth: {
+      if (blockModel.hasFullWidthSet) {
+        return blockModel.fullWidth
+      }
+      return Preferences.lineWidth === "Wide"
+    }
+
+    property real contentWidth: isFullWidth
+      ? Math.max(800, width - 240)
+      : Math.min(width - 64, 820)
 
     anchors {
       top: parent.top
@@ -343,6 +352,14 @@ ApplicationWindow {
       z: 3
       searchActive: searchBar.visible
       globalSearchActive: searchWindow.visible
+      fullWidthActive: workspace.isFullWidth
+
+      onToggleFullWidthRequested: {
+        if (!window.hasDocument)
+          return
+        blockModel.fullWidth = !workspace.isFullWidth
+        blockModel.saveCurrentDocument()
+      }
 
       options: [
         { key: "find", label: "Find in document", shortcut: "Ctrl+/" },

@@ -28,6 +28,9 @@ class BlockModel : public QAbstractListModel {
       QString documentFolder READ documentFolder NOTIFY currentFilePathChanged)
   Q_PROPERTY(bool autosaveEnabled READ autosaveEnabled WRITE setAutosaveEnabled
                  NOTIFY autosaveEnabledChanged)
+  Q_PROPERTY(bool fullWidth READ isFullWidth WRITE setFullWidth
+                 NOTIFY fullWidthChanged)
+  Q_PROPERTY(bool hasFullWidthSet READ hasFullWidthSet NOTIFY fullWidthChanged)
 public:
   enum Roles {
     BlockIdRole = Qt::UserRole + 1,
@@ -164,6 +167,10 @@ public:
   Q_INVOKABLE bool redo();
   bool canRedo() const;
 
+  bool isFullWidth() const;
+  void setFullWidth(bool fullWidth);
+  bool hasFullWidthSet() const;
+
 signals:
   void countChanged();
   void historyChanged();
@@ -175,6 +182,7 @@ signals:
   void autosaveEnabledChanged();
   void documentLoaded();
   void documentCreated();
+  void fullWidthChanged();
 
 private:
   void markModified();

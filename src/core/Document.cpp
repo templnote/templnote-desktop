@@ -308,6 +308,9 @@ QJsonObject Document::toJson() const {
   json.insert(QStringLiteral("format"), QStringLiteral("templnote"));
   json.insert(QStringLiteral("version"), 1);
   json.insert(QStringLiteral("blocks"), blocks);
+  if (m_hasFullWidth) {
+    json.insert(QStringLiteral("fullWidth"), m_fullWidth);
+  }
 
   return json;
 }
@@ -362,6 +365,14 @@ bool Document::fromJson(const QJsonObject &json, QString *error) {
 
   m_blocks = parsed;
   rebuildIdIndex();
+
+  if (json.contains(QStringLiteral("fullWidth"))) {
+    m_fullWidth = json.value(QStringLiteral("fullWidth")).toBool(false);
+    m_hasFullWidth = true;
+  } else {
+    m_fullWidth = false;
+    m_hasFullWidth = false;
+  }
 
   if (error)
     error->clear();
