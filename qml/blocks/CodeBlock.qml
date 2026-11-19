@@ -23,6 +23,80 @@ Item {
   readonly property bool isFocused: editor.activeFocus
   readonly property real firstLineHeight: 22
 
+  // The focused editor always shows the closing fence as its last line.
+  // Clicking that line is an "exit" affordance rather than an edit target.
+  readonly property int closingFenceLineStart: {
+    if (!editor)
+      return -1
+
+    const text = editor.text || ""
+    const lastNewline = text.lastIndexOf("\n")
+
+    if (lastNewline < 0)
+      return -1
+
+    return text.substring(lastNewline + 1).trim() === "```"
+           ? lastNewline + 1
+           : -1
+  }
+
+  readonly property rect closingFenceLineRect: {
+    // Reference the text and layout so the rectangle is recomputed when the
+    // code, wrapping or focus state changes.
+    const text = editor ? editor.text : ""
+    const width = editor ? editor.width : 0
+    const height = editor ? editor.implicitHeight : 0
+
+    const fenceStart = root.closingFenceLineStart
+    // closingFenceLineStart can still hold the old value for one evaluation
+    // while editor.text has already been replaced by the shorter body. Passing
+    // an out-of-range position to positionToRectangle makes QTextCursor warn.
+    if (!root.isFocused || fenceStart < 0 || fenceStart >= text.length
+        || text.length === 0 || width <= 0 || height <= 0)
+      return Qt.rect(0, 0, 0, 0)
+
+    const lineRect = editor.positionToRectangle(fenceStart)
+
+    return Qt.rect(editor.x, editor.y + lineRect.y, editor.width,
+                   Math.max(lineRect.height, editor.font.pixelSize))
+  }
+
+  // Pending focus/range requests can reference an older, longer version of
+  // the text. Clamp against the live document length so QTextCursor is never
+  // asked to move to an out-of-range position.
+  function clampCursorPosition(position) {
+    if (!editor)
+      return 0
+    const max = Math.max(0, editor.text.length)
+    return Math.max(0, Math.min(position, max))
+  }
+
+  // Replacing the raw markdown (with fences) by the plain body shortens the
+  // document. Move the caret into range first, otherwise QQuickTextEdit warns
+  // with "QTextCursor::setPosition: Position ... out of range" and resets it.
+  function setEditorText(text) {
+    if (!editor)
+      return
+    const value = text || ""
+    editor.cursorPosition = root.clampCursorPosition(
+          Math.min(editor.cursorPosition, value.length))
+    editor.text = value
+  }
+
+  // Last editable position in the body: the newline just before the closing
+  // fence. Capping the caret here (instead of at editor.text.length) keeps it
+  // off the closing fence line, so Enter inserts a newline instead of exiting.
+  readonly property int bodyEndPosition: {
+    if (!editor)
+      return 0
+    if (!root.isFocused)
+      return editor.text.length
+    const fenceStart = root.closingFenceLineStart
+    return fenceStart >= 0
+           ? Math.min(fenceStart - 1, editor.text.length)
+           : editor.text.length
+  }
+
   signal enterPressed()
   signal backspacePressed()
   signal undoRequested()
@@ -43,17 +117,19 @@ Item {
 
   property bool internalUpdating: false
   property bool copiedNotification: false
+  // Set by exitCodeBlockBelow() after it strips the fences and saves the model.
+  // Prevents the subsequent focus-loss handler from re-parsing the plain body
+  // as raw markdown (which would clear the language tag).
+  property bool skipFocusLossSync: false
 
   // Formats raw markdown into editor text when focused
   function getRawMarkdown() {
     const lang = (root.codeLanguage || "").trim()
     const header = "```" + lang
     const body = root.content || ""
-    const footer = "```"
-    if (body.length === 0) {
-      return header + "\n" + footer
-    }
-    return header + "\n" + body + "\n" + footer
+    // Keep an explicit body line even when empty, so there is a real editing
+    // position between the fences instead of the caret sitting on the close.
+    return header + "\n" + body + "\n" + "```"
   }
 
   // Parses the editor text back into language and code body
@@ -90,9 +166,10 @@ Item {
     if (root.isFocused) {
       const prevPos = editor.cursorPosition
       editor.text = getRawMarkdown()
-      editor.cursorPosition = Math.min(prevPos, editor.text.length)
+      editor.cursorPosition = root.clampCursorPosition(
+            Math.min(prevPos, root.bodyEndPosition))
     } else {
-      editor.text = root.content || ""
+      root.setEditorText(root.content || "")
     }
     internalUpdating = false
   }
@@ -108,7 +185,7 @@ Item {
       if (lines.length > 1 && lines[lines.length - 1].trim() === "```") {
         const lastLineLen = lines[lines.length - 1].length
         const targetPos = Math.max(0, editor.text.length - (lastLineLen + 1))
-        editor.cursorPosition = targetPos
+        editor.cursorPosition = root.clampCursorPosition(targetPos)
       } else {
         editor.cursorPosition = editor.text.length
       }
@@ -116,7 +193,8 @@ Item {
       // If position was requested relative to clean body, offset by first fence line
       const firstLineEnd = editor.text.indexOf("\n")
       const offset = (firstLineEnd >= 0) ? (firstLineEnd + 1) : 0
-      editor.cursorPosition = Math.min(offset + position, editor.text.length)
+      editor.cursorPosition = root.clampCursorPosition(
+            Math.min(offset + position, root.bodyEndPosition))
     }
     updateCaretGeometry()
   }
@@ -124,13 +202,13 @@ Item {
   function focusEditorAtX(xPosition) {
     editor.forceActiveFocus()
     const targetY = editor.cursorRectangle.y
-    editor.cursorPosition = editor.positionAt(xPosition, targetY)
+    editor.cursorPosition = root.clampCursorPosition(editor.positionAt(xPosition, targetY))
     updateCaretGeometry()
   }
 
   function focusEditorRange(start, end) {
     editor.forceActiveFocus()
-    editor.select(start, end)
+    editor.select(root.clampCursorPosition(start), root.clampCursorPosition(end))
     updateCaretGeometry()
   }
 
@@ -169,17 +247,27 @@ Item {
       editor.text = getRawMarkdown()
       const firstLineEnd = editor.text.indexOf("\n")
       const firstLineLen = (firstLineEnd >= 0) ? (firstLineEnd + 1) : 0
-      editor.cursorPosition = Math.min(firstLineLen + prevPos, Math.max(firstLineLen, editor.text.length))
+      editor.cursorPosition = root.clampCursorPosition(
+            Math.min(firstLineLen + prevPos, root.bodyEndPosition))
       Qt.callLater(updateCaretGeometry)
     } else {
-      const parsed = parseEditorText(editor.text)
-      if (root.model && root.blockId.length > 0) {
-        if (parsed.lang !== root.codeLanguage) {
-          root.model.setBlockCodeLanguage(root.blockId, parsed.lang)
+      // After a keyboard exit the fences are already stripped and the model is
+      // saved, so editor.text holds just the body. Parsing that as raw markdown
+      // would derive an empty language and clear the saved tag. Only sync when
+      // a fence header is actually present and the exit path did not opt out.
+      const raw = editor.text || ""
+      const hasFenceHeader = raw.trim().startsWith("```")
+      if (!root.skipFocusLossSync && hasFenceHeader) {
+        const parsed = parseEditorText(raw)
+        if (root.model && root.blockId.length > 0) {
+          if (parsed.lang !== root.codeLanguage) {
+            root.model.setBlockCodeLanguage(root.blockId, parsed.lang)
+          }
+          root.model.updateBlockText(root.blockId, parsed.body)
         }
-        root.model.updateBlockText(root.blockId, parsed.body)
+        root.setEditorText(parsed.body)
       }
-      editor.text = parsed.body
+      root.skipFocusLossSync = false
     }
     internalUpdating = false
   }
@@ -311,7 +399,11 @@ Item {
             const currentText = editor.text
             const pos = editor.cursorPosition
             const lastLineIndex = currentText.lastIndexOf("\n")
-            if (lastLineIndex >= 0 && pos >= lastLineIndex) {
+            // Only exit when the caret is on the closing-fence line itself,
+            // i.e. strictly after the newline that precedes it. A caret at
+            // lastLineIndex is still at the end of the last code line, where
+            // Enter must insert a newline instead.
+            if (lastLineIndex >= 0 && pos > lastLineIndex) {
               const lineContent = currentText.substring(lastLineIndex + 1).trim()
               if (lineContent === "```") {
                 exitCodeBlockBelow()
@@ -399,6 +491,23 @@ Item {
       hoverEnabled: true
       acceptedButtons: Qt.NoButton
     }
+
+    // Clicking the closing ``` line exits the code block instead of just
+    // placing the caret on the fence. Positioned over the editor's last line,
+    // above the editor in z-order so the click is captured here.
+    MouseArea {
+      id: closingFenceClickArea
+      x: root.closingFenceLineRect.x
+      y: root.closingFenceLineRect.y
+      width: root.closingFenceLineRect.width
+      height: root.closingFenceLineRect.height
+      visible: root.isFocused && root.closingFenceLineStart >= 0
+      z: 5
+      acceptedButtons: Qt.LeftButton
+      cursorShape: Qt.PointingHandCursor
+      onPressed: function(mouse) { mouse.accepted = true }
+      onClicked: root.exitCodeBlockBelow()
+    }
   }
 
   function exitCodeBlockBelow() {
@@ -411,7 +520,8 @@ Item {
     if (parsed.lang !== root.codeLanguage)
       root.model.setBlockCodeLanguage(root.blockId, parsed.lang)
     root.model.updateBlockText(root.blockId, parsed.body)
-    editor.text = parsed.body
+    root.skipFocusLossSync = true
+    root.setEditorText(parsed.body)
     root.internalUpdating = false
 
     const row = root.model.indexOfBlock(root.blockId)

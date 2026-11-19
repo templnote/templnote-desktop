@@ -29,7 +29,7 @@ Item {
     {
       key: "interface",
       title: "Interface",
-      description: "Layout, density and motion",
+      description: "Layout and paper aesthetic",
       file: "settings/InterfaceSettings.qml"
     },
     {

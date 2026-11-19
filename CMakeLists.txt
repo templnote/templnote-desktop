@@ -126,6 +126,7 @@ qt_add_qml_module(templnote
   qml/blocks/DividerBlock.qml
   qml/blocks/CalloutBlock.qml
   qml/blocks/TodoBlock.qml
+  qml/blocks/ImageBlock.qml
 
   qml/SearchService/SearchService.qml
   qml/SearchService/LocalSearchService.qml
@@ -134,6 +135,7 @@ qt_add_qml_module(templnote
   RESOURCES
   qml/shaders/paper.frag.qsb
   assets/icons/ic_fluent_folder_20_regular.svg
+  assets/icons/ic_fluent_image_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg
   assets/icons/ic_fluent_developer_board_20_regular.svg
   assets/icons/ic_fluent_person_20_regular.svg

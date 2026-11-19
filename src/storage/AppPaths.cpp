@@ -53,6 +53,15 @@ QString autosaveDirectory() {
   return cache.isEmpty() ? QString() : QDir(cache).filePath(QStringLiteral("autosave"));
 }
 
+QString attachmentsDirectory() {
+  const QString cache = cacheDirectory();
+  if (cache.isEmpty())
+    return {};
+  const QString path = QDir(cache).filePath(QStringLiteral("attachments"));
+  QDir().mkpath(path);
+  return path;
+}
+
 QString sanitizeFileName(const QString &name) {
   QString result = name.trimmed();
 

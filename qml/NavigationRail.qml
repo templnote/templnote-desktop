@@ -33,7 +33,7 @@ Rectangle {
 
     Behavior on color {
       ColorAnimation {
-        duration: Preferences.reduceMotion ? 0 : 150
+        duration: 150
         easing.type: Easing.OutQuad
       }
     }

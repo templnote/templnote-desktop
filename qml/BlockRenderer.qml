@@ -14,6 +14,9 @@ Item {
   property bool isChecked: false
   property string calloutType: "note"
   property string codeLanguage: ""
+  property string imageSource: ""
+  property real imageWidthRatio: 1.0
+  property bool isBlockHovered: false
   property bool showPlaceholder: false
   property var model: null
 
@@ -126,6 +129,8 @@ Item {
       return codeComponent
     case 7: // BlockType::Divider
       return dividerComponent
+    case 8: // BlockType::Image
+      return imageComponent
     case 10: // BlockType::Callout
       return calloutComponent
     default: // BlockType::Paragraph, and future types until implemented
@@ -176,6 +181,11 @@ Item {
   }
 
   Component {
+    id: imageComponent
+    ImageBlock {}
+  }
+
+  Component {
     id: calloutComponent
     CalloutBlock {}
   }
@@ -197,6 +207,12 @@ Item {
         item.calloutType = Qt.binding(function() { return root.calloutType })
       if ("codeLanguage" in item)
         item.codeLanguage = Qt.binding(function() { return root.codeLanguage })
+      if ("imageSource" in item)
+        item.imageSource = Qt.binding(function() { return root.imageSource })
+      if ("imageWidthRatio" in item)
+        item.imageWidthRatio = Qt.binding(function() { return root.imageWidthRatio })
+      if ("isBlockHovered" in item)
+        item.isBlockHovered = Qt.binding(function() { return root.isBlockHovered })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })

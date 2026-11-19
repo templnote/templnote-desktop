@@ -40,6 +40,8 @@ public:
     CheckedRole,
     CalloutTypeRole,
     CodeLanguageRole,
+    ImageSourceRole,
+    ImageWidthRatioRole,
     NextBlockTypeRole,
     NumberIndexRole
   };
@@ -82,6 +84,12 @@ public:
   Q_INVOKABLE bool setBlockCalloutType(const QString &id, const QString &calloutType);
 
   Q_INVOKABLE bool setBlockCodeLanguage(const QString &id, const QString &language);
+
+  Q_INVOKABLE bool setBlockImageSource(const QString &id, const QString &source);
+
+  Q_INVOKABLE bool setBlockImageWidthRatio(const QString &id, double ratio);
+
+  Q_INVOKABLE QString importAttachment(const QUrl &fileUrl);
 
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
 

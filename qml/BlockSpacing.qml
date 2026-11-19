@@ -56,6 +56,10 @@ QtObject {
     if (currentType === 10 /* Callout */ || nextType === 10 /* Callout */)
       return 10
 
+    // 4d. Image spacing: comfortable margin around images
+    if (currentType === 8 /* Image */ || nextType === 8 /* Image */)
+      return 12
+
     // 5. List -> Paragraph or Paragraph -> List:
     // Moderate separation between list blocks and standard body text.
     if (isListType(currentType) || isListType(nextType))

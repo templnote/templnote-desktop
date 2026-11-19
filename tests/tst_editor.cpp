@@ -13,6 +13,16 @@
 
 using namespace Templnote;
 
+static int g_cursorWarnings = 0;
+static QtMessageHandler g_previousHandler = nullptr;
+static void cursorWarningHandler(QtMsgType type, const QMessageLogContext &context,
+                                 const QString &message) {
+  if (type == QtWarningMsg && message.contains(QStringLiteral("setPosition")))
+    ++g_cursorWarnings;
+  if (g_previousHandler)
+    g_previousHandler(type, context, message);
+}
+
 class EditorQmlTests : public QObject {
   Q_OBJECT
 
@@ -101,6 +111,31 @@ private:
   }
 
   BlockModel *model() const { return m_window->findChild<BlockModel *>(); }
+
+  static QString blockIdForItem(QQuickItem *item) {
+    for (QQuickItem *candidate = item; candidate;
+         candidate = candidate->parentItem()) {
+      if (candidate->metaObject()->indexOfProperty("blockId") >= 0 &&
+          candidate->metaObject()->indexOfProperty("index") >= 0) {
+        return candidate->property("blockId").toString();
+      }
+    }
+
+    return {};
+  }
+
+  QQuickItem *editorForBlock(const QString &blockId) const {
+    for (QQuickItem *editor : editors()) {
+      if (blockIdForItem(editor) == blockId)
+        return editor;
+    }
+
+    return nullptr;
+  }
+
+  QString focusedBlockId() const {
+    return blockIdForItem(m_window->activeFocusItem());
+  }
 
   QQuickItem *editorItem() const {
     return m_window->findChild<QQuickItem *>(QStringLiteral("editor"));
@@ -566,6 +601,406 @@ private slots:
     QCOMPARE(view->property("contentY").toReal(), 0.0);
     toolbar->setProperty("showToolbar", false);
   }
+
+  void ctrlEnterMiddleCodeBlockFocusesNewBlock() {
+    BlockModel *blockModel = model();
+
+    for (int i = 0; i < 3; ++i) {
+      QVERIFY(!blockModel->appendBlock(static_cast<int>(BlockType::Paragraph),
+                                       QStringLiteral("after %1").arg(i))
+                   .isEmpty());
+    }
+
+    const QString codeId = blockModel->blockIdAt(2);
+    QVERIFY(!codeId.isEmpty());
+    const QString afterId = blockModel->blockIdAt(3);
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, "middle();"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+    QCOMPARE(focusedBlockId(), codeId);
+
+    QTest::keyClick(m_window, Qt::Key_Return, Qt::ControlModifier);
+    QTest::qWait(300);
+
+    QCOMPARE(blockModel->rowCount(), 6);
+    QCOMPARE(focusedBlockId(), blockModel->blockIdAt(3));
+    QVERIFY(blockModel->blockIdAt(3) != afterId);
+    QCOMPARE(blockModel->blockIdAt(4), afterId);
+  }
+
+  void ctrlEnterCodeBlockNearDocumentEndFocusesNewBlock() {
+    BlockModel *blockModel = model();
+
+    for (int i = 0; i < 60; ++i) {
+      QVERIFY(!blockModel->appendBlock(static_cast<int>(BlockType::Paragraph),
+                                       QStringLiteral("filler %1").arg(i))
+                   .isEmpty());
+    }
+
+    QQuickItem *view = m_window->findChild<QQuickItem *>("documentView");
+    QVERIFY(view);
+    QTest::qWait(300);
+    view->setProperty("contentY",
+                      view->property("contentHeight").toReal()
+                          - view->height());
+    QTest::qWait(300);
+
+    const int codeRow = blockModel->rowCount() - 1;
+    const QString codeId = blockModel->blockIdAt(codeRow);
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, "deep();"));
+    QTest::qWait(400);
+    view->setProperty("contentY",
+                      view->property("contentHeight").toReal()
+                          - view->height());
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+    QCOMPARE(focusedBlockId(), codeId);
+
+    QTest::keyClick(m_window, Qt::Key_Return, Qt::ControlModifier);
+    QTest::qWait(500);
+
+    QCOMPARE(blockModel->rowCount(), codeRow + 2);
+    const QString nextId = blockModel->blockIdAt(codeRow + 1);
+    QVERIFY(!nextId.isEmpty());
+    QCOMPARE(focusedBlockId(), nextId);
+  }
+
+  QPoint closingFenceClickPoint(QQuickItem *codeEditor) const {
+    const QString text = codeEditor->property("text").toString();
+    const int fencePos = text.lastIndexOf('\n') + 1;
+    QRectF lineRect;
+    QMetaObject::invokeMethod(codeEditor, "positionToRectangle",
+                              Q_RETURN_ARG(QRectF, lineRect),
+                              Q_ARG(int, fencePos));
+    return codeEditor
+        ->mapToScene(QPointF(lineRect.x() + lineRect.width() / 2,
+                             lineRect.y() + lineRect.height() / 2))
+        .toPoint();
+  }
+
+  void clickingClosingFenceExitsCodeBlock() {
+    BlockModel *blockModel = model();
+
+    const QString afterId =
+        blockModel->appendBlock(static_cast<int>(BlockType::Paragraph),
+                                QStringLiteral("after"));
+    QVERIFY(!afterId.isEmpty());
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, "const x = 1;"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+    QCOMPARE(focusedBlockId(), codeId);
+
+    const QPoint click = closingFenceClickPoint(codeEditor);
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, click);
+    QTest::qWait(300);
+
+    // A new empty paragraph directly below the code block receives focus;
+    // the pre-existing "after" block is pushed down.
+    QCOMPARE(blockModel->rowCount(), 4);
+    const QString nextId = blockModel->blockIdAt(2);
+    QVERIFY(!nextId.isEmpty());
+    QVERIFY(nextId != afterId);
+    QCOMPARE(blockModel->data(blockModel->index(2, 0),
+                              BlockModel::BlockTypeRole)
+                 .toInt(),
+             static_cast<int>(BlockType::Paragraph));
+    QCOMPARE(blockModel->data(blockModel->index(2, 0),
+                              BlockModel::ContentRole).toString(),
+             QString());
+    QCOMPARE(blockModel->blockIdAt(3), afterId);
+    QCOMPARE(focusedBlockId(), nextId);
+  }
+
+  void clickingCodeLineDoesNotExit() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, "const x = 1;"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+
+    // Click on a code body line, well above the closing fence.
+    QRectF bodyRect;
+    QMetaObject::invokeMethod(codeEditor, "positionToRectangle",
+                              Q_RETURN_ARG(QRectF, bodyRect), Q_ARG(int, 5));
+    const QPoint click =
+        codeEditor->mapToScene(QPointF(bodyRect.x() + bodyRect.width() / 2,
+                                       bodyRect.y() + bodyRect.height() / 2))
+            .toPoint();
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, click);
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->rowCount(), 2);
+    QCOMPARE(focusedBlockId(), codeId);
+  }
+
+  void longCodeBlockExitDoesNotWarnAboutCursorPosition() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->setBlockCodeLanguage(codeId, "cpp"));
+
+    QString body;
+    for (int i = 0; i < 30; ++i)
+      body += QStringLiteral("const auto value%1 = computedValue%1;\n").arg(i);
+    QVERIFY(blockModel->updateBlockText(codeId, body));
+    QTest::qWait(300);
+
+    g_cursorWarnings = 0;
+    g_previousHandler = qInstallMessageHandler(cursorWarningHandler);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+
+    // Each exit shrinks the editor from raw markdown (with fences) to the
+    // plain body while the caret sits at the end. This used to emit
+    // "QTextCursor::setPosition: Position ... out of range".
+    for (int cycle = 0; cycle < 2; ++cycle) {
+      codeEditor->forceActiveFocus();
+      QTest::qWait(50);
+      codeEditor->setProperty("cursorPosition",
+                              codeEditor->property("length").toInt());
+      QTest::qWait(30);
+      QTest::keyClick(m_window, Qt::Key_Return);
+      QTest::qWait(100);
+
+      codeEditor = editorForBlock(codeId);
+      QVERIFY(codeEditor);
+      QCOMPARE(focusedBlockId(), blockModel->blockIdAt(2));
+    }
+
+    qInstallMessageHandler(g_previousHandler);
+    g_previousHandler = nullptr;
+    QCOMPARE(g_cursorWarnings, 0);
+  }
+
+  void keyboardExitKeepsCodeLanguageTag() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->setBlockCodeLanguage(codeId, "python"));
+    QVERIFY(blockModel->updateBlockText(codeId, "print(1)"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+    QVERIFY(codeEditor->property("text").toString().startsWith("```python"));
+
+    QTest::keyClick(m_window, Qt::Key_Return, Qt::ControlModifier);
+    QTest::qWait(300);
+
+    QCOMPARE(blockModel->data(blockModel->index(1, 0),
+                              BlockModel::CodeLanguageRole).toString(),
+             QStringLiteral("python"));
+  }
+
+  void typedLanguageTagSurvivesKeyboardExit() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->setBlockCodeLanguage(codeId, ""));
+    QVERIFY(blockModel->updateBlockText(codeId, "print(1)"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+
+    // Type the tag into the opening fence: ``` -> ```python
+    codeEditor->setProperty("cursorPosition", 3);
+    QTest::qWait(30);
+    typeText(m_window, "python");
+    QTest::qWait(100);
+    QCOMPARE(codeEditor->property("text").toString(),
+             QStringLiteral("```python\nprint(1)\n```"));
+    QCOMPARE(blockModel->data(blockModel->index(1, 0),
+                              BlockModel::CodeLanguageRole).toString(),
+             QStringLiteral("python"));
+
+    QTest::keyClick(m_window, Qt::Key_Return, Qt::ControlModifier);
+    QTest::qWait(300);
+
+    QCOMPARE(blockModel->data(blockModel->index(1, 0),
+                              BlockModel::CodeLanguageRole).toString(),
+             QStringLiteral("python"));
+  }
+
+  void typingMultipleCodeLinesDoesNotExit() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, ""));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+
+    typeText(m_window, "first");
+    QTest::qWait(50);
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(50);
+    typeText(m_window, "second");
+    QTest::qWait(50);
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(50);
+    typeText(m_window, "third");
+    QTest::qWait(50);
+
+    QCOMPARE(blockModel->rowCount(), 2);
+    QCOMPARE(focusedBlockId(), codeId);
+    const QString body = blockModel->data(blockModel->index(1, 0),
+                                          BlockModel::ContentRole).toString();
+    QCOMPARE(body, QStringLiteral("first\nsecond\nthird"));
+  }
+
+  void enterInFreshlyFocusedCodeBlockDoesNotExit() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, ""));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+    QCOMPARE(focusedBlockId(), codeId);
+
+    // A newly focused (possibly empty) code block must keep its caret in the
+    // body, not on the closing fence: the first Enter inserts a newline.
+    const QString text = codeEditor->property("text").toString();
+    const int fenceStart = text.lastIndexOf('\n') + 1;
+    QVERIFY(codeEditor->property("cursorPosition").toInt() < fenceStart);
+
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(100);
+
+    QCOMPARE(blockModel->rowCount(), 2);
+    QCOMPARE(focusedBlockId(), codeId);
+    const QString body = blockModel->data(blockModel->index(1, 0),
+                                          BlockModel::ContentRole).toString();
+    QVERIFY(body.contains('\n'));
+  }
+
+  void enterAtEndOfLastCodeLineInsertsNewline() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, "const x = 1;"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+
+    // Caret at the end of the final code line, i.e. on the newline that
+    // precedes the closing fence. Enter here must insert a newline, not exit.
+    const QString text = codeEditor->property("text").toString();
+    const int lastNewline = text.lastIndexOf('\n');
+    QVERIFY(lastNewline > 0);
+    codeEditor->setProperty("cursorPosition", lastNewline);
+    QTest::qWait(30);
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(100);
+
+    QCOMPARE(blockModel->rowCount(), 2);
+    QCOMPARE(focusedBlockId(), codeId);
+    const QString body = blockModel->data(blockModel->index(1, 0),
+                                          BlockModel::ContentRole).toString();
+    QVERIFY(body.contains('\n'));
+  }
+
+  void enterInsideCodeBodyInsertsNewline() {
+    BlockModel *blockModel = model();
+
+    const QString codeId = blockModel->blockIdAt(1);
+    QVERIFY(!codeId.isEmpty());
+    QVERIFY(blockModel->changeBlockType(codeId, 6, 0));
+    QVERIFY(blockModel->updateBlockText(codeId, "const x = 1;"));
+    QTest::qWait(300);
+
+    QQuickItem *codeEditor = editorForBlock(codeId);
+    QVERIFY(codeEditor);
+    codeEditor->forceActiveFocus();
+    QTest::qWait(100);
+    QCOMPARE(focusedBlockId(), codeId);
+
+    // Place the caret inside the code body (before the closing fence) and
+    // press Enter: it must insert a newline, not exit the block.
+    codeEditor->setProperty("cursorPosition", 6);
+    QTest::qWait(30);
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(100);
+
+    const int rowsBefore = blockModel->rowCount();
+    QCOMPARE(rowsBefore, 2);
+    QCOMPARE(focusedBlockId(), codeId);
+    const QString body = blockModel->data(blockModel->index(1, 0),
+                                          BlockModel::ContentRole).toString();
+    QVERIFY(body.contains('\n'));
+  }
+
+  void imageBlockLoadsAndResizes() {
+    BlockModel *blockModel = model();
+    const QString imgId = blockModel->appendBlock(8, "My Caption");
+    QVERIFY(!imgId.isEmpty());
+    QTest::qWait(100);
+
+    QVERIFY(blockModel->setBlockImageSource(imgId, "file:///tmp/test.png"));
+    QVERIFY(blockModel->setBlockImageWidthRatio(imgId, 0.65));
+    QTest::qWait(100);
+
+    const int imgRow = blockModel->indexOfBlock(imgId);
+    QVERIFY(imgRow >= 0);
+    const QModelIndex idx = blockModel->index(imgRow, 0);
+    QCOMPARE(blockModel->data(idx, BlockModel::BlockTypeRole).toInt(), 8);
+    QCOMPARE(blockModel->data(idx, BlockModel::ImageSourceRole).toString(), QString("file:///tmp/test.png"));
+    QCOMPARE(blockModel->data(idx, BlockModel::ImageWidthRatioRole).toDouble(), 0.65);
+    QCOMPARE(blockModel->data(idx, BlockModel::ContentRole).toString(), QString("My Caption"));
+  }
+
 };
 
 QTEST_MAIN(EditorQmlTests)

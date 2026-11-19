@@ -214,9 +214,7 @@ ApplicationWindow {
   NavigationRail {
     id: navigationRail
 
-    visible: Preferences.showNavigationRail
-    width: visible ? 56 : 0
-    clip: true
+    width: 56
     explorerExpanded: fileExplorer.expanded
 
     anchors {

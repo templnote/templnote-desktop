@@ -242,6 +242,14 @@ QVariant BlockModel::data(const QModelIndex &index, int role) const {
     return block->metadata.value(QStringLiteral("codeLanguage"), QStringLiteral("")).toString();
   }
 
+  case ImageSourceRole: {
+    return block->metadata.value(QStringLiteral("imageSource"), QStringLiteral("")).toString();
+  }
+
+  case ImageWidthRatioRole: {
+    return block->metadata.value(QStringLiteral("imageWidthRatio"), 1.0).toDouble();
+  }
+
   case CalloutTypeRole: {
     const QString type = block->metadata.value(QStringLiteral("calloutType")).toString();
     return type.isEmpty() ? QStringLiteral("note") : type;
@@ -288,6 +296,8 @@ QHash<int, QByteArray> BlockModel::roleNames() const {
           {CheckedRole, "checked"},
           {CalloutTypeRole, "calloutType"},
           {CodeLanguageRole, "codeLanguage"},
+          {ImageSourceRole, "imageSource"},
+          {ImageWidthRatioRole, "imageWidthRatio"},
           {NextBlockTypeRole, "nextBlockType"},
           {NumberIndexRole, "numberIndex"}};
 }
@@ -604,7 +614,7 @@ bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
                                   ? align
                                   : QStringLiteral("left");
 
-  if ((currentAlign.isEmpty() && targetAlign == QLatin1String("left")) || currentAlign == targetAlign)
+  if (currentAlign == targetAlign)
     return true;
 
   const Block beforeBlock = *block;
@@ -711,6 +721,85 @@ bool BlockModel::setBlockCodeLanguage(const QString &id, const QString &language
 
   markModified();
   return true;
+}
+
+bool BlockModel::setBlockImageSource(const QString &id, const QString &source) {
+  const int row = m_document.indexOf(id);
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block || block->type != BlockType::Image)
+    return false;
+
+  const QString currentSource = block->metadata.value(QStringLiteral("imageSource"), QStringLiteral("")).toString();
+  if (currentSource == source.trimmed())
+    return true;
+
+  const Block beforeBlock = *block;
+
+  if (!m_document.updateBlockImageSource(id, source))
+    return false;
+
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, ImageSourceRole});
+
+  markModified();
+  return true;
+}
+
+bool BlockModel::setBlockImageWidthRatio(const QString &id, double ratio) {
+  const int row = m_document.indexOf(id);
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block || block->type != BlockType::Image)
+    return false;
+
+  const double currentRatio = block->metadata.value(QStringLiteral("imageWidthRatio"), 1.0).toDouble();
+  if (qFuzzyCompare(currentRatio, ratio))
+    return true;
+
+  const Block beforeBlock = *block;
+
+  if (!m_document.updateBlockImageWidthRatio(id, ratio))
+    return false;
+
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row), {MetadataRole, ImageWidthRatioRole});
+
+  markModified();
+  return true;
+}
+
+QString BlockModel::importAttachment(const QUrl &fileUrl) {
+  const QString localPath = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString();
+  if (!QFileInfo::exists(localPath))
+    return localPath;
+
+  const QString attachDir = AppPaths::attachmentsDirectory();
+  if (attachDir.isEmpty())
+    return QUrl::fromLocalFile(localPath).toString();
+
+  const QFileInfo info(localPath);
+  const QString ext = info.suffix().isEmpty() ? QStringLiteral("png") : info.suffix().toLower();
+  const QString targetFileName = QUuid::createUuid().toString(QUuid::WithoutBraces) + QLatin1Char('.') + ext;
+  const QString targetFilePath = QDir(attachDir).filePath(targetFileName);
+
+  if (QFile::copy(localPath, targetFilePath)) {
+    return QUrl::fromLocalFile(targetFilePath).toString();
+  }
+
+  return QUrl::fromLocalFile(localPath).toString();
 }
 
 bool BlockModel::moveBlock(const QString &id, int destination) {

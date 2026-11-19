@@ -20,6 +20,7 @@ QString configDirectory();
 // Autosave and cache data. Deliberately separate from the user documents.
 QString cacheDirectory();
 QString autosaveDirectory();
+QString attachmentsDirectory();
 
 // Turns arbitrary text into a safe single file name (no separators, no
 // leading dots, no reserved characters).

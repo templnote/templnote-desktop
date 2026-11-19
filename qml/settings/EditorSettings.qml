@@ -47,15 +47,6 @@ Column {
   }
 
   SettingToggle {
-    title: "Markdown input shortcuts"
-    description: "Convert Markdown prefixes such as #, - and 1. into blocks while typing."
-    checked: Preferences.markdownShortcuts
-    onToggled: function(value) {
-      Preferences.markdownShortcuts = value
-    }
-  }
-
-  SettingToggle {
     title: "Spell check"
     description: "Highlight misspelled words while writing."
     checked: Preferences.spellCheck

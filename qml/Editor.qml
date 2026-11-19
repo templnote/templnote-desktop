@@ -27,10 +27,21 @@ Item {
   property int pendingFocusPosition: 0
   property int pendingFocusRangeStart: -1
   property int pendingFocusRangeEnd: -1
+  property int pendingFocusAttempts: 0
 
   Timer {
     id: pendingFocusTimer
     interval: 0
+    repeat: false
+    onTriggered: root.applyPendingFocus()
+  }
+
+  // ListView may still report the pre-insert order for a frame after a block
+  // is inserted, so a focus request can land on a stale delegate. Retry until
+  // the row at the requested id is the delegate that is actually focused.
+  Timer {
+    id: pendingFocusRetryTimer
+    interval: 16
     repeat: false
     onTriggered: root.applyPendingFocus()
   }
@@ -305,6 +316,7 @@ Item {
     root.pendingFocusPosition = position
     root.pendingFocusRangeStart = rangeStart === undefined ? -1 : rangeStart
     root.pendingFocusRangeEnd = rangeEnd === undefined ? -1 : rangeEnd
+    root.pendingFocusAttempts = 0
 
     const row = root.model.indexOfBlock(blockId)
 
@@ -327,16 +339,26 @@ Item {
 
     const delegate = documentView.itemAtIndex(row)
 
+    // Right after an insertion the view can still hand back the delegate that
+    // occupied this row before the model changed. Do not clear the intent in
+    // that case: retry once the view has caught up, otherwise the caret stays
+    // in the old block (for example after Ctrl+Enter in a code block).
+    if (!delegate || delegate.blockId !== root.pendingFocusBlockId) {
+      if (root.pendingFocusAttempts < 30) {
+        ++root.pendingFocusAttempts
+        pendingFocusRetryTimer.restart()
+      }
+      return
+    }
+
     // The delegate's Component.onCompleted/onBlockIdChanged applies the
     // intent once it materializes.
-    if (!delegate)
-      return
-
     const position = root.pendingFocusPosition
     const rangeStart = root.pendingFocusRangeStart
     const rangeEnd = root.pendingFocusRangeEnd
 
     root.pendingFocusBlockId = ""
+    root.pendingFocusAttempts = 0
     root.pendingFocusRangeStart = -1
     root.pendingFocusRangeEnd = -1
 
@@ -679,6 +701,8 @@ Item {
       required property bool checked
       required property string calloutType
       required property string codeLanguage
+      required property string imageSource
+      required property real imageWidthRatio
       required property int index
 
       readonly property real bottomGap: BlockSpacing.bottomGap(
@@ -703,6 +727,7 @@ Item {
         const rangeEnd = editorRoot.pendingFocusRangeEnd
 
         editorRoot.pendingFocusBlockId = ""
+        editorRoot.pendingFocusAttempts = 0
         editorRoot.pendingFocusRangeStart = -1
         editorRoot.pendingFocusRangeEnd = -1
 
@@ -920,6 +945,9 @@ Item {
         isChecked: delegateRoot.checked
         calloutType: delegateRoot.calloutType || "note"
         codeLanguage: delegateRoot.codeLanguage || ""
+        imageSource: delegateRoot.imageSource || ""
+        imageWidthRatio: delegateRoot.imageWidthRatio !== undefined ? delegateRoot.imageWidthRatio : 1.0
+        isBlockHovered: delegateRoot.isHovered
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive

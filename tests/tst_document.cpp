@@ -225,6 +225,24 @@ private slots:
     QVERIFY(empty.fromJson(json));
     QCOMPARE(empty.count(), 0);
   }
+
+  void imageBlockMetadataRoundTrip() {
+    Document document;
+    Block block = Block::create(BlockType::Image, "A caption");
+    QVERIFY(document.appendBlock(block));
+    QVERIFY(document.updateBlockImageSource(block.id, "file:///path/to/test.png"));
+    QVERIFY(document.updateBlockImageWidthRatio(block.id, 0.75));
+
+    QJsonObject json = document.toJson();
+    Document loaded;
+    QVERIFY(loaded.fromJson(json));
+    QCOMPARE(loaded.count(), 1);
+    const Block *loadedBlock = loaded.blockAt(0);
+    QCOMPARE(loadedBlock->type, BlockType::Image);
+    QCOMPARE(loadedBlock->text, QString("A caption"));
+    QCOMPARE(loadedBlock->metadata.value("imageSource").toString(), QString("file:///path/to/test.png"));
+    QCOMPARE(loadedBlock->metadata.value("imageWidthRatio").toDouble(), 0.75);
+  }
 };
 
 QTEST_GUILESS_MAIN(DocumentTests)

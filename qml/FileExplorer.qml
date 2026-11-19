@@ -385,7 +385,7 @@ Rectangle {
 
   Behavior on width {
     NumberAnimation {
-      duration: Preferences.reduceMotion || !Preferences.animateExplorer ? 0 : 180
+      duration: 180
       easing.type: Easing.OutCubic
     }
   }

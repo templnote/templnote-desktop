@@ -104,6 +104,7 @@ foreach(qml_file
     blocks/DividerBlock.qml
     blocks/CalloutBlock.qml
     blocks/TodoBlock.qml
+    blocks/ImageBlock.qml
 )
     set_source_files_properties(
         "${TEST_QML_DIR}/${qml_file}" PROPERTIES
@@ -139,6 +140,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/DividerBlock.qml
     ${TEST_QML_DIR}/blocks/CalloutBlock.qml
     ${TEST_QML_DIR}/blocks/TodoBlock.qml
+    ${TEST_QML_DIR}/blocks/ImageBlock.qml
 
     RESOURCES
     ${TEST_QML_DIR}/shaders/paper.frag.qsb

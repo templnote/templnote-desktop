@@ -126,10 +126,10 @@ bool Document::updateBlockAlignment(const QString &id, const QString &align) {
   if (index < 0)
     return false;
 
-  if (align == QLatin1String("center") || align == QLatin1String("right")) {
+  if (align == QLatin1String("center") || align == QLatin1String("right") || align == QLatin1String("left")) {
     m_blocks[index].metadata.insert(QStringLiteral("align"), align);
   } else {
-    // "left" is the default; remove or set "left"
+    // remove align
     m_blocks[index].metadata.remove(QStringLiteral("align"));
   }
 
@@ -179,6 +179,30 @@ bool Document::updateBlockCodeLanguage(const QString &id, const QString &languag
     m_blocks[index].metadata.remove(QStringLiteral("codeLanguage"));
   }
 
+  return true;
+}
+
+bool Document::updateBlockImageSource(const QString &id, const QString &source) {
+  const int index = indexOf(id);
+  if (index < 0)
+    return false;
+
+  const QString trimmed = source.trimmed();
+  if (!trimmed.isEmpty()) {
+    m_blocks[index].metadata.insert(QStringLiteral("imageSource"), trimmed);
+  } else {
+    m_blocks[index].metadata.remove(QStringLiteral("imageSource"));
+  }
+  return true;
+}
+
+bool Document::updateBlockImageWidthRatio(const QString &id, double ratio) {
+  const int index = indexOf(id);
+  if (index < 0)
+    return false;
+
+  double clamped = qBound(0.2, ratio, 1.0);
+  m_blocks[index].metadata.insert(QStringLiteral("imageWidthRatio"), clamped);
   return true;
 }
 
