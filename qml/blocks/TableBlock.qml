@@ -52,6 +52,39 @@ Item {
   property int focusedCol: -1
   property int hoveredRowsCount: 0
   readonly property bool anyRowHovered: hoveredRowsCount > 0
+  // Mouse x within the block, supplied by the Editor (the block-level hover
+  // area sits above nested handlers). 54px offset = 30px gutter + 24px row-handle gutter.
+  property real hoverX: -1
+  readonly property int hoveredColIndex: {
+    if (!isBlockHovered || hoverX < 0)
+      return -1
+    var x = hoverX - 54 + (tableFlickable ? tableFlickable.contentX : 0)
+    var acc = 0
+    for (var i = 0; i < columnsData.length; ++i) {
+      if (x >= acc && x < acc + columnsData[i].width)
+        return i
+      acc += columnsData[i].width
+    }
+    return -1
+  }
+
+  // Mouse y within the block, used to light the hovered row's drag pill.
+  // Row grid starts 22px down (4px top margin + 18px column header bar).
+  property real hoverY: -1
+  readonly property int hoveredRowIndex: {
+    if (!isBlockHovered || hoverY < 0)
+      return -1
+    var y = hoverY - 22
+    var acc = 0
+    for (var i = 0; i < rowsData.length; ++i) {
+      var item = rowsRepeater.itemAt(i)
+      var h = item ? item.height : 34
+      if (y >= acc && y < acc + h)
+        return i
+      acc += h
+    }
+    return -1
+  }
 
   // Hover states & interactivity
   property bool menuOpen: cellActionMenu.visible || rowActionMenu.visible || colActionMenu.visible
@@ -473,7 +506,7 @@ Item {
             id: colHeaderBar
             width: parent.width
             height: 18
-            visible: opacity > 0.001
+            // Keep the 18px reserved so rows never jump when the handle pills fade in
             opacity: (root.isTableHovered || root.isDraggingCol) ? 1.0 : 0.0
             scale: (root.isTableHovered || root.isDraggingCol) ? 1.0 : 0.94
             transformOrigin: Item.Top
@@ -502,11 +535,12 @@ Item {
                   width: 32
                   height: 5
                   radius: 2.5
-                  color: (colDragArea.containsMouse || root.isDraggingCol && root.draggingColIndex === index)
+                  color: (colDragArea.containsMouse || root.hoveredColIndex === index
+                          || (root.isDraggingCol && root.draggingColIndex === index))
                          ? Theme.accent
                          : Theme.tint(Theme.text, Theme.isDark ? 0.3 : 0.25)
                   // Only the hovered/dragged column's pill is shown, not every column at once
-                  opacity: (colDragArea.containsMouse
+                  opacity: (colDragArea.containsMouse || root.hoveredColIndex === index
                             || (root.isDraggingCol && (root.draggingColIndex === index || root.dropColTargetIndex === index))) ? 1.0 : 0.0
 
                   Behavior on color { ColorAnimation { duration: 120 } }
@@ -575,7 +609,9 @@ Item {
               id: rowDelegate
               required property int index
               readonly property var rowModel: root.rowsData[index]
-              readonly property bool isRowHovered: rowHoverHandler.hovered || (rowHandleHover && rowHandleHover.hovered) || (root.isDraggingRow && root.draggingRowIndex === index)
+              readonly property bool isRowHovered: rowHoverHandler.hovered || (rowHandleHover && rowHandleHover.hovered)
+                                                || root.hoveredRowIndex === index
+                                                || (root.isDraggingRow && root.draggingRowIndex === index)
 
               HoverHandler {
                 id: rowHoverHandler
@@ -594,7 +630,7 @@ Item {
                 return cellsRepeater.itemAt(cIndex)
               }
 
-              // Row Drag Handle (Blue pill button with 6 dots on hover, matching Screenshot 2!)
+              // Row drag pill — the vertical counterpart of the column pill
               Item {
                 id: rowHandleContainer
                 x: -24
@@ -613,19 +649,15 @@ Item {
                 }
 
                 Rectangle {
-                  anchors.fill: parent
-                  radius: 4
-                  color: (rowHandleMouseArea.pressed || (root.isDraggingRow && root.draggingRowIndex === index))
+                  anchors.centerIn: parent
+                  width: 5
+                  height: 32
+                  radius: 2.5
+                  color: (rowHandleMouseArea.pressed || rowDelegate.isRowHovered
+                          || (root.isDraggingRow && root.draggingRowIndex === index))
                          ? Theme.accent
-                         : (rowHandleHover.hovered ? Theme.surfaceHover : "transparent")
-
-                  IconImage {
-                    anchors.centerIn: parent
-                    width: 14
-                    height: 14
-                    source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
-                    color: (root.isDraggingRow && root.draggingRowIndex === index) ? Theme.accentText : Theme.textMuted
-                  }
+                         : Theme.tint(Theme.text, Theme.isDark ? 0.3 : 0.25)
+                  Behavior on color { ColorAnimation { duration: 120 } }
                 }
 
                 MouseArea {
@@ -713,6 +745,15 @@ Item {
                     readonly property bool isHeaderCell: root.headerRowEnabled && rowDelegate.index === 0
 
                     property alias editor: cellTextEdit
+
+                    // Re-read this cell's value after its column id or row data changes.
+                    function refreshCellText() {
+                      if (cellTextEdit.activeFocus || !rowModel || !rowModel.cells || !colId)
+                        return
+                      var newVal = rowModel.cells[colId] || ""
+                      if (cellTextEdit.text !== newVal)
+                        cellTextEdit.text = newVal
+                    }
 
                     function highlightRanges() {
                       var ranges = []
@@ -898,15 +939,12 @@ Item {
                         }
                       }
 
-                      // Keep text in sync with rowsData changes
                       Connections {
                         target: root
-                        function onRowsDataChanged() {
-                          if (!cellTextEdit.activeFocus && rowModel && rowModel.cells && colId) {
-                            var newVal = rowModel.cells[colId] || ""
-                            if (cellTextEdit.text !== newVal)
-                              cellTextEdit.text = newVal
-                          }
+                        function onRowsDataChanged() { cellRoot.refreshCellText() }
+                        // Defer so colId has been re-evaluated for the new column order
+                        function onColumnsDataChanged() {
+                          Qt.callLater(function() { cellRoot.refreshCellText() })
                         }
                       }
 

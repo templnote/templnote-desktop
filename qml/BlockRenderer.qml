@@ -18,6 +18,8 @@ Item {
   property real imageWidthRatio: 1.0
   property var blockMetadata: null
   property bool isBlockHovered: false
+  property real hoverX: -1
+  property real hoverY: -1
   property bool showPlaceholder: false
   property var model: null
 
@@ -223,6 +225,10 @@ Item {
         item.blockMetadata = Qt.binding(function() { return root.blockMetadata })
       if ("isBlockHovered" in item)
         item.isBlockHovered = Qt.binding(function() { return root.isBlockHovered })
+      if ("hoverX" in item)
+        item.hoverX = Qt.binding(function() { return root.hoverX })
+      if ("hoverY" in item)
+        item.hoverY = Qt.binding(function() { return root.hoverY })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })

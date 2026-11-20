@@ -767,6 +767,8 @@ Item {
 
       readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
       readonly property bool isHovered: blockHoverArea.containsMouse || handleHover.hovered
+      readonly property real hoverX: blockHoverArea.containsMouse ? blockHoverArea.mouseX : -1
+      readonly property real hoverY: blockHoverArea.containsMouse ? blockHoverArea.mouseY : -1
 
       // Applies a focus intent set before this delegate existed (or while it
       // was recycled for another block).
@@ -1002,6 +1004,8 @@ Item {
         imageWidthRatio: delegateRoot.imageWidthRatio !== undefined ? delegateRoot.imageWidthRatio : 1.0
         blockMetadata: delegateRoot.metadata
         isBlockHovered: delegateRoot.isHovered
+        hoverX: delegateRoot.hoverX
+        hoverY: delegateRoot.hoverY
         showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
         searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
         searchNavigationActive: root.searchNavigationActive
