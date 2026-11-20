@@ -141,6 +141,7 @@ qt_add_qml_module(templnote
   RESOURCES
   qml/shaders/paper.frag.qsb
   qml/shaders/edgefade.frag.qsb
+  qml/SearchService/localSearchWorker.mjs
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_image_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg

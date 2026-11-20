@@ -49,6 +49,20 @@ Item {
     }
   }
 
+  Connections {
+    target: root.resultsModel
+
+    function onCountChanged() {
+      if (!root.visible || !root.resultsModel || root.query.length === 0)
+        return
+
+      if (root.resultsModel.count > 0)
+        root.selectResult(0)
+      else
+        root.clearSelection()
+    }
+  }
+
   function open() {
     if (root.visible) {
       searchField.forceActiveFocus()
@@ -80,7 +94,7 @@ Item {
     searchField.text = ""
 
     if (root.resultsModel)
-      root.resultsModel.search("")
+      root.resultsModel.searchAsync("")
 
     root.currentIndex = -1
     root.currentResult = null
@@ -95,23 +109,27 @@ Item {
     root.closed()
   }
 
+  function clearSelection() {
+    root.currentIndex = -1
+    root.currentResult = null
+    root.selectedDocumentPath = ""
+    resultsList.selectedIndex = -1
+    resultsList.selectedDocumentPath = ""
+    preview.result = null
+  }
+
   function runSearch() {
     if (!root.visible || !root.resultsModel)
       return
 
-    root.resultsModel.search(root.query)
-
-    if (root.resultsModel.count === 0) {
-      root.currentIndex = -1
-      root.currentResult = null
-      root.selectedDocumentPath = ""
-      resultsList.selectedIndex = -1
-      resultsList.selectedDocumentPath = ""
-      preview.result = null
+    if (root.query.length === 0) {
+      root.clearSelection()
+      root.resultsModel.searchAsync("")
       return
     }
 
-    root.selectResult(0)
+    // Results arrive asynchronously; onCountChanged selects the first one.
+    root.resultsModel.searchAsync(root.query)
   }
 
   function selectResult(index) {

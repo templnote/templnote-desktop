@@ -646,6 +646,48 @@ private slots:
     QVERIFY(model.isModified());
   }
 
+  void undoAndRedoTrackSavedState() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    QVERIFY(model.createDocument(directory.filePath("State")));
+    QVERIFY(!model.isModified());
+
+    const QString id = model.blockIdAt(0);
+    QVERIFY(model.updateBlockText(id, QStringLiteral("changed")));
+    QVERIFY(model.isModified());
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.document().blockAt(0)->text, QString());
+    QVERIFY(!model.isModified());
+
+    QVERIFY(model.redo());
+    QCOMPARE(model.document().blockAt(0)->text, QStringLiteral("changed"));
+    QVERIFY(model.isModified());
+  }
+
+  void saveClosesTextGroupSoUndoReturnsToSavedState() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    QVERIFY(model.createDocument(directory.filePath("Group")));
+    const QString id = model.blockIdAt(0);
+
+    QVERIFY(model.updateBlockText(id, QStringLiteral("a")));
+    QVERIFY(model.saveCurrentDocument());
+    QVERIFY(!model.isModified());
+
+    QVERIFY(model.updateBlockText(id, QStringLiteral("ab")));
+    QVERIFY(model.isModified());
+
+    // The save must not be merged into the next undo step.
+    QVERIFY(model.undo());
+    QCOMPARE(model.document().blockAt(0)->text, QStringLiteral("a"));
+    QVERIFY(!model.isModified());
+  }
+
   void autosaveWritesAfterIdle() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -856,6 +898,28 @@ private slots:
     BlockModel model;
     QVERIFY(model.loadDocument(path));
     QVERIFY(model.lastModified().isValid());
+  }
+
+  void createDocumentPersistsPendingEdits() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    const QString firstPath = directory.filePath("First");
+    QVERIFY(model.createDocument(firstPath));
+
+    const QString id = model.blockIdAt(0);
+    QVERIFY(!id.isEmpty());
+    QVERIFY(model.updateBlockText(id, QStringLiteral("pending edit")));
+    QVERIFY(model.isModified());
+
+    const QString secondPath = directory.filePath("Second");
+    QVERIFY(model.createDocument(secondPath));
+    QVERIFY(!model.isModified());
+
+    QFile firstFile(firstPath + ".templnote");
+    QVERIFY(firstFile.open(QIODevice::ReadOnly));
+    QVERIFY(firstFile.readAll().contains("pending edit"));
   }
 
   void createDocumentSavesUntitledFile() {

@@ -374,6 +374,32 @@ private slots:
     QCOMPARE(model.filePathAt(0), QDir::cleanPath(movedFilePath));
   }
 
+  void deleteNonEmptyFolderRescuesHiddenFiles() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    DocumentListModel model(directory.path());
+    const QString folder = model.createUntitledFolder();
+    QVERIFY(QFileInfo::exists(folder));
+
+    const QString hiddenFilePath =
+        QDir(folder).filePath(".HiddenNote.templnote");
+    QFile file(hiddenFilePath);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("{\"blocks\":[]}");
+    file.close();
+    QVERIFY(QFileInfo::exists(hiddenFilePath));
+
+    QVERIFY(model.deleteEntry(folder));
+    QVERIFY(!QFileInfo::exists(folder));
+
+    // Hidden entries must be rescued instead of being deleted with the
+    // folder. Sanitizing drops the leading dot, so look for the visible name.
+    const QString rescuedFilePath =
+        QDir(directory.path()).filePath("HiddenNote.templnote");
+    QVERIFY(QFileInfo::exists(rescuedFilePath));
+  }
+
   void deleteFolderRetargetsOpenDocument() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

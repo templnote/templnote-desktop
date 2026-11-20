@@ -74,10 +74,22 @@ void SearchResultsModel::setIndex(SearchIndex *index) {
   if (m_index == index)
     return;
 
+  if (m_index)
+    disconnect(m_index, nullptr, this, nullptr);
+
   m_index = index;
+
+  if (m_index) {
+    connect(m_index, &SearchIndex::searchFinished, this,
+            &SearchResultsModel::onSearchFinished);
+  }
+
+  ++m_searchToken;
 
   beginResetModel();
   m_results.clear();
+  m_groupTitles.clear();
+  m_groupCounts.clear();
   endResetModel();
 
   const bool hadTruncated = m_truncated;
@@ -97,12 +109,67 @@ void SearchResultsModel::search(const QString &query) {
       m_index ? m_index->search(query, &truncated)
               : QVector<SearchIndex::Result>();
 
+  applyResults(results, truncated);
+}
+
+void SearchResultsModel::searchAsync(const QString &query) {
+  const quint64 token = ++m_searchToken;
+
+  if (!m_index) {
+    onSearchFinished(token, SearchIndex::SearchOutcome{});
+    return;
+  }
+
+  m_index->searchAsync(query, token);
+}
+
+void SearchResultsModel::onSearchFinished(
+    quint64 token, const SearchIndex::SearchOutcome &outcome) {
+  if (token != m_searchToken)
+    return;
+
+  applyResults(outcome.results, outcome.truncated);
+}
+
+void SearchResultsModel::applyResults(
+    const QVector<SearchIndex::Result> &results, bool truncated) {
   const bool truncationChanged = m_truncated != truncated;
 
-  beginResetModel();
-  m_results = results;
+  // Keep the leading rows that did not change so the view can reuse their
+  // delegates instead of rebuilding the whole list on every keystroke.
+  int common = 0;
+  const int limit = qMin(m_results.size(), results.size());
+
+  while (common < limit &&
+         m_results[common].documentPath == results[common].documentPath &&
+         m_results[common].blockId == results[common].blockId)
+    ++common;
+
+  if (common > 0)
+    emit dataChanged(createIndex(0, 0), createIndex(common - 1, 0));
+
+  if (m_results.size() > common) {
+    beginRemoveRows({}, common, m_results.size() - 1);
+    m_results.resize(common);
+    endRemoveRows();
+  }
+
+  if (results.size() > common) {
+    beginInsertRows({}, common, results.size() - 1);
+    for (int row = common; row < results.size(); ++row)
+      m_results.append(results[row]);
+    endInsertRows();
+  }
+
   m_truncated = truncated;
-  endResetModel();
+
+  m_groupTitles.clear();
+  m_groupCounts.clear();
+
+  for (const SearchIndex::Result &result : std::as_const(m_results)) {
+    m_groupTitles.insert(result.documentPath, result.documentTitle);
+    m_groupCounts.insert(result.documentPath, result.documentMatchCount);
+  }
 
   emit countChanged();
 
@@ -137,12 +204,7 @@ QVariantMap SearchResultsModel::resultAt(int row) const {
 }
 
 QString SearchResultsModel::groupTitle(const QString &documentPath) const {
-  for (const SearchIndex::Result &result : m_results) {
-    if (result.documentPath == documentPath)
-      return result.documentTitle;
-  }
-
-  return documentPath;
+  return m_groupTitles.value(documentPath, documentPath);
 }
 
 QString SearchResultsModel::relativeDocumentPath(
@@ -165,12 +227,7 @@ QString SearchResultsModel::relativeDocumentPath(
 }
 
 int SearchResultsModel::groupMatchCount(const QString &documentPath) const {
-  for (const SearchIndex::Result &result : m_results) {
-    if (result.documentPath == documentPath)
-      return result.documentMatchCount;
-  }
-
-  return 0;
+  return m_groupCounts.value(documentPath, 0);
 }
 
 QVariantList SearchResultsModel::rangesToList(

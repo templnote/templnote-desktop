@@ -107,20 +107,6 @@ Item {
     // Model reactive bindings update properties automatically
   }
 
-  // Freeze editor scroll when image menu popup is visible or when resizing
-  function updateEditorScrollInteractivity() {
-    var p = root.parent
-    while (p) {
-      if (p.hasOwnProperty("interactive")) {
-        p.interactive = !root.menuOpen && !root.isResizing
-      }
-      p = p.parent
-    }
-  }
-
-  onMenuOpenChanged: updateEditorScrollInteractivity()
-  onIsResizingChanged: updateEditorScrollInteractivity()
-
   FileDialog {
     id: fileDialog
     title: "Select Image"

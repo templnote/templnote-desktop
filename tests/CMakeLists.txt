@@ -7,6 +7,20 @@ target_link_libraries(benchmark_load PRIVATE
     Qt6::Test
 )
 
+add_executable(benchmark_search
+    benchmark_search.cpp
+)
+
+target_link_libraries(benchmark_search PRIVATE
+    templnote_core
+    Qt6::Test
+)
+
+add_test(
+    NAME SearchBenchmark
+    COMMAND benchmark_search
+)
+
 add_executable(tst_document
     tst_document.cpp
 )
@@ -118,6 +132,7 @@ foreach(qml_file
     blocks/CalloutBlock.qml
     blocks/TodoBlock.qml
     blocks/ImageBlock.qml
+    blocks/TableBlock.qml
 )
     set_source_files_properties(
         "${TEST_QML_DIR}/${qml_file}" PROPERTIES
@@ -154,6 +169,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/CalloutBlock.qml
     ${TEST_QML_DIR}/blocks/TodoBlock.qml
     ${TEST_QML_DIR}/blocks/ImageBlock.qml
+    ${TEST_QML_DIR}/blocks/TableBlock.qml
 
     RESOURCES
     ${TEST_QML_DIR}/shaders/paper.frag.qsb
@@ -186,6 +202,10 @@ set(SEARCH_ICON
 set_source_files_properties("${SEARCH_ICON}" PROPERTIES
     QT_RESOURCE_ALIAS "assets/icons/ic_fluent_search_20_regular.svg"
 )
+set_source_files_properties(
+    "${TEST_QML_DIR}/SearchService/localSearchWorker.mjs" PROPERTIES
+    QT_RESOURCE_ALIAS "qml/SearchService/localSearchWorker.mjs"
+)
 
 qt_add_qml_module(tst_searchwindow
     URI TemplnoteSearchTest
@@ -194,6 +214,7 @@ qt_add_qml_module(tst_searchwindow
 
     QML_FILES
     SearchWindowTest.qml
+    LocalSearchServiceTest.qml
     ${TEST_QML_DIR}/Theme.qml
     ${TEST_QML_DIR}/SearchWindow.qml
     ${TEST_QML_DIR}/ResultsList.qml
@@ -204,6 +225,7 @@ qt_add_qml_module(tst_searchwindow
 
     RESOURCES
     ${SEARCH_ICON}
+    ${TEST_QML_DIR}/SearchService/localSearchWorker.mjs
 )
 
 target_link_libraries(tst_searchwindow PRIVATE

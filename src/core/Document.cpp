@@ -126,10 +126,10 @@ bool Document::updateBlockAlignment(const QString &id, const QString &align) {
   if (index < 0)
     return false;
 
-  if (align == QLatin1String("center") || align == QLatin1String("right") || align == QLatin1String("left")) {
+  if (align == QLatin1String("center") || align == QLatin1String("right")) {
     m_blocks[index].metadata.insert(QStringLiteral("align"), align);
   } else {
-    // remove align
+    // Left is the default, so it is represented by the absence of the key.
     m_blocks[index].metadata.remove(QStringLiteral("align"));
   }
 

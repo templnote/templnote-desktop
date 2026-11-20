@@ -591,11 +591,14 @@ Item {
 
   // Clicks in the margin left of the document are still visually part of the
   // block gutter. Focus the block at that height so clicking beside a block
-  // does not leave the caret in the previous one.
+  // does not leave the caret in the previous one. The area extends all the way
+  // to the editor's left edge because delegate-local MouseAreas (including the
+  // drag handle) sit outside the ListView's hit-test bounds and never see
+  // clicks in this strip.
   MouseArea {
     id: leftMarginClickArea
 
-    width: Math.max(0, documentView.x - 30)
+    width: Math.max(0, documentView.x)
     anchors {
       top: documentView.top
       bottom: documentView.bottom
@@ -684,6 +687,9 @@ Item {
       target: null
       acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
       onWheel: (event) => {
+        // Shift+wheel is reserved for horizontal scrolling inside table blocks.
+        if (event.modifiers & Qt.ShiftModifier)
+          return
         if (!root.scrollingEnabled || root.activeCommandDelegate !== null || root.isDraggingBlock || selectionToolbar.showToolbar)
           return
 

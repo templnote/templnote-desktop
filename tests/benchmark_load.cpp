@@ -4,8 +4,10 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QUuid>
+#include <QElapsedTimer>
 
 #include "model/BlockModel.h"
+#include "core/Document.h"
 #include "tracking/MemoryTracker.h"
 #include "tracking/ScopedTimer.h"
 
@@ -43,6 +45,41 @@ private:
         return path;
     }
 
+    void measurePhases(const QString &path) {
+        QFile file(path);
+        file.open(QIODevice::ReadOnly);
+
+        QElapsedTimer timer;
+        timer.start();
+        const QByteArray bytes = file.readAll();
+        const double readMs = timer.elapsed();
+
+        timer.restart();
+        QJsonParseError error{};
+        const QJsonDocument json = QJsonDocument::fromJson(bytes, &error);
+        const double parseMs = timer.elapsed();
+
+        timer.restart();
+        Document document;
+        QString documentError;
+        const bool ok = document.fromJson(json.object(), &documentError);
+        const double decodeMs = timer.elapsed();
+
+        timer.restart();
+        BlockModel model;
+        const bool loaded = model.loadDocument(path);
+        const double totalMs = timer.elapsed();
+
+        qInfo().noquote() << QStringLiteral("PHASES ok=%1/%2 read=%3ms json=%4ms blocks=%5ms loadTotal=%6ms blocks=%7")
+                                 .arg(ok)
+                                 .arg(loaded)
+                                 .arg(readMs, 0, 'f', 3)
+                                 .arg(parseMs, 0, 'f', 3)
+                                 .arg(decodeMs, 0, 'f', 3)
+                                 .arg(totalMs, 0, 'f', 3)
+                                 .arg(document.count());
+    }
+
 private slots:
     void initTestCase() {
         MemoryTracker tracker;
@@ -75,6 +112,37 @@ private slots:
 
     void benchmarkLoadLargeDoc_5000Blocks() {
         QString path = createDummyDocument(5000);
+        QVERIFY(!path.isEmpty());
+
+        BlockModel model;
+        QBENCHMARK {
+            model.loadDocument(path);
+        }
+
+        QFile::remove(path);
+    }
+
+    void loadPhases10000Blocks() {
+        QString path = createDummyDocument(10000);
+        QVERIFY(!path.isEmpty());
+        measurePhases(path);
+        QFile::remove(path);
+    }
+
+    void benchmarkLoadHugeDoc_10000Blocks() {
+        QString path = createDummyDocument(10000);
+        QVERIFY(!path.isEmpty());
+
+        BlockModel model;
+        QBENCHMARK {
+            model.loadDocument(path);
+        }
+
+        QFile::remove(path);
+    }
+
+    void benchmarkLoadHugeDoc_50000Blocks() {
+        QString path = createDummyDocument(50000);
         QVERIFY(!path.isEmpty());
 
         BlockModel model;

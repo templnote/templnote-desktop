@@ -3,6 +3,7 @@
 #include <QAbstractListModel>
 #include <QByteArray>
 #include <QDateTime>
+#include <deque>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QVector>
@@ -31,6 +32,9 @@ class BlockModel : public QAbstractListModel {
   Q_PROPERTY(bool fullWidth READ isFullWidth WRITE setFullWidth
                  NOTIFY fullWidthChanged)
   Q_PROPERTY(bool hasFullWidthSet READ hasFullWidthSet NOTIFY fullWidthChanged)
+  // Increments on every content change; lets the QML find service reuse its
+  // lowercased text cache until the document actually changes.
+  Q_PROPERTY(int contentRevision READ contentRevision NOTIFY contentRevisionChanged)
 public:
   enum Roles {
     BlockIdRole = Qt::UserRole + 1,
@@ -172,6 +176,7 @@ public:
   bool isFullWidth() const;
   void setFullWidth(bool fullWidth);
   bool hasFullWidthSet() const;
+  int contentRevision() const;
 
 signals:
   void countChanged();
@@ -185,9 +190,14 @@ signals:
   void documentLoaded();
   void documentCreated();
   void fullWidthChanged();
+  void contentRevisionChanged();
 
 private:
   void markModified();
+  // Recomputes the dirty flag from the current history state instead of
+  // assuming every undo/redo leaves unsaved changes behind.
+  void syncModifiedState();
+  bool hasUnsavedChanges() const;
   // Only numbered blocks have a meaningful numberIndex, so avoid notifying
   // every row after them when the numbering changes.
   void emitNumberIndexChanged(int firstRow);
@@ -218,6 +228,10 @@ private:
     QString textAfter;
     QString focusBeforeId;
     QString focusAfterId;
+    // State ids let the model tell whether an undo/redo landed exactly on the
+    // state that was last written to disk.
+    int stateBeforeId = 0;
+    int stateAfterId = 0;
     QVector<PatchOp> patch;
   };
 
@@ -237,10 +251,20 @@ private:
   void rebuildNumberIndices() const;
 
   Document m_document;
-  QVector<HistoryEntry> m_undoStack;
-  QVector<HistoryEntry> m_redoStack;
+  // A deque keeps history trimming O(1) after kMaxHistoryEntries is reached.
+  std::deque<HistoryEntry> m_undoStack;
+  std::deque<HistoryEntry> m_redoStack;
   QString m_lastHistoryBlockId;
   int m_lastHistoryCursorPosition = -1;
+
+  // Every edit gets a new state id. Undo/redo restore the id stored on the
+  // history entry, so returning to the saved state clears the dirty flag.
+  int m_currentStateId = 0;
+  int m_savedStateId = 0;
+  int m_stateCounter = 0;
+  int m_contentRevision = 0;
+  bool m_savedFullWidth = false;
+  bool m_savedHasFullWidth = false;
 
   QString m_currentFilePath;
   QString m_createdAt;

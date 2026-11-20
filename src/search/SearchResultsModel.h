@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
@@ -50,6 +51,7 @@ public:
   void setIndex(SearchIndex *index);
 
   Q_INVOKABLE void search(const QString &query);
+  Q_INVOKABLE void searchAsync(const QString &query);
 
   // Complete data for one row, used by the preview pane and by Enter.
   Q_INVOKABLE QVariantMap resultAt(int row) const;
@@ -66,9 +68,16 @@ signals:
 
 private:
   static QVariantList rangesToList(const QVector<SearchIndex::MatchRange> &ranges);
+  void applyResults(const QVector<SearchIndex::Result> &results,
+                    bool truncated);
+  void onSearchFinished(quint64 token,
+                        const SearchIndex::SearchOutcome &outcome);
 
   SearchIndex *m_index = nullptr;
+  quint64 m_searchToken = 0;
   QVector<SearchIndex::Result> m_results;
+  QHash<QString, QString> m_groupTitles;
+  QHash<QString, int> m_groupCounts;
   bool m_truncated = false;
 };
 } // namespace Templnote

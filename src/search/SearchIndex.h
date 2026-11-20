@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QFuture>
+#include <QHash>
 #include <QObject>
 #include <QSqlDatabase>
 #include <QString>
@@ -45,6 +47,11 @@ public:
     double rank = 0.0;
   };
 
+  struct SearchOutcome {
+    QVector<Result> results;
+    bool truncated = false;
+  };
+
   explicit SearchIndex(QObject *parent = nullptr);
 
   // Explicit locations for tests and embedding. `documentsRoot` is the tree
@@ -69,6 +76,11 @@ public:
   QVector<Result> search(const QString &query,
                          bool *truncated = nullptr) const;
 
+  // Runs the same query on a pooled worker thread and delivers the result with
+  // `token` attached so callers can discard stale replies. Cache hits are
+  // delivered asynchronously too, keeping the caller's ordering predictable.
+  Q_INVOKABLE void searchAsync(const QString &query, quint64 token);
+
   // Reconciles the index with files on disk. Used at startup, before opening
   // global search, and after destructive document-list operations.
   Q_INVOKABLE void syncIncremental();
@@ -84,11 +96,17 @@ signals:
   void blockModelChanged();
   void documentListChanged();
   void indexUpdated();
+  void searchFinished(quint64 token, const SearchOutcome &outcome);
 
 private:
   struct BlockRecord {
     QString blockId;
     QString text;
+  };
+
+  struct CachedSearch {
+    QVector<Result> results;
+    bool truncated = false;
   };
 
   struct PendingOp {
@@ -118,11 +136,15 @@ private:
   void onPathRenamed(const QString &oldPath, const QString &newPath);
   void onPathRemoved(const QString &path);
 
+  void invalidateSearchCache();
+  void cacheSearchResult(const QString &query, const CachedSearch &cached) const;
+
   void queueBlockUpsert(const QString &path, const QString &title,
                         const QString &blockId, const QString &text);
   void queueBlockRemove(const QString &path, const QString &blockId);
   void queueFullDocument(const QString &path);
   void scheduleFlush();
+  void watchWriteFuture(QFuture<void> future);
   void flushPending();
   void discardPending(const QString &pathPrefix);
 
@@ -142,6 +164,11 @@ private:
 
   static QString connectionNameFor(const SearchIndex *index);
   static QString normalizedPath(const QString &path);
+  static void finalizeResults(QVector<Result> &results);
+  static SearchOutcome executeSearch(const QSqlDatabase &db,
+                                     const QString &query);
+  static SearchOutcome executeSearchInConnection(const QString &databasePath,
+                                                 const QString &query);
   static QStringList queryTerms(const QString &query);
   static QString buildFtsQuery(const QStringList &terms);
   static QVector<MatchRange> matchRanges(const QString &text,
@@ -157,6 +184,13 @@ private:
   QTimer m_flushTimer;
   QVector<PendingOp> m_pending;
 
+  // Small LRU of recent queries. A longer query that starts with a cached
+  // query can be answered by filtering the cached results instead of hitting
+  // FTS5 again, which makes backspacing/typing feel immediate.
+  mutable QHash<QString, CachedSearch> m_searchCache;
+  mutable QStringList m_searchCacheOrder;
+  mutable quint64 m_cacheGeneration = 0;
+
   // Live-edit writes are applied off the GUI thread. A single worker keeps
   // SQLite writers serialized while reads continue on the main connection.
   QThreadPool m_writePool;
@@ -168,3 +202,5 @@ private:
   bool m_syncQueued = false;
 };
 } // namespace Templnote
+
+Q_DECLARE_METATYPE(Templnote::SearchIndex::SearchOutcome)

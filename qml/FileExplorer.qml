@@ -300,6 +300,12 @@ Rectangle {
     if (!root.documentModel || !root.documentList)
       return
 
+    // Creating a document replaces the open one, so persist pending edits
+    // first and abort if the save fails, matching openDocument().
+    if (root.documentModel.isModified &&
+        !root.documentModel.saveCurrentDocument())
+      return
+
     const path = root.documentList.createUntitledPath()
 
     if (path.length === 0)

@@ -43,7 +43,8 @@ Item {
   signal searchEditStarted()
 
   implicitWidth: parent ? parent.width : 600
-  implicitHeight: tableWrapper.height + (addRowBar.visible ? addRowBar.height + 6 : 0) + 12
+  // Always reserve the add-row strip's space so hovering doesn't resize the block
+  implicitHeight: tableWrapper.height + addRowBar.height + 6 + 12
 
   // Track if any cell has active focus
   property bool hasCellActiveFocus: false
@@ -64,8 +65,6 @@ Item {
                                          || isResizingCol
                                          || isDraggingRow
                                          || isDraggingCol
-  readonly property bool isHovered: isTableHovered
-
   // Resizing state
   property bool isResizingCol: false
   property int resizingColIndex: -1
@@ -84,26 +83,11 @@ Item {
   // Table Data Structures
   property var columnsData: []
   property var rowsData: []
+  property bool headerRowEnabled: false
 
   // Default Column width
   readonly property real minColWidth: 70
   readonly property real defaultColWidth: 160
-
-  // Freeze editor scroll when interacting with table resizing or menus
-  function updateEditorScrollInteractivity() {
-    var p = root.parent
-    while (p) {
-      if (p.hasOwnProperty("interactive")) {
-        p.interactive = !root.menuOpen && !root.isResizingCol && !root.isDraggingRow && !root.isDraggingCol
-      }
-      p = p.parent
-    }
-  }
-
-  onMenuOpenChanged: updateEditorScrollInteractivity()
-  onIsResizingColChanged: updateEditorScrollInteractivity()
-  onIsDraggingRowChanged: updateEditorScrollInteractivity()
-  onIsDraggingColChanged: updateEditorScrollInteractivity()
 
   // Load from blockMetadata
   function reloadFromMetadata() {
@@ -114,6 +98,7 @@ Item {
     var tbl = (meta && meta.table) ? meta.table : null
 
     if (tbl && tbl.columns && tbl.rows && tbl.columns.length > 0) {
+      headerRowEnabled = tbl.headerRow === true
       var newCols = []
       for (var c = 0; c < tbl.columns.length; ++c) {
         var col = tbl.columns[c]
@@ -140,6 +125,7 @@ Item {
       rowsData = newRows
     } else {
       // Default 3x3 table initialization
+      headerRowEnabled = false
       var initialCols = [
         { id: "c1", width: defaultColWidth },
         { id: "c2", width: defaultColWidth },
@@ -152,7 +138,7 @@ Item {
       ]
       columnsData = initialCols
       rowsData = initialRows
-      saveTableData(false)
+      saveTableData()
     }
   }
 
@@ -160,7 +146,7 @@ Item {
   Component.onCompleted: reloadFromMetadata()
 
   // Persist table changes to BlockModel
-  function saveTableData(notifyModel) {
+  function saveTableData() {
     if (!root.model || !root.blockId)
       return
 
@@ -195,7 +181,8 @@ Item {
     var currentMeta = root.blockMetadata ? Object.assign({}, root.blockMetadata) : {}
     currentMeta.table = {
       columns: colsOut,
-      rows: rowsOut
+      rows: rowsOut,
+      headerRow: headerRowEnabled
     }
     currentMeta.plainText = plainTextParts.join("\n")
 
@@ -220,7 +207,7 @@ Item {
     id: cellSaveTimer
     interval: 350
     repeat: false
-    onTriggered: root.saveTableData(true)
+    onTriggered: root.saveTableData()
   }
 
   // Row and Column Mutations
@@ -243,7 +230,7 @@ Item {
 
     columnsData = newCols
     rowsData = newRows
-    saveTableData(true)
+    saveTableData()
   }
 
   function deleteColumn(colIndex) {
@@ -267,7 +254,7 @@ Item {
 
     columnsData = newCols
     rowsData = newRows
-    saveTableData(true)
+    saveTableData()
   }
 
   function addRow(afterIndex) {
@@ -285,7 +272,7 @@ Item {
     }
 
     rowsData = newRows
-    saveTableData(true)
+    saveTableData()
   }
 
   function deleteRow(rowIndex) {
@@ -299,7 +286,7 @@ Item {
     var newRows = rowsData.slice()
     newRows.splice(rowIndex, 1)
     rowsData = newRows
-    saveTableData(true)
+    saveTableData()
   }
 
   function deleteTable() {
@@ -313,8 +300,50 @@ Item {
       rowsData[rowIndex].cells[colId] = ""
       // Force trigger row update
       rowsData = rowsData.slice()
-      saveTableData(true)
+      saveTableData()
     }
+  }
+
+  function toggleHeaderRow() {
+    headerRowEnabled = !headerRowEnabled
+    saveTableData()
+  }
+
+  // Maps the block's plainText (the string the search index sees) back to
+  // individual cell ranges, so search highlights can be painted per cell.
+  function tablePlainTextMap() {
+    var map = []
+    var plain = ""
+    for (var r = 0; r < rowsData.length; ++r) {
+      var parts = []
+      var infos = []
+      for (var c = 0; c < columnsData.length; ++c) {
+        var cid = columnsData[c].id
+        var raw = (rowsData[r].cells && rowsData[r].cells[cid] !== undefined) ? String(rowsData[r].cells[cid]) : ""
+        var trimmed = raw.trim()
+        if (trimmed.length > 0) {
+          parts.push(trimmed)
+          infos.push({ row: r, colId: cid, raw: raw, trimmed: trimmed })
+        }
+      }
+      var offset = 0
+      for (var p = 0; p < infos.length; ++p) {
+        var info = infos[p]
+        var rawOffset = info.raw.indexOf(info.trimmed)
+        map.push({
+          row: info.row,
+          colId: info.colId,
+          blockStart: plain.length + offset,
+          blockEnd: plain.length + offset + info.trimmed.length,
+          cellStart: rawOffset < 0 ? 0 : rawOffset
+        })
+        offset += info.trimmed.length + 3 // " | "
+      }
+      plain += parts.join(" | ")
+      if (r < rowsData.length - 1)
+        plain += "\n"
+    }
+    return map
   }
 
   function moveRow(fromIndex, toIndex) {
@@ -324,7 +353,7 @@ Item {
     var moved = newRows.splice(fromIndex, 1)[0]
     newRows.splice(toIndex, 0, moved)
     rowsData = newRows
-    saveTableData(true)
+    saveTableData()
   }
 
   function moveColumn(fromIndex, toIndex) {
@@ -334,7 +363,7 @@ Item {
     var moved = newCols.splice(fromIndex, 1)[0]
     newCols.splice(toIndex, 0, moved)
     columnsData = newCols
-    saveTableData(true)
+    saveTableData()
   }
 
   function focusEditor(position) {
@@ -375,7 +404,9 @@ Item {
     anchors.top: parent.top
     anchors.topMargin: 4
     anchors.leftMargin: 24 // Leave space for row handles
-    width: Math.min(root.width - 64, tableContentWidth)
+    // Reserve a gutter on the right for the always-visible add-column button
+    property real addColStripSpace: 26
+    width: Math.min(root.width - 64, tableContentWidth + addColStripSpace)
     height: tableColumnView.height
 
     property real tableContentWidth: {
@@ -393,8 +424,8 @@ Item {
       anchors.leftMargin: -32
       anchors.top: tableWrapper.top
       anchors.topMargin: -8
-      anchors.right: addColStrip.right
-      anchors.rightMargin: -8
+      anchors.right: tableWrapper.right
+      anchors.rightMargin: 8
       anchors.bottom: addRowBar.bottom
       anchors.bottomMargin: -8
       z: -1
@@ -412,509 +443,708 @@ Item {
       }
     }
 
-    // Scrollable container for tables wider than the editor
-    Flickable {
-      id: tableFlickable
+    // Clip horizontal overflow so the table stays beneath the editor width
+    Item {
+      id: tableClipArea
       anchors.fill: parent
-      contentWidth: tableWrapper.tableContentWidth
-      contentHeight: tableColumnView.height
-      clip: false
-      interactive: !root.isResizingCol && !root.isDraggingRow && !root.isDraggingCol && contentWidth > width
-      flickableDirection: Flickable.HorizontalFlick
-      boundsBehavior: Flickable.StopAtBounds
+      anchors.leftMargin: -24 // keep the row-handle gutter inside the clip
+      clip: true
 
-      // Main Table Structure
-      Column {
-        id: tableColumnView
-        width: tableWrapper.tableContentWidth
-        spacing: 0
+      // Scrollable container for tables wider than the editor
+      Flickable {
+        id: tableFlickable
+        anchors.fill: parent
+        anchors.leftMargin: 24 // gutter for row handles
+        contentWidth: tableWrapper.tableContentWidth + tableWrapper.addColStripSpace
+        contentHeight: tableColumnView.height
+        clip: false
+        interactive: !root.menuOpen && !root.isResizingCol && !root.isDraggingRow && !root.isDraggingCol && contentWidth > width
+        flickableDirection: Flickable.HorizontalFlick
+        boundsBehavior: Flickable.StopAtBounds
 
-        // Column Top Drag Handles & Header Border
-        Item {
-          id: colHeaderBar
-          width: parent.width
-          height: 18
-          visible: opacity > 0.001
-          opacity: (root.isTableHovered || root.isDraggingCol) ? 1.0 : 0.0
-          scale: (root.isTableHovered || root.isDraggingCol) ? 1.0 : 0.94
-          transformOrigin: Item.Top
-          Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-          Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        // Main Table Structure
+        Column {
+          id: tableColumnView
+          width: tableWrapper.tableContentWidth
+          spacing: 0
 
-          Repeater {
-            model: root.columnsData.length
-            delegate: Item {
-              required property int index
-              property real colX: {
-                var pos = 0
-                for (var i = 0; i < index; ++i) pos += root.columnsData[i].width
-                return pos
-              }
-              property real colW: root.columnsData[index].width
+          // Column Top Drag Handles & Header Border
+          Item {
+            id: colHeaderBar
+            width: parent.width
+            height: 18
+            visible: opacity > 0.001
+            opacity: (root.isTableHovered || root.isDraggingCol) ? 1.0 : 0.0
+            scale: (root.isTableHovered || root.isDraggingCol) ? 1.0 : 0.94
+            transformOrigin: Item.Top
+            Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
-              x: colX
-              width: colW
-              height: 18
+            Repeater {
+              model: root.columnsData.length
+              delegate: Item {
+                required property int index
+                property real colX: {
+                  var pos = 0
+                  for (var i = 0; i < index; ++i) pos += root.columnsData[i].width
+                  return pos
+                }
+                property real colW: root.columnsData[index].width
 
-              // Column Top Pill Handle (Notion style)
-              Rectangle {
-                id: colPill
-                anchors.centerIn: parent
-                width: 32
-                height: 5
-                radius: 2.5
-                color: (colDragArea.containsMouse || root.isDraggingCol && root.draggingColIndex === index)
-                       ? Theme.accent
-                       : (Theme.isDark ? "rgba(255,255,255,0.3)" : "rgba(0,0,0,0.25)")
+                x: colX
+                width: colW
+                height: 18
 
-                Behavior on color { ColorAnimation { duration: 120 } }
-              }
+                // Column Top Pill Handle (Notion style)
+                Rectangle {
+                  id: colPill
+                  anchors.centerIn: parent
+                  width: 32
+                  height: 5
+                  radius: 2.5
+                  color: (colDragArea.containsMouse || root.isDraggingCol && root.draggingColIndex === index)
+                         ? Theme.accent
+                         : Theme.tint(Theme.text, Theme.isDark ? 0.3 : 0.25)
+                  // Only the hovered/dragged column's pill is shown, not every column at once
+                  opacity: (colDragArea.containsMouse
+                            || (root.isDraggingCol && (root.draggingColIndex === index || root.dropColTargetIndex === index))) ? 1.0 : 0.0
 
-              MouseArea {
-                id: colDragArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
-
-                onPressed: function(mouse) {
-                  if (mouse.button === Qt.RightButton) {
-                    colActionMenu.targetColIndex = index
-                    colActionMenu.popup(colDragArea, mouse.x, mouse.y)
-                    return
-                  }
-                  root.isDraggingCol = true
-                  root.draggingColIndex = index
-                  root.dropColTargetIndex = index
+                  Behavior on color { ColorAnimation { duration: 120 } }
+                  Behavior on opacity { NumberAnimation { duration: 120 } }
                 }
 
-                onPositionChanged: function(mouse) {
-                  if (root.isDraggingCol && pressed) {
-                    var globalX = mapToItem(tableColumnView, mouse.x, mouse.y).x
-                    var runningX = 0
-                    var target = 0
-                    for (var i = 0; i < root.columnsData.length; ++i) {
-                      var mid = runningX + root.columnsData[i].width / 2
-                      if (globalX > mid) target = i
-                      runningX += root.columnsData[i].width
-                    }
-                    root.dropColTargetIndex = target
-                  }
-                }
+                MouseArea {
+                  id: colDragArea
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
 
-                onReleased: function(mouse) {
-                  if (root.isDraggingCol) {
-                    if (root.draggingColIndex >= 0 && root.dropColTargetIndex >= 0 && root.draggingColIndex !== root.dropColTargetIndex) {
-                      root.moveColumn(root.draggingColIndex, root.dropColTargetIndex)
+                  onPressed: function(mouse) {
+                    if (mouse.button === Qt.RightButton) {
+                      colActionMenu.targetColIndex = index
+                      colActionMenu.popup(colDragArea, mouse.x, mouse.y)
+                      return
                     }
+                    root.isDraggingCol = true
+                    root.draggingColIndex = index
+                    root.dropColTargetIndex = index
+                  }
+
+                  onPositionChanged: function(mouse) {
+                    if (root.isDraggingCol && pressed) {
+                      var globalX = mapToItem(tableColumnView, mouse.x, mouse.y).x
+                      var runningX = 0
+                      var target = 0
+                      for (var i = 0; i < root.columnsData.length; ++i) {
+                        var mid = runningX + root.columnsData[i].width / 2
+                        if (globalX > mid) target = i
+                        runningX += root.columnsData[i].width
+                      }
+                      root.dropColTargetIndex = target
+                    }
+                  }
+
+                  onReleased: function(mouse) {
+                    if (root.isDraggingCol) {
+                      if (root.draggingColIndex >= 0 && root.dropColTargetIndex >= 0 && root.draggingColIndex !== root.dropColTargetIndex) {
+                        root.moveColumn(root.draggingColIndex, root.dropColTargetIndex)
+                      }
+                      root.isDraggingCol = false
+                      root.draggingColIndex = -1
+                      root.dropColTargetIndex = -1
+                    }
+                  }
+
+                  onCanceled: {
                     root.isDraggingCol = false
                     root.draggingColIndex = -1
                     root.dropColTargetIndex = -1
                   }
                 }
-
-                onCanceled: {
-                  root.isDraggingCol = false
-                  root.draggingColIndex = -1
-                  root.dropColTargetIndex = -1
-                }
               }
             }
           }
-        }
 
-        // Table Rows
-        Repeater {
-          id: rowsRepeater
-          model: root.rowsData.length
+          // Table Rows
+          Repeater {
+            id: rowsRepeater
+            model: root.rowsData.length
 
-          delegate: Item {
-            id: rowDelegate
-            required property int index
-            readonly property var rowModel: root.rowsData[index]
-            readonly property bool isRowHovered: rowHoverHandler.hovered || (rowHandleHover && rowHandleHover.hovered) || (root.isDraggingRow && root.draggingRowIndex === index)
-
-            HoverHandler {
-              id: rowHoverHandler
-              onHoveredChanged: {
-                if (hovered)
-                  root.hoveredRowsCount++
-                else
-                  root.hoveredRowsCount = Math.max(0, root.hoveredRowsCount - 1)
-              }
-            }
-
-            width: tableWrapper.tableContentWidth
-            height: rowContentRow.height
-
-            function findCell(cIndex) {
-              return cellsRepeater.itemAt(cIndex)
-            }
-
-            // Row Drag Handle (Blue pill button with 6 dots on hover, matching Screenshot 2!)
-            Item {
-              id: rowHandleContainer
-              x: -24
-              anchors.verticalCenter: parent.verticalCenter
-              width: 20
-              height: 24
-              visible: opacity > 0.001
-              opacity: (root.isTableHovered || root.isDraggingRow) ? 1.0 : 0.0
-              scale: (root.isTableHovered || root.isDraggingRow) ? 1.0 : 0.90
-              transformOrigin: Item.Center
-              Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-              Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            delegate: Item {
+              id: rowDelegate
+              required property int index
+              readonly property var rowModel: root.rowsData[index]
+              readonly property bool isRowHovered: rowHoverHandler.hovered || (rowHandleHover && rowHandleHover.hovered) || (root.isDraggingRow && root.draggingRowIndex === index)
 
               HoverHandler {
-                id: rowHandleHover
-              }
-
-              Rectangle {
-                anchors.fill: parent
-                radius: 4
-                color: (rowHandleMouseArea.pressed || (root.isDraggingRow && root.draggingRowIndex === index))
-                       ? Theme.accent
-                       : (rowHandleHover.hovered ? (Theme.isDark ? "#2d3748" : "#e2e8f0") : "transparent")
-
-                IconImage {
-                  anchors.centerIn: parent
-                  width: 14
-                  height: 14
-                  source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
-                  color: (root.isDraggingRow && root.draggingRowIndex === index) ? "#ffffff" : Theme.textMuted
+                id: rowHoverHandler
+                onHoveredChanged: {
+                  if (hovered)
+                    root.hoveredRowsCount++
+                  else
+                    root.hoveredRowsCount = Math.max(0, root.hoveredRowsCount - 1)
                 }
               }
 
-              MouseArea {
-                id: rowHandleMouseArea
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                acceptedButtons: Qt.LeftButton | Qt.RightButton
+              width: tableWrapper.tableContentWidth
+              height: rowContentRow.height
 
-                onPressed: function(mouse) {
-                  if (mouse.button === Qt.RightButton) {
-                    rowActionMenu.targetRowIndex = index
-                    rowActionMenu.popup(rowHandleContainer, mouse.x, mouse.y)
-                    return
-                  }
-                  root.isDraggingRow = true
-                  root.draggingRowIndex = index
-                  root.dropRowTargetIndex = index
+              function findCell(cIndex) {
+                return cellsRepeater.itemAt(cIndex)
+              }
+
+              // Row Drag Handle (Blue pill button with 6 dots on hover, matching Screenshot 2!)
+              Item {
+                id: rowHandleContainer
+                x: -24
+                anchors.verticalCenter: parent.verticalCenter
+                width: 20
+                height: 24
+                visible: opacity > 0.001
+                opacity: (rowDelegate.isRowHovered || root.isDraggingRow) ? 1.0 : 0.0
+                scale: (rowDelegate.isRowHovered || root.isDraggingRow) ? 1.0 : 0.90
+                transformOrigin: Item.Center
+                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+                HoverHandler {
+                  id: rowHandleHover
                 }
 
-                onPositionChanged: function(mouse) {
-                  if (root.isDraggingRow && pressed) {
-                    var globalY = mapToItem(tableColumnView, mouse.x, mouse.y).y
-                    var target = Math.max(0, Math.min(root.rowsData.length - 1, Math.floor(globalY / (rowDelegate.height > 0 ? rowDelegate.height : 32))))
-                    root.dropRowTargetIndex = target
+                Rectangle {
+                  anchors.fill: parent
+                  radius: 4
+                  color: (rowHandleMouseArea.pressed || (root.isDraggingRow && root.draggingRowIndex === index))
+                         ? Theme.accent
+                         : (rowHandleHover.hovered ? Theme.surfaceHover : "transparent")
+
+                  IconImage {
+                    anchors.centerIn: parent
+                    width: 14
+                    height: 14
+                    source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
+                    color: (root.isDraggingRow && root.draggingRowIndex === index) ? Theme.accentText : Theme.textMuted
                   }
                 }
 
-                onReleased: function(mouse) {
-                  if (root.isDraggingRow) {
-                    if (root.draggingRowIndex >= 0 && root.dropRowTargetIndex >= 0 && root.draggingRowIndex !== root.dropRowTargetIndex) {
-                      root.moveRow(root.draggingRowIndex, root.dropRowTargetIndex)
+                MouseArea {
+                  id: rowHandleMouseArea
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  acceptedButtons: Qt.LeftButton | Qt.RightButton
+
+                  onPressed: function(mouse) {
+                    if (mouse.button === Qt.RightButton) {
+                      rowActionMenu.targetRowIndex = index
+                      rowActionMenu.popup(rowHandleContainer, mouse.x, mouse.y)
+                      return
                     }
+                    root.isDraggingRow = true
+                    root.draggingRowIndex = index
+                    root.dropRowTargetIndex = index
+                  }
+
+                  onPositionChanged: function(mouse) {
+                    if (root.isDraggingRow && pressed) {
+                      var globalY = mapToItem(tableColumnView, mouse.x, mouse.y).y
+                      var target = Math.max(0, Math.min(root.rowsData.length - 1, Math.floor(globalY / (rowDelegate.height > 0 ? rowDelegate.height : 32))))
+                      root.dropRowTargetIndex = target
+                    }
+                  }
+
+                  onReleased: function(mouse) {
+                    if (root.isDraggingRow) {
+                      if (root.draggingRowIndex >= 0 && root.dropRowTargetIndex >= 0 && root.draggingRowIndex !== root.dropRowTargetIndex) {
+                        root.moveRow(root.draggingRowIndex, root.dropRowTargetIndex)
+                      }
+                      root.isDraggingRow = false
+                      root.draggingRowIndex = -1
+                      root.dropRowTargetIndex = -1
+                    }
+                  }
+
+                  onCanceled: {
                     root.isDraggingRow = false
                     root.draggingRowIndex = -1
                     root.dropRowTargetIndex = -1
                   }
                 }
-
-                onCanceled: {
-                  root.isDraggingRow = false
-                  root.draggingRowIndex = -1
-                  root.dropRowTargetIndex = -1
-                }
               }
-            }
 
-            // Row Hover / Blue selection border (Screenshot 2)
-            Rectangle {
-              id: rowHighlightBorder
-              anchors.fill: parent
-              anchors.margins: -1
-              radius: 2
-              color: "transparent"
-              border.color: Theme.accent
-              border.width: 1.5
-              z: 5
-              visible: opacity > 0.001
-              opacity: (rowDelegate.isRowHovered && !root.isDraggingRow) ? 1.0 : 0.0
-              Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-            }
+              // Subtle row hover tint instead of a heavy full-row outline
+              Rectangle {
+                id: rowHighlightFill
+                anchors.fill: parent
+                anchors.margins: -1
+                radius: 2
+                color: Theme.surfaceHover
+                visible: opacity > 0.001
+                opacity: (rowDelegate.isRowHovered && !root.isDraggingRow) ? 0.55 : 0.0
+                Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+              }
 
-            // Row insertion indicator line during drag
-            Rectangle {
-              visible: root.isDraggingRow && root.dropRowTargetIndex === index
-              width: parent.width
-              height: 3
-              radius: 1.5
-              color: Theme.accent
-              y: -1
-              z: 20
-            }
+              // Row insertion indicator line during drag
+              Rectangle {
+                visible: root.isDraggingRow && root.dropRowTargetIndex === index
+                width: parent.width
+                height: 3
+                radius: 1.5
+                color: Theme.accent
+                y: -1
+                z: 20
+              }
 
-            // Row content containing cells
-            Row {
-              id: rowContentRow
-              width: parent.width
+              // Row content containing cells
+              Row {
+                id: rowContentRow
+                width: parent.width
 
-              Repeater {
-                id: cellsRepeater
-                model: root.columnsData.length
+                Repeater {
+                  id: cellsRepeater
+                  model: root.columnsData.length
 
-                delegate: Rectangle {
-                  id: cellRoot
-                  required property int index
-                  readonly property var colMeta: root.columnsData[index]
-                  readonly property string colId: colMeta ? colMeta.id : ""
-                  readonly property real targetWidth: colMeta ? colMeta.width : root.defaultColWidth
+                  delegate: Rectangle {
+                    id: cellRoot
+                    required property int index
+                    readonly property var colMeta: root.columnsData[index]
+                    readonly property string colId: colMeta ? colMeta.id : ""
+                    readonly property real targetWidth: colMeta ? colMeta.width : root.defaultColWidth
+                    readonly property bool isHeaderCell: root.headerRowEnabled && rowDelegate.index === 0
 
-                  property alias editor: cellTextEdit
+                    property alias editor: cellTextEdit
 
-                  width: targetWidth
-                  height: Math.max(34, cellTextEdit.contentHeight + 14)
-
-                  // Smooth sliding animation for column resizing
-                  Behavior on width {
-                    enabled: !root.isResizingCol
-                    NumberAnimation {
-                      duration: 220
-                      easing.type: Easing.OutCubic
-                    }
-                  }
-
-                  color: Theme.isDark ? "rgba(255, 255, 255, 0.03)" : "rgba(0, 0, 0, 0.025)"
-                  border.color: Theme.border
-                  border.width: 1
-
-                  // Cell text input
-                  TextEdit {
-                    id: cellTextEdit
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: (cellHoverArea.containsMouse || activeFocus) ? 24 : 10
-                    anchors.topMargin: 7
-                    anchors.bottomMargin: 7
-                    wrapMode: TextEdit.Wrap
-                    font.pixelSize: 14
-                    color: Theme.text
-                    selectionColor: Theme.accent
-                    selectedTextColor: Theme.accentText
-                    selectByMouse: true
-
-                    Component.onCompleted: {
-                      if (rowModel && rowModel.cells && colId) {
-                        text = rowModel.cells[colId] || ""
-                      }
-                    }
-
-                    // Keep text in sync with rowsData changes
-                    Connections {
-                      target: root
-                      function onRowsDataChanged() {
-                        if (!cellTextEdit.activeFocus && rowModel && rowModel.cells && colId) {
-                          var newVal = rowModel.cells[colId] || ""
-                          if (cellTextEdit.text !== newVal)
-                            cellTextEdit.text = newVal
+                    function highlightRanges() {
+                      var ranges = []
+                      var map = root.tablePlainTextMap()
+                      for (var i = 0; i < map.length; ++i) {
+                        var entry = map[i]
+                        if (entry.row !== rowDelegate.index || entry.colId !== cellRoot.colId)
+                          continue
+                        for (var h = 0; h < root.searchHighlights.length; ++h) {
+                          var hl = root.searchHighlights[h]
+                          var start = Math.max(hl.start, entry.blockStart)
+                          var end = Math.min(hl.start + hl.length, entry.blockEnd)
+                          if (end > start) {
+                            ranges.push({
+                              start: entry.cellStart + (start - entry.blockStart),
+                              end: entry.cellStart + (end - entry.blockStart),
+                              active: hl.active === true
+                            })
+                          }
                         }
                       }
+                      return ranges
                     }
 
-                    onTextChanged: {
-                      if (activeFocus && rowModel && colId) {
-                        root.updateCellText(rowDelegate.index, colId, text)
+                    width: targetWidth
+                    height: Math.max(34, cellTextEdit.contentHeight + 14)
+
+                    // Smooth sliding animation for column resizing
+                    Behavior on width {
+                      enabled: !root.isResizingCol
+                      NumberAnimation {
+                        duration: 220
+                        easing.type: Easing.OutCubic
                       }
                     }
 
-                    onActiveFocusChanged: {
-                      if (activeFocus) {
-                        root.hasCellActiveFocus = true
-                        root.focusedRow = rowDelegate.index
-                        root.focusedCol = cellRoot.index
-                      } else if (root.focusedRow === rowDelegate.index && root.focusedCol === cellRoot.index) {
-                        root.hasCellActiveFocus = false
-                        root.focusedRow = -1
-                        root.focusedCol = -1
-                      }
-                    }
+                    color: isHeaderCell
+                          ? Theme.tint(Theme.text, Theme.isDark ? 0.09 : 0.07)
+                          : Theme.tint(Theme.text, Theme.isDark ? 0.04 : 0.03)
 
-                    Keys.onTabPressed: function(event) {
-                      event.accepted = true
-                      if (cellRoot.index + 1 < root.columnsData.length) {
-                        root.focusCell(rowDelegate.index, cellRoot.index + 1)
-                      } else if (rowDelegate.index + 1 < root.rowsData.length) {
-                        root.focusCell(rowDelegate.index + 1, 0)
-                      } else {
-                        // At the last cell of the table: automatically append a new row!
-                        root.addRow(rowDelegate.index)
-                        Qt.callLater(function() {
-                          root.focusCell(rowDelegate.index + 1, 0)
-                        })
-                      }
-                    }
-
-                    Keys.onBacktabPressed: function(event) {
-                      event.accepted = true
-                      if (cellRoot.index > 0) {
-                        root.focusCell(rowDelegate.index, cellRoot.index - 1)
-                      } else if (rowDelegate.index > 0) {
-                        root.focusCell(rowDelegate.index - 1, root.columnsData.length - 1)
-                      }
-                    }
-
-                    Keys.onEscapePressed: function(event) {
-                      event.accepted = true
-                      cellTextEdit.focus = false
-                      root.forceActiveFocus()
-                    }
-
-                    Keys.onPressed: function(event) {
-                      if (event.key === Qt.Key_Backspace && cellTextEdit.text.length === 0 && root.rowsData.length === 1 && root.columnsData.length === 1) {
-                        event.accepted = true
-                        root.deleteTable()
-                      }
-                    }
-                  }
-
-                  HoverHandler {
-                    id: cellHoverHandler
-                  }
-
-                  // Cell Context Menu (Right Click)
-                  MouseArea {
-                    id: cellHoverArea
-                    anchors.fill: parent
-                    acceptedButtons: Qt.RightButton
-                    onClicked: function(mouse) {
-                      if (mouse.button === Qt.RightButton) {
-                        cellActionMenu.targetRow = rowDelegate.index
-                        cellActionMenu.targetCol = cellRoot.index
-                        cellActionMenu.targetColId = cellRoot.colId
-                        cellActionMenu.popup(cellRoot, mouse.x, mouse.y)
-                      }
-                    }
-                  }
-
-                  // Each cell with its own action button (3-dots hover action button)
-                  Item {
-                    id: cellActionButton
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: 4
-                    width: 18
-                    height: 18
-                    visible: opacity > 0.001
-                    opacity: (cellHoverHandler.hovered || cellActionBtnMouse.containsMouse) ? 1.0 : (root.isTableHovered ? 0.35 : 0.0)
-                    scale: (cellHoverHandler.hovered || cellActionBtnMouse.containsMouse) ? 1.0 : (root.isTableHovered ? 0.90 : 0.85)
-                    transformOrigin: Item.TopRight
-                    Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                    Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-
+                    // Single, non-doubled grid lines: right/bottom on every cell,
+                    // top on the first row and left on the first column only.
                     Rectangle {
-                      anchors.fill: parent
-                      radius: 3
-                      color: cellActionBtnMouse.pressed ? Theme.accent : (cellActionBtnMouse.containsMouse ? (Theme.isDark ? "#2e3440" : "#e2e8f0") : "transparent")
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.bottom: parent.bottom
+                      width: 1
+                      color: Theme.border
+                    }
+                    Rectangle {
+                      anchors.left: parent.left
+                      anchors.right: parent.right
+                      anchors.bottom: parent.bottom
+                      height: 1
+                      color: isHeaderCell ? Theme.tint(Theme.accent, 0.35) : Theme.border
+                    }
+                    Rectangle {
+                      visible: rowDelegate.index === 0
+                      anchors.left: parent.left
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      height: 1
+                      color: Theme.border
+                    }
+                    Rectangle {
+                      visible: cellRoot.index === 0
+                      anchors.left: parent.left
+                      anchors.top: parent.top
+                      anchors.bottom: parent.bottom
+                      width: 1
+                      color: Theme.border
+                    }
 
-                      Row {
-                        anchors.centerIn: parent
-                        spacing: 2
-                        Repeater {
-                          model: 3
-                          Rectangle {
-                            width: 2.5
-                            height: 2.5
-                            radius: 1.25
-                            color: Theme.textMuted
+                    // Active-cell focus ring — the caret alone is easy to lose in wide tables
+                    Rectangle {
+                      z: 2
+                      anchors.fill: parent
+                      radius: 2
+                      color: Theme.tint(Theme.accent, 0.06)
+                      border.color: Theme.accent
+                      border.width: 1.5
+                      visible: opacity > 0.001
+                      opacity: (root.hasCellActiveFocus && root.focusedRow === rowDelegate.index && root.focusedCol === cellRoot.index) ? 1.0 : 0.0
+                      Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                    }
+
+                    // Search match highlights, painted behind the text like TextBlock does
+                    Canvas {
+                      id: highlightCanvas
+                      anchors.fill: parent
+                      z: 1
+                      visible: root.searchHighlights.length > 0
+                      onWidthChanged: requestPaint()
+                      onHeightChanged: requestPaint()
+                      onVisibleChanged: if (visible) requestPaint()
+
+                      Connections {
+                        target: root
+                        function onSearchHighlightsChanged() { if (highlightCanvas.visible) highlightCanvas.requestPaint() }
+                        function onRowsDataChanged() { if (highlightCanvas.visible) highlightCanvas.requestPaint() }
+                      }
+                      Connections {
+                        target: cellTextEdit
+                        function onTextChanged() { if (highlightCanvas.visible) highlightCanvas.requestPaint() }
+                      }
+
+                      onPaint: {
+                        var ctx = getContext("2d")
+                        ctx.clearRect(0, 0, width, height)
+                        var ranges = cellRoot.highlightRanges()
+                        for (var i = 0; i < ranges.length; ++i) {
+                          var range = ranges[i]
+                          ctx.fillStyle = range.active ? Theme.tint(Theme.accent, 0.40)
+                                                       : Theme.tint(Theme.accent, 0.16)
+                          var from = Math.max(0, Math.min(range.start, cellTextEdit.length))
+                          var to = Math.max(from, Math.min(range.end, cellTextEdit.length))
+                          for (var p = from; p < to; ++p) {
+                            var rect = cellTextEdit.positionToRectangle(p)
+                            ctx.fillRect(rect.x + cellTextEdit.x, rect.y + cellTextEdit.y,
+                                         Math.max(1, rect.width), Math.max(2, rect.height))
                           }
                         }
                       }
                     }
 
-                    MouseArea {
-                      id: cellActionBtnMouse
+                    // Cell text input
+                    TextEdit {
+                      id: cellTextEdit
                       anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: function(mouse) {
-                        cellActionMenu.targetRow = rowDelegate.index
-                        cellActionMenu.targetCol = cellRoot.index
-                        cellActionMenu.targetColId = cellRoot.colId
-                        cellActionMenu.popup(cellActionButton, 0, cellActionButton.height + 4)
+                      anchors.leftMargin: 10
+                      // Constant margin reserves room for the action button so text never reflows on hover
+                      anchors.rightMargin: 24
+                      anchors.topMargin: 7
+                      anchors.bottomMargin: 7
+                      wrapMode: TextEdit.Wrap
+                      font.pixelSize: 14
+                      font.bold: isHeaderCell
+                      color: Theme.text
+                      selectionColor: Theme.accent
+                      selectedTextColor: Theme.accentText
+                      selectByMouse: true
+
+                      function isOnFirstLine() {
+                        return text.substring(0, cursorPosition).indexOf("\n") < 0
+                      }
+
+                      function isOnLastLine() {
+                        return text.substring(cursorPosition).indexOf("\n") < 0
+                      }
+
+                      function updateCaretGeometry() {
+                        if (!activeFocus)
+                          return
+                        var cRect = cursorRectangle
+                        var mapped = mapToItem(null, cRect.x, cRect.y)
+                        root.caretMoved(cursorPosition, mapped ? mapped.y : 0, Math.max(14, cRect.height))
+                      }
+
+                      function notifySelection() {
+                        if (selectionStart === selectionEnd) {
+                          root.selectionChanged(false, 0, 0, 0)
+                          return
+                        }
+                        if (!activeFocus)
+                          return
+                        var cRect = cursorRectangle
+                        var mapped = mapToItem(root, cRect.x + cRect.width / 2, cRect.y)
+                        root.selectionChanged(true, mapped ? mapped.x : 0, mapped ? mapped.y : 0,
+                                              Math.max(14, cRect.height))
+                      }
+
+                      onCursorPositionChanged: {
+                        updateCaretGeometry()
+                        notifySelection()
+                      }
+
+                      onSelectionStartChanged: notifySelection()
+                      onSelectionEndChanged: notifySelection()
+
+                      Component.onCompleted: {
+                        if (rowModel && rowModel.cells && colId) {
+                          text = rowModel.cells[colId] || ""
+                        }
+                      }
+
+                      // Keep text in sync with rowsData changes
+                      Connections {
+                        target: root
+                        function onRowsDataChanged() {
+                          if (!cellTextEdit.activeFocus && rowModel && rowModel.cells && colId) {
+                            var newVal = rowModel.cells[colId] || ""
+                            if (cellTextEdit.text !== newVal)
+                              cellTextEdit.text = newVal
+                          }
+                        }
+                      }
+
+                      onTextChanged: {
+                        if (activeFocus && rowModel && colId) {
+                          root.updateCellText(rowDelegate.index, colId, text)
+                        }
+                      }
+
+                      onActiveFocusChanged: {
+                        if (activeFocus) {
+                          root.hasCellActiveFocus = true
+                          root.focusedRow = rowDelegate.index
+                          root.focusedCol = cellRoot.index
+                          updateCaretGeometry()
+                          notifySelection()
+                        } else {
+                          if (root.focusedRow === rowDelegate.index && root.focusedCol === cellRoot.index) {
+                            root.hasCellActiveFocus = false
+                            root.focusedRow = -1
+                            root.focusedCol = -1
+                          }
+                          root.selectionChanged(false, 0, 0, 0)
+                        }
+                      }
+
+                      Keys.onTabPressed: function(event) {
+                        event.accepted = true
+                        if (cellRoot.index + 1 < root.columnsData.length) {
+                          root.focusCell(rowDelegate.index, cellRoot.index + 1)
+                        } else if (rowDelegate.index + 1 < root.rowsData.length) {
+                          root.focusCell(rowDelegate.index + 1, 0)
+                        } else {
+                          // At the last cell of the table: automatically append a new row!
+                          root.addRow(rowDelegate.index)
+                          Qt.callLater(function() {
+                            root.focusCell(rowDelegate.index + 1, 0)
+                          })
+                        }
+                      }
+
+                      Keys.onBacktabPressed: function(event) {
+                        event.accepted = true
+                        if (cellRoot.index > 0) {
+                          root.focusCell(rowDelegate.index, cellRoot.index - 1)
+                        } else if (rowDelegate.index > 0) {
+                          root.focusCell(rowDelegate.index - 1, root.columnsData.length - 1)
+                        }
+                      }
+
+                      Keys.onEscapePressed: function(event) {
+                        event.accepted = true
+                        cellTextEdit.focus = false
+                        root.forceActiveFocus()
+                      }
+
+                      Keys.onPressed: function(event) {
+                        if (event.key === Qt.Key_Up && isOnFirstLine()) {
+                          event.accepted = true
+                          if (rowDelegate.index > 0) {
+                            root.focusCell(rowDelegate.index - 1, cellRoot.index)
+                          } else {
+                            root.moveFocusRequested(-1, mapToItem(root, cursorRectangle.x, 0).x)
+                          }
+                          return
+                        }
+
+                        if (event.key === Qt.Key_Down && isOnLastLine()) {
+                          event.accepted = true
+                          if (rowDelegate.index + 1 < root.rowsData.length) {
+                            root.focusCell(rowDelegate.index + 1, cellRoot.index)
+                          } else {
+                            root.enterPressed()
+                          }
+                          return
+                        }
+
+                        if (event.key === Qt.Key_Enter || event.key === Qt.Key_Return) {
+                          event.accepted = true
+                          if (event.modifiers & Qt.ShiftModifier) {
+                            insert(cursorPosition, "\n")
+                          } else if (rowDelegate.index + 1 < root.rowsData.length) {
+                            root.focusCell(rowDelegate.index + 1, cellRoot.index)
+                          } else {
+                            root.addRow(rowDelegate.index)
+                            Qt.callLater(function() {
+                              root.focusCell(rowDelegate.index + 1, cellRoot.index)
+                            })
+                          }
+                          return
+                        }
+
+                        if (event.key === Qt.Key_Backspace && cellTextEdit.text.length === 0 && root.rowsData.length === 1 && root.columnsData.length === 1) {
+                          event.accepted = true
+                          root.deleteTable()
+                        }
                       }
                     }
-                  }
-
-                  // Column Resizer Divider (Vertical blue highlight line on hover/drag, matching Screenshot 1!)
-                  Item {
-                    id: colDividerResizer
-                    anchors.right: parent.right
-                    anchors.rightMargin: -5
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    width: 10
-                    z: 15
 
                     HoverHandler {
-                      id: dividerHover
+                      id: cellHoverHandler
                     }
 
-                    // Blue vertical highlight indicator line (Screenshot 1)
-                    Rectangle {
-                      anchors.centerIn: parent
-                      width: 2
-                      height: parent.height
-                      color: Theme.accent
+                    // Cell Context Menu (Right Click)
+                    MouseArea {
+                      id: cellHoverArea
+                      anchors.fill: parent
+                      acceptedButtons: Qt.RightButton
+                      onClicked: function(mouse) {
+                        if (mouse.button === Qt.RightButton) {
+                          cellActionMenu.targetRow = rowDelegate.index
+                          cellActionMenu.targetCol = cellRoot.index
+                          cellActionMenu.targetColId = cellRoot.colId
+                          cellActionMenu.popup(cellRoot, mouse.x, mouse.y)
+                        }
+                      }
+                    }
+
+                    // Each cell with its own action button (3-dots hover action button)
+                    Item {
+                      id: cellActionButton
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.margins: 4
+                      width: 18
+                      height: 18
                       visible: opacity > 0.001
-                      opacity: (dividerHover.hovered || (root.isResizingCol && root.resizingColIndex === cellRoot.index)) ? 1.0 : (root.isTableHovered ? 0.35 : 0.0)
-                      scale: (dividerHover.hovered || (root.isResizingCol && root.resizingColIndex === cellRoot.index)) ? 1.0 : 0.85
-                      transformOrigin: Item.Center
+                      opacity: (cellHoverHandler.hovered || cellActionBtnMouse.containsMouse
+                                || (root.hasCellActiveFocus && root.focusedRow === rowDelegate.index && root.focusedCol === cellRoot.index)) ? 1.0 : 0.0
+                      scale: (cellHoverHandler.hovered || cellActionBtnMouse.containsMouse) ? 1.0 : 0.9
+                      transformOrigin: Item.TopRight
                       Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                       Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+                      Rectangle {
+                        anchors.fill: parent
+                        radius: 3
+                        color: cellActionBtnMouse.pressed ? Theme.accent : (cellActionBtnMouse.containsMouse ? Theme.surfaceHover : "transparent")
+
+                        Row {
+                          anchors.centerIn: parent
+                          spacing: 2
+                          Repeater {
+                            model: 3
+                            Rectangle {
+                              width: 2.5
+                              height: 2.5
+                              radius: 1.25
+                              color: Theme.textMuted
+                            }
+                          }
+                        }
+                      }
+
+                      MouseArea {
+                        id: cellActionBtnMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: function(mouse) {
+                          cellActionMenu.targetRow = rowDelegate.index
+                          cellActionMenu.targetCol = cellRoot.index
+                          cellActionMenu.targetColId = cellRoot.colId
+                          cellActionMenu.popup(cellActionButton, 0, cellActionButton.height + 4)
+                        }
+                      }
                     }
 
-                    MouseArea {
-                      id: dividerMouseArea
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.SplitHCursor
+                    // Column Resizer Divider (Vertical blue highlight line on hover/drag, matching Screenshot 1!)
+                    Item {
+                      id: colDividerResizer
+                      anchors.right: parent.right
+                      anchors.rightMargin: -5
+                      anchors.top: parent.top
+                      anchors.bottom: parent.bottom
+                      width: 10
+                      z: 15
 
-                      onPressed: function(mouse) {
-                        root.isResizingCol = true
-                        root.resizingColIndex = cellRoot.index
-                        var g = mapToItem(null, mouse.x, mouse.y)
-                        root.resizeStartX = g.x
-                        root.resizeStartWidth = cellRoot.targetWidth
+                      HoverHandler {
+                        id: dividerHover
                       }
 
-                      onPositionChanged: function(mouse) {
-                        if (pressed && root.isResizingCol) {
+                      // Blue vertical highlight indicator line (Screenshot 1)
+                      Rectangle {
+                        anchors.centerIn: parent
+                        width: 2
+                        height: parent.height
+                        color: Theme.accent
+                        visible: opacity > 0.001
+                        opacity: (dividerHover.hovered || (root.isResizingCol && root.resizingColIndex === cellRoot.index)) ? 1.0 : 0.0
+                        scale: (dividerHover.hovered || (root.isResizingCol && root.resizingColIndex === cellRoot.index)) ? 1.0 : 0.85
+                        transformOrigin: Item.Center
+                        Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                        Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                      }
+
+                      MouseArea {
+                        id: dividerMouseArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.SplitHCursor
+
+                        onPressed: function(mouse) {
+                          root.isResizingCol = true
+                          root.resizingColIndex = cellRoot.index
                           var g = mapToItem(null, mouse.x, mouse.y)
-                          var delta = g.x - root.resizeStartX
-                          var newW = Math.max(root.minColWidth, root.resizeStartWidth + delta)
-                          var newCols = root.columnsData.slice()
-                          newCols[cellRoot.index] = {
-                            id: newCols[cellRoot.index].id,
-                            width: newW
+                          root.resizeStartX = g.x
+                          root.resizeStartWidth = cellRoot.targetWidth
+                        }
+
+                        onPositionChanged: function(mouse) {
+                          if (pressed && root.isResizingCol) {
+                            var g = mapToItem(null, mouse.x, mouse.y)
+                            var delta = g.x - root.resizeStartX
+                            var newW = Math.max(root.minColWidth, root.resizeStartWidth + delta)
+                            var newCols = root.columnsData.slice()
+                            newCols[cellRoot.index] = {
+                              id: newCols[cellRoot.index].id,
+                              width: newW
+                            }
+                            root.columnsData = newCols
                           }
-                          root.columnsData = newCols
                         }
-                      }
 
-                      onReleased: {
-                        if (root.isResizingCol) {
-                          root.isResizingCol = false
-                          root.resizingColIndex = -1
-                          root.saveTableData(true)
+                        onReleased: {
+                          if (root.isResizingCol) {
+                            root.isResizingCol = false
+                            root.resizingColIndex = -1
+                            root.saveTableData()
+                          }
                         }
-                      }
 
-                      onCanceled: {
-                        if (root.isResizingCol) {
-                          root.isResizingCol = false
-                          root.resizingColIndex = -1
-                          root.saveTableData(true)
+                        onCanceled: {
+                          if (root.isResizingCol) {
+                            root.isResizingCol = false
+                            root.resizingColIndex = -1
+                            root.saveTableData()
+                          }
                         }
                       }
                     }
@@ -924,6 +1154,102 @@ Item {
             }
           }
         }
+          // Add-column button at the end of the table content
+        Item {
+          id: addColStrip
+          x: tableWrapper.tableContentWidth + 4
+          y: colHeaderBar.height
+          height: tableColumnView.height - colHeaderBar.height
+          width: 22
+          visible: opacity > 0.001
+          opacity: root.isTableHovered ? 1.0 : 0.0
+          scale: root.isTableHovered ? 1.0 : 0.92
+          transformOrigin: Item.Left
+          Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+          Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+          HoverHandler {
+            id: addColHover
+          }
+
+          Rectangle {
+            anchors.fill: parent
+            radius: 4
+            color: addColHover.hovered ? Theme.surfaceHover : Theme.surfaceAlt
+            border.color: addColHover.hovered ? Theme.accent : Theme.border
+            border.width: 1
+
+            IconImage {
+              anchors.centerIn: parent
+              width: 14
+              height: 14
+              source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_add_20_regular.svg"
+              color: addColHover.hovered ? Theme.accent : Theme.textMuted
+            }
+          }
+
+          MouseArea {
+            id: addColMouse
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.addColumn()
+          }
+        }
+      }
+
+      // Shift + wheel scrolls the table horizontally (normal wheel still scrolls the editor)
+      WheelHandler {
+        acceptedModifiers: Qt.ShiftModifier
+        blocking: true
+        onWheel: function(event) {
+          var maxX = Math.max(0, tableFlickable.contentWidth - tableFlickable.width)
+          if (maxX <= 0)
+            return
+          // Prefer the notch delta: some platforms report a tiny pixelDelta
+          // alongside it, which would otherwise scroll imperceptibly.
+          // Qt reports a wheel rolled down as a NEGATIVE y delta, so negate it
+          // to make Shift + wheel-down reveal the columns to the right.
+          var dx = event.angleDelta.x
+          if (dx === 0)
+            dx = -event.angleDelta.y
+          if (dx === 0)
+            dx = event.pixelDelta.x
+          if (dx === 0)
+            dx = -event.pixelDelta.y
+          tableFlickable.contentX = Math.max(0, Math.min(tableFlickable.contentX + dx, maxX))
+          event.accepted = true
+        }
+      }
+
+    }
+
+    // Live width readout while dragging a column divider
+    Rectangle {
+      id: resizeWidthTooltip
+      z: 40
+      visible: root.isResizingCol && root.resizingColIndex >= 0 && root.resizingColIndex < root.columnsData.length
+      width: resizeWidthLabel.implicitWidth + 14
+      height: 22
+      radius: 4
+      color: Theme.surfaceAlt
+      border.color: Theme.border
+      border.width: 1
+
+      x: {
+        var end = 0
+        for (var i = 0; i <= root.resizingColIndex && i < root.columnsData.length; ++i)
+          end += root.columnsData[i].width
+        return end - tableFlickable.contentX - width / 2
+      }
+      y: colHeaderBar.height + 6
+
+      Text {
+        id: resizeWidthLabel
+        anchors.centerIn: parent
+        text: root.resizingColIndex >= 0 && root.resizingColIndex < root.columnsData.length
+              ? Math.round(root.columnsData[root.resizingColIndex].width) + " px" : ""
+        color: Theme.text
+        font.pixelSize: 11
       }
     }
 
@@ -939,54 +1265,11 @@ Item {
         for (var i = 0; i <= root.dropColTargetIndex && i < root.columnsData.length; ++i) {
           pos += root.columnsData[i].width
         }
-        return pos - 1
+        return pos - 1 - tableFlickable.contentX
       }
       z: 30
     }
 
-    // Add Column Button (+) Strip on the right edge (Matching Screenshot 1!)
-    Item {
-      id: addColStrip
-      anchors.left: tableWrapper.right
-      anchors.leftMargin: 4
-      anchors.top: tableWrapper.top
-      anchors.topMargin: colHeaderBar.height
-      height: tableColumnView.height - colHeaderBar.height
-      width: 22
-      visible: opacity > 0.001
-      opacity: root.isTableHovered ? 1.0 : 0.0
-      scale: root.isTableHovered ? 1.0 : 0.92
-      transformOrigin: Item.Left
-      Behavior on opacity { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-      Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-
-      HoverHandler {
-        id: addColHover
-      }
-
-      Rectangle {
-        anchors.fill: parent
-        radius: 4
-        color: addColHover.hovered ? (Theme.isDark ? "#282c34" : "#e2e8f0") : (Theme.isDark ? "#1e2023" : "#f1f3f5")
-        border.color: addColHover.hovered ? Theme.accent : Theme.border
-        border.width: 1
-
-        IconImage {
-          anchors.centerIn: parent
-          width: 14
-          height: 14
-          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_add_20_regular.svg"
-          color: addColHover.hovered ? Theme.accent : Theme.textMuted
-        }
-      }
-
-      MouseArea {
-        id: addColMouse
-        anchors.fill: parent
-        cursorShape: Qt.PointingHandCursor
-        onClicked: root.addColumn()
-      }
-    }
   }
 
   // Add Row Button (+) Strip at the bottom of the table (Matching Screenshot 2!)
@@ -1011,7 +1294,7 @@ Item {
     Rectangle {
       anchors.fill: parent
       radius: 4
-      color: addRowHover.hovered ? (Theme.isDark ? "#282c34" : "#e2e8f0") : (Theme.isDark ? "#1e2023" : "#f1f3f5")
+      color: addRowHover.hovered ? Theme.surfaceHover : Theme.surfaceAlt
       border.color: addRowHover.hovered ? Theme.accent : Theme.border
       border.width: 1
 
@@ -1091,6 +1374,13 @@ Item {
       }
     }
 
+    MenuItem {
+      text: "Header row"
+      checkable: true
+      checked: root.headerRowEnabled
+      onTriggered: root.toggleHeaderRow()
+    }
+
     MenuSeparator {}
 
     MenuItem {
@@ -1159,6 +1449,13 @@ Item {
       }
     }
 
+    MenuItem {
+      text: "Header row"
+      checkable: true
+      checked: root.headerRowEnabled
+      onTriggered: root.toggleHeaderRow()
+    }
+
     MenuSeparator {}
 
     MenuItem {
@@ -1197,6 +1494,13 @@ Item {
         if (colActionMenu.targetColIndex >= 0)
           root.deleteColumn(colActionMenu.targetColIndex)
       }
+    }
+
+    MenuItem {
+      text: "Header row"
+      checkable: true
+      checked: root.headerRowEnabled
+      onTriggered: root.toggleHeaderRow()
     }
 
     MenuSeparator {}

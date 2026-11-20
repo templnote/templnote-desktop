@@ -3,6 +3,7 @@
 #include "AppPaths.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QDirIterator>
 #include <QFileInfo>
@@ -14,6 +15,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QVariantMap>
+#include <QVector>
 #include <QtConcurrent>
 #include <algorithm>
 #include <atomic>
@@ -567,9 +569,34 @@ bool DocumentListModel::deleteEntry(const QString &path) {
 
   if (info.isDir()) {
     // If folder contains files/subdirectories, move them to the root directory
+    // before deleting it. Hidden entries are included: removeRecursively()
+    // would otherwise delete them without ever offering to rescue them.
     QDir dir(absolute);
-    const QFileInfoList entries =
-        dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot);
+    const QFileInfoList entries = dir.entryInfoList(
+        QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden);
+
+    struct MovedChild {
+      QString originalPath;
+      QString rescuedPath;
+      bool isDir;
+    };
+    QVector<MovedChild> movedChildren;
+
+    // Undo earlier rescues so an aborted delete leaves the folder exactly as
+    // it was before this call.
+    const auto rollback = [&movedChildren]() {
+      for (auto it = movedChildren.crbegin(); it != movedChildren.crend();
+           ++it) {
+        const bool restored =
+            it->isDir ? QDir().rename(it->rescuedPath, it->originalPath)
+                      : QFile::rename(it->rescuedPath, it->originalPath);
+        if (!restored) {
+          qWarning("DocumentListModel: could not restore %s after aborted "
+                   "folder deletion",
+                   qUtf8Printable(it->rescuedPath));
+        }
+      }
+    };
 
     for (const QFileInfo &child : entries) {
       const QString childPath = QDir::cleanPath(child.absoluteFilePath());
@@ -579,28 +606,43 @@ bool DocumentListModel::deleteEntry(const QString &path) {
         target =
             AppPaths::uniqueDirectoryPath(m_rootDirectory, child.fileName());
 
-        if (target.isEmpty() || !QDir().rename(childPath, target))
-          continue;
+        if (target.isEmpty() || !QDir().rename(childPath, target)) {
+          rollback();
+          return false;
+        }
       } else {
         target = AppPaths::uniqueDocumentPath(m_rootDirectory,
                                               child.completeBaseName());
 
-        if (target.isEmpty() || !QFile::rename(childPath, target))
-          continue;
+        if (target.isEmpty() || !QFile::rename(childPath, target)) {
+          rollback();
+          return false;
+        }
       }
 
-      const QString newChildPath = QDir::cleanPath(target);
+      movedChildren.append({childPath, QDir::cleanPath(target), child.isDir()});
+    }
 
-      if (m_currentFilePath == childPath) {
-        setCurrentFilePath(newChildPath);
-      } else if (m_currentFilePath.startsWith(childPath + '/')) {
-        setCurrentFilePath(newChildPath +
-                           m_currentFilePath.mid(childPath.size()));
+    // The folder is empty at this point. If it still cannot be removed, put
+    // the rescued children back rather than reporting a half-finished delete.
+    if (!QDir(absolute).removeRecursively()) {
+      if (!QFile::moveToTrash(absolute)) {
+        rollback();
+        return false;
+      }
+    }
+
+    for (const MovedChild &child : std::as_const(movedChildren)) {
+      if (m_currentFilePath == child.originalPath) {
+        setCurrentFilePath(child.rescuedPath);
+      } else if (m_currentFilePath.startsWith(child.originalPath + '/')) {
+        setCurrentFilePath(child.rescuedPath +
+                           m_currentFilePath.mid(child.originalPath.size()));
       }
 
       // Report the move so the open document and the search index can follow
       // children that were rescued from the deleted folder.
-      emit pathRenamed(childPath, newChildPath);
+      emit pathRenamed(child.originalPath, child.rescuedPath);
     }
 
     // If the explorer is inside the folder being deleted, jump up to parent or root.
@@ -610,12 +652,6 @@ bool DocumentListModel::deleteEntry(const QString &path) {
         m_directory = m_rootDirectory;
       setupWatcher();
       emit directoryChanged();
-    }
-
-    // Now remove the folder itself
-    if (!QDir(absolute).removeRecursively()) {
-      if (!QFile::moveToTrash(absolute))
-        return false;
     }
   } else {
     // For single files, move to trash (or remove if trash unsupported)

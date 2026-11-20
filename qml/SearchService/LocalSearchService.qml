@@ -1,10 +1,15 @@
 import QtQuick
+import QtQml
 
 // Case-insensitive substring search over the current document model.
 //
 // Matches are returned in document order and do not overlap. A block with the
 // text "cat cat" contributes two matches for the query "cat".
-SearchService {
+//
+// search()/searchTerms() remain synchronous for callers that need an immediate
+// answer. The async variants run the scan on a WorkerScript so typing never
+// blocks the GUI thread.
+Item {
   id: root
 
   // Role ids from Templnote::BlockModel::Roles
@@ -13,37 +18,88 @@ SearchService {
   readonly property int blockIdRole: 257 // Qt.UserRole + 1
   readonly property int contentRole: 260 // Qt.UserRole + 4
 
-  function search(model, query) {
-    const results = []
+  signal searchFinished(var token, var matches)
+  signal searchTermsFinished(var token, var matches)
 
-    if (!model || query === undefined || query === null || query.length === 0)
-      return results
+  property var cachedModel: null
+  property int cachedRevision: -1
+  property int cacheId: 0
+  property var cachedBlockIds: []
+  property var cachedTexts: []
 
-    const needle = String(query).toLowerCase()
+  WorkerScript {
+    id: worker
+
+    source: "localSearchWorker.mjs"
+
+    onMessage: function(message) {
+      if (message.kind === "search")
+        root.searchFinished(message.token, message.matches)
+      else if (message.kind === "terms")
+        root.searchTermsFinished(message.token, message.matches)
+    }
+  }
+
+  // Lowercasing every block on every keystroke used to dominate local search.
+  // The model publishes a revision number, so the cache is rebuilt only when
+  // the document actually changes, and the snapshot is sent to the worker once.
+  function ensureCache(model) {
+    if (!model)
+      return false
+
+    const revision = model.contentRevision === undefined ? -2 : model.contentRevision
+    if (root.cachedModel === model && root.cachedRevision === revision)
+      return true
+
     const rowCount = model.count === undefined ? 0 : model.count
+    const ids = new Array(rowCount)
+    const texts = new Array(rowCount)
 
     for (let row = 0; row < rowCount; ++row) {
       const index = model.index(row, 0)
       const rawContent = model.data(index, root.contentRole)
       const rawBlockId = model.data(index, root.blockIdRole)
+      ids[row] = rawBlockId === undefined || rawBlockId === null ? "" : String(rawBlockId)
+      texts[row] = rawContent === undefined || rawContent === null ? "" : String(rawContent).toLowerCase()
+    }
 
-      if (rawContent === undefined || rawContent === null)
+    root.cachedModel = model
+    root.cachedRevision = revision
+    root.cachedBlockIds = ids
+    root.cachedTexts = texts
+    ++root.cacheId
+
+    worker.sendMessage({
+      kind: "cache",
+      cacheId: root.cacheId,
+      texts: texts,
+      ids: ids
+    })
+    return true
+  }
+
+  function search(model, query) {
+    const results = []
+
+    if (!model || query === undefined || query === null || query.length === 0)
+      return results
+    if (!root.ensureCache(model))
+      return results
+
+    const needle = String(query).toLowerCase()
+    const texts = root.cachedTexts
+    const ids = root.cachedBlockIds
+
+    for (let row = 0; row < texts.length; ++row) {
+      const haystack = texts[row]
+      const blockId = ids[row]
+
+      if (haystack.length === 0 || blockId.length === 0)
         continue
-      if (rawBlockId === undefined || rawBlockId === null)
-        continue
 
-      const content = String(rawContent)
-      const blockId = String(rawBlockId)
-
-      if (content.length === 0 || blockId.length === 0)
-        continue
-
-      const haystack = content.toLowerCase()
       let from = 0
-
       while (from <= haystack.length - needle.length) {
         const start = haystack.indexOf(needle, from)
-
         if (start < 0)
           break
 
@@ -53,12 +109,32 @@ SearchService {
           start: start,
           length: needle.length
         })
-
         from = start + needle.length
       }
     }
 
     return results
+  }
+
+  function searchAsync(model, query, token) {
+    if (!model || !root.ensureCache(model)) {
+      root.searchFinished(token, [])
+      return
+    }
+
+    const needle = String(query === undefined || query === null ? "" : query).toLowerCase()
+
+    if (needle.length === 0) {
+      root.searchFinished(token, [])
+      return
+    }
+
+    worker.sendMessage({
+      kind: "search",
+      token: token,
+      cacheId: root.cacheId,
+      needle: needle
+    })
   }
 
   // Multi-term variant used after opening a global search result. Every
@@ -69,6 +145,8 @@ SearchService {
 
     if (!model || query === undefined || query === null)
       return results
+    if (!root.ensureCache(model))
+      return results
 
     const terms = String(query).toLowerCase().split(/\s+/).filter(function(term) {
       return term.length > 0
@@ -77,25 +155,16 @@ SearchService {
     if (terms.length === 0)
       return results
 
-    const rowCount = model.count === undefined ? 0 : model.count
+    const texts = root.cachedTexts
+    const ids = root.cachedBlockIds
 
-    for (let row = 0; row < rowCount; ++row) {
-      const index = model.index(row, 0)
-      const rawContent = model.data(index, root.contentRole)
-      const rawBlockId = model.data(index, root.blockIdRole)
+    for (let row = 0; row < texts.length; ++row) {
+      const haystack = texts[row]
+      const blockId = ids[row]
 
-      if (rawContent === undefined || rawContent === null)
-        continue
-      if (rawBlockId === undefined || rawBlockId === null)
+      if (haystack.length === 0 || blockId.length === 0)
         continue
 
-      const content = String(rawContent)
-      const blockId = String(rawBlockId)
-
-      if (content.length === 0 || blockId.length === 0)
-        continue
-
-      const haystack = content.toLowerCase()
       let ranges = []
 
       for (let t = 0; t < terms.length; ++t) {
@@ -104,7 +173,6 @@ SearchService {
 
         while (from <= haystack.length - needle.length) {
           const start = haystack.indexOf(needle, from)
-
           if (start < 0)
             break
 
@@ -148,5 +216,31 @@ SearchService {
     }
 
     return results
+  }
+
+  function searchTermsAsync(model, query, token) {
+    if (!model || !root.ensureCache(model)) {
+      root.searchTermsFinished(token, [])
+      return
+    }
+
+    const terms = String(query === undefined || query === null ? "" : query)
+                       .toLowerCase()
+                       .split(/\s+/)
+                       .filter(function(term) {
+                         return term.length > 0
+                       })
+
+    if (terms.length === 0) {
+      root.searchTermsFinished(token, [])
+      return
+    }
+
+    worker.sendMessage({
+      kind: "terms",
+      token: token,
+      cacheId: root.cacheId,
+      terms: terms
+    })
   }
 }

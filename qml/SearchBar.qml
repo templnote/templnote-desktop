@@ -21,6 +21,11 @@ Rectangle {
 
   readonly property int matchCount: matches.length
 
+  // Invalidates in-flight worker replies when the query changes or the bar
+  // closes, so an old scan cannot overwrite the current selection.
+  property int searchToken: 0
+  property bool pendingAccept: false
+
   signal closed()
 
   LocalSearchService {
@@ -68,6 +73,8 @@ Rectangle {
     const focusTarget = root.previousFocus
 
     searchDebounce.stop()
+    ++root.searchToken
+    root.pendingAccept = false
     root.visible = false
     root.previousFocus = null
     searchField.text = ""
@@ -86,6 +93,17 @@ Rectangle {
     root.closed()
   }
 
+  Connections {
+    target: localService
+
+    function onSearchFinished(token, matches) {
+      if (token !== root.searchToken || !root.visible)
+        return
+
+      root.applyMatches(matches)
+    }
+  }
+
   function runSearch() {
     if (!root.visible || !root.model) {
       root.matches = []
@@ -93,7 +111,21 @@ Rectangle {
       return
     }
 
-    root.matches = localService.search(root.model, root.query)
+    ++root.searchToken
+    root.matches = []
+    root.currentIndex = -1
+
+    if (root.editor)
+      root.editor.setSearchMatches([], -1)
+
+    if (root.query.length === 0)
+      return
+
+    localService.searchAsync(root.model, root.query, root.searchToken)
+  }
+
+  function applyMatches(matches) {
+    root.matches = matches
 
     if (root.matches.length === 0) {
       root.currentIndex = -1
@@ -118,6 +150,11 @@ Rectangle {
     }
 
     root.selectMatch(startIndex)
+
+    if (root.pendingAccept) {
+      root.pendingAccept = false
+      root.accept()
+    }
   }
 
   function selectMatch(index) {
@@ -303,8 +340,13 @@ Rectangle {
       // Apply the latest query before accepting, so Enter never acts on a
       // result list that is one debounce interval behind.
       searchDebounce.stop()
+      root.pendingAccept = true
       root.runSearch()
-      root.accept()
+
+      if (root.query.length === 0) {
+        root.pendingAccept = false
+        root.accept()
+      }
     }
 
     Keys.onUpPressed: function(event) {

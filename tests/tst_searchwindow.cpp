@@ -1,5 +1,6 @@
 #include <QAbstractListModel>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -112,6 +113,8 @@ public:
             {RankRole, "rank"}};
   }
 
+  Q_INVOKABLE void searchAsync(const QString &query) { search(query); }
+
   Q_INVOKABLE void search(const QString &query) {
     beginResetModel();
     m_visible.clear();
@@ -193,6 +196,12 @@ private:
   QObject *m_editorStub = nullptr;
   FakeSearchResultsModel *m_results = nullptr;
 
+  quint64 m_localToken = 0;
+  int m_localCount = -1;
+  QString m_localBlockId;
+
+private:
+
   static FakeSearchResultsModel::Row makeRow(const QString &title,
                                              const QString &path,
                                              const QString &blockId,
@@ -227,6 +236,15 @@ private:
 
   void setQuery(const QString &text) {
     QVERIFY(m_searchWindow->setProperty("query", text));
+  }
+
+public slots:
+  void onLocalSearchFinished(const QVariant &token, const QVariant &matches) {
+    m_localToken = token.toULongLong();
+    const QVariantList list = matches.toList();
+    m_localCount = list.size();
+    if (m_localCount > 0)
+      m_localBlockId = list.first().toMap().value("blockId").toString();
   }
 
 private slots:
@@ -269,6 +287,88 @@ private slots:
     m_searchWindow = nullptr;
     m_editorStub = nullptr;
     m_results = nullptr;
+  }
+
+  void localSearchServiceRunsOnWorker() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    BlockModel model;
+    QVERIFY(model.createDocument(dir.filePath("Local.templnote")));
+    QVERIFY(model.updateBlockText(model.blockIdAt(0),
+                                   QStringLiteral("async local needle")));
+
+    QQmlApplicationEngine engine;
+    engine.loadFromModule(QStringLiteral("TemplnoteSearchTest"),
+                          QStringLiteral("LocalSearchServiceTest"));
+    QVERIFY2(!engine.rootObjects().isEmpty(),
+             "LocalSearchServiceTest.qml failed to load");
+
+    QObject *root = engine.rootObjects().first();
+    root->setProperty("model", QVariant::fromValue(&model));
+
+    m_localToken = 0;
+    m_localCount = -1;
+    m_localBlockId.clear();
+
+    connect(root, SIGNAL(finished(QVariant, QVariant)), this,
+            SLOT(onLocalSearchFinished(QVariant, QVariant)));
+
+    QMetaObject::invokeMethod(root, "run",
+                              Q_ARG(QVariant, QVariant(QStringLiteral("needle"))),
+                              Q_ARG(QVariant, QVariant(quint64(17))));
+
+    QTRY_VERIFY_WITH_TIMEOUT(m_localToken == 17, 3000);
+    QCOMPARE(m_localCount, 1);
+    QCOMPARE(m_localBlockId, model.blockIdAt(0));
+  }
+
+  void localSearchLatencyComparison() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    BlockModel model;
+    QVERIFY(model.createDocument(dir.filePath("BenchLocal.templnote")));
+
+    for (int i = 0; i < 10000; ++i)
+      model.appendBlock(0, QStringLiteral("local bench needle block %1 lorem ipsum")
+                                .arg(i));
+
+    QQmlApplicationEngine engine;
+    engine.loadFromModule(QStringLiteral("TemplnoteSearchTest"),
+                          QStringLiteral("LocalSearchServiceTest"));
+    QVERIFY2(!engine.rootObjects().isEmpty(),
+             "LocalSearchServiceTest.qml failed to load");
+
+    QObject *root = engine.rootObjects().first();
+    root->setProperty("model", QVariant::fromValue(&model));
+    connect(root, SIGNAL(finished(QVariant, QVariant)), this,
+            SLOT(onLocalSearchFinished(QVariant, QVariant)));
+
+    QElapsedTimer timer;
+
+    timer.start();
+    QVariant syncResult;
+    QVERIFY(QMetaObject::invokeMethod(
+        root, "syncRun", Q_RETURN_ARG(QVariant, syncResult),
+        Q_ARG(QVariant, QVariant(QStringLiteral("needle")))));
+    qInfo().noquote() << QStringLiteral("LOCAL_SYNC avg=%1 ms matches=%2")
+                             .arg(timer.nsecsElapsed() / 1e6, 0, 'f', 3)
+                             .arg(syncResult.toList().size());
+
+    m_localToken = 0;
+    timer.start();
+    QMetaObject::invokeMethod(root, "run",
+                              Q_ARG(QVariant, QVariant(QStringLiteral("needle"))),
+                              Q_ARG(QVariant, QVariant(quint64(23))));
+    const double dispatchMs = timer.nsecsElapsed() / 1e6;
+
+    QTRY_VERIFY_WITH_TIMEOUT(m_localToken == 23, 5000);
+    qInfo().noquote()
+        << QStringLiteral("LOCAL_ASYNC dispatch=%1 ms total=%2 ms matches=%3")
+               .arg(dispatchMs, 0, 'f', 4)
+               .arg(timer.nsecsElapsed() / 1e6, 0, 'f', 3)
+               .arg(m_localCount);
   }
 
   void openFocusesQueryFieldAndSearches() {

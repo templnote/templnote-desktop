@@ -95,6 +95,32 @@ bool row_deleteDocumentRows(QSqlDatabase &db, const QString &path) {
   return removeIndex.exec() && removeRows.exec();
 }
 
+// Returns true when the index was built from the current bytes on disk. This
+// makes reopening an unchanged document free on the writer pool instead of
+// deleting and reinserting every FTS row.
+bool row_indexIsCurrent(QSqlDatabase &db, const QString &path) {
+  const QFileInfo info(path);
+  if (!info.exists())
+    return false;
+
+  QSqlQuery meta(db);
+  meta.prepare(QStringLiteral(
+      "SELECT modified_ms, size FROM search_meta WHERE document_path = ?"));
+  meta.addBindValue(path);
+  if (!meta.exec() || !meta.next())
+    return false;
+
+  if (meta.value(0).toLongLong() != info.lastModified().toMSecsSinceEpoch() ||
+      meta.value(1).toLongLong() != info.size())
+    return false;
+
+  QSqlQuery rows(db);
+  rows.prepare(
+      QStringLiteral("SELECT 1 FROM search_rows WHERE document_path = ? LIMIT 1"));
+  rows.addBindValue(path);
+  return rows.exec() && rows.next();
+}
+
 bool row_deleteBlockRow(QSqlDatabase &db, const QString &path,
                         const QString &blockId) {
   QSqlQuery removeIndex(db);
@@ -344,6 +370,11 @@ bool replaceFromFile(QSqlDatabase &db, const QString &path) {
     return false;
   }
 
+  if (row_indexIsCurrent(db, normalized)) {
+    file.close();
+    return true;
+  }
+
   QJsonParseError parseError{};
   const QJsonDocument parsed =
       QJsonDocument::fromJson(file.readAll(), &parseError);
@@ -578,6 +609,8 @@ SearchIndex::SearchIndex(const QString &documentsRoot,
     : QObject(parent), m_connectionName(connectionNameFor(this)),
       m_documentsRoot(QDir::cleanPath(documentsRoot)),
       m_databasePath(databasePath) {
+  qRegisterMetaType<SearchOutcome>("Templnote::SearchIndex::SearchOutcome");
+
   if (!openDatabase()) {
     qWarning() << "SearchIndex: could not open the search database";
     return;
@@ -841,6 +874,7 @@ void SearchIndex::onDataChanged(const QModelIndex &topLeft,
       queueBlockUpsert(path, title, blockId, text);
   }
 
+  invalidateSearchCache();
   scheduleFlush();
 }
 
@@ -868,6 +902,7 @@ void SearchIndex::onRowsInserted(const QModelIndex &parent, int first,
       queueBlockUpsert(path, title, blockId, text);
   }
 
+  invalidateSearchCache();
   scheduleFlush();
 }
 
@@ -892,6 +927,7 @@ void SearchIndex::onRowsAboutToBeRemoved(const QModelIndex &parent, int first,
       queueBlockRemove(path, blockId);
   }
 
+  invalidateSearchCache();
   scheduleFlush();
 }
 
@@ -921,10 +957,10 @@ void SearchIndex::onCurrentFilePathChanged() {
 
     const QString databasePath = m_databasePath;
 
-    (void)QtConcurrent::run(
+    watchWriteFuture(QtConcurrent::run(
         &m_writePool, [databasePath, write = std::move(write)]() {
           executeWriteBatch(databasePath, {write});
-        });
+        }));
   }
 
   m_currentDocumentPath = newPath;
@@ -932,6 +968,7 @@ void SearchIndex::onCurrentFilePathChanged() {
   if (!newPath.isEmpty())
     queueFullDocument(newPath);
 
+  invalidateSearchCache();
   scheduleFlush();
 }
 
@@ -943,7 +980,8 @@ void SearchIndex::onDocumentLoaded() {
 
   if (!path.isEmpty()) {
     queueFullDocument(path);
-    scheduleFlush();
+    invalidateSearchCache();
+  scheduleFlush();
   }
 }
 
@@ -955,7 +993,8 @@ void SearchIndex::onDocumentCreated() {
 
   if (!path.isEmpty()) {
     queueFullDocument(path);
-    scheduleFlush();
+    invalidateSearchCache();
+  scheduleFlush();
   }
 }
 
@@ -978,9 +1017,9 @@ void SearchIndex::onPathRenamed(const QString &oldPath,
 
   const QString databasePath = m_databasePath;
 
-  (void)QtConcurrent::run(&m_writePool, [databasePath, op]() {
+  watchWriteFuture(QtConcurrent::run(&m_writePool, [databasePath, op]() {
     executeWriteBatch(databasePath, {op});
-  });
+  }));
 }
 
 void SearchIndex::onPathRemoved(const QString &path) {
@@ -997,9 +1036,9 @@ void SearchIndex::onPathRemoved(const QString &path) {
 
   const QString databasePath = m_databasePath;
 
-  (void)QtConcurrent::run(&m_writePool, [databasePath, op]() {
+  watchWriteFuture(QtConcurrent::run(&m_writePool, [databasePath, op]() {
     executeWriteBatch(databasePath, {op});
-  });
+  }));
 
   // Deleting a folder moves its children to the root, so the filesystem may
   // contain documents at paths that were not individually reported. Do this
@@ -1086,6 +1125,19 @@ void SearchIndex::scheduleFlush() {
     m_flushTimer.start();
 }
 
+void SearchIndex::watchWriteFuture(QFuture<void> future) {
+  auto *watcher = new QFutureWatcher<void>(this);
+
+  connect(watcher, &QFutureWatcherBase::finished, this,
+          [this, watcher]() {
+            watcher->deleteLater();
+            invalidateSearchCache();
+            emit indexUpdated();
+          });
+
+  watcher->setFuture(future);
+}
+
 void SearchIndex::flushPending() {
   if (m_pending.isEmpty() || !m_db.isOpen())
     return;
@@ -1114,7 +1166,10 @@ void SearchIndex::flushPending() {
       write.type = WriteOp::Type::Remove;
       break;
     case PendingOp::Type::FullDocument:
-      if (op.path == m_currentDocumentPath && m_blockModel) {
+      // A saved document is indexed from its file on the writer pool. Only an
+      // unsaved in-memory document needs the GUI-thread snapshot path.
+      if (op.path == m_currentDocumentPath && m_blockModel &&
+          m_blockModel->isModified()) {
         write.type = WriteOp::Type::Replace;
         write.title = m_blockModel->documentTitle();
         // The blocks come from the in-memory model, which can be newer than
@@ -1146,9 +1201,10 @@ void SearchIndex::flushPending() {
 
   const QString databasePath = m_databasePath;
 
-  (void)QtConcurrent::run(&m_writePool, [databasePath, ops = std::move(ops)]() {
-    executeWriteBatch(databasePath, ops);
-  });
+  watchWriteFuture(QtConcurrent::run(
+      &m_writePool, [databasePath, ops = std::move(ops)]() {
+        executeWriteBatch(databasePath, ops);
+      }));
 }
 
 void SearchIndex::discardPending(const QString &pathPrefix) {
@@ -1573,6 +1629,9 @@ void SearchIndex::syncIncremental() {
   }
 
   performIncrementalSync(m_db, root, currentPath, currentTitle, currentBlocks);
+
+  invalidateSearchCache();
+  emit indexUpdated();
 }
 
 void SearchIndex::syncIncrementalAsync() {
@@ -1629,6 +1688,7 @@ void SearchIndex::syncIncrementalAsync() {
               syncIncrementalAsync();
             }
 
+            invalidateSearchCache();
             emit indexUpdated();
           });
 
@@ -1658,68 +1718,33 @@ void SearchIndex::rebuild() {
   syncIncrementalAsync();
 }
 
-QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
-                                                bool *truncated) const {
-  QVector<Result> results;
+void SearchIndex::invalidateSearchCache() {
+  m_searchCache.clear();
+  m_searchCacheOrder.clear();
+  ++m_cacheGeneration;
+}
 
-  if (truncated)
-    *truncated = false;
+void SearchIndex::cacheSearchResult(const QString &query,
+                                    const CachedSearch &cached) const {
+  if (query.isEmpty())
+    return;
 
-  const QStringList terms = queryTerms(query);
+  if (!m_searchCache.contains(query))
+    m_searchCacheOrder.append(query);
 
-  if (terms.isEmpty() || !m_db.isOpen())
-    return results;
+  m_searchCache.insert(query, cached);
 
-  const QString ftsQuery = buildFtsQuery(terms);
+  constexpr int kCacheSize = 24;
+  while (m_searchCacheOrder.size() > kCacheSize)
+    m_searchCache.remove(m_searchCacheOrder.takeFirst());
+}
 
-  QSqlQuery sql(m_db);
-  sql.prepare(QStringLiteral(
-      "SELECT document_path, document_title, block_id, block_text, "
-      "bm25(search_index) "
-      "FROM search_index WHERE search_index MATCH ? "
-      "ORDER BY bm25(search_index) LIMIT ?"));
-  sql.addBindValue(ftsQuery);
-  // Fetch one extra row to detect whether the result set was capped.
-  sql.addBindValue(kMaxResults + 1);
-
-  if (!sql.exec()) {
-    qWarning() << "SearchIndex: query failed:" << sql.lastError().text();
-    return results;
-  }
-
-  while (sql.next()) {
-    Result result;
-    result.documentPath = sql.value(0).toString();
-    result.documentTitle = sql.value(1).toString();
-    result.blockId = sql.value(2).toString();
-    result.blockText = sql.value(3).toString();
-    result.rank = sql.value(4).toDouble();
-
-    result.ranges = matchRanges(result.blockText, terms);
-
-    if (result.ranges.isEmpty())
-      continue;
-
-    result.matchCount = result.ranges.size();
-    result.snippet =
-        makeSnippet(result.blockText, result.ranges, &result.snippetRanges);
-
-    results.append(result);
-  }
-
-  if (results.size() > kMaxResults) {
-    results.resize(kMaxResults);
-
-    if (truncated)
-      *truncated = true;
-  }
-
+void SearchIndex::finalizeResults(QVector<Result> &results) {
   QHash<QString, double> bestRank;
   QHash<QString, int> documentCounts;
 
   for (const Result &result : std::as_const(results)) {
     const double rank = bestRank.value(result.documentPath, result.rank);
-
     bestRank.insert(result.documentPath, qMin(rank, result.rank));
     documentCounts[result.documentPath] += result.matchCount;
   }
@@ -1727,8 +1752,6 @@ QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
   for (Result &result : results)
     result.documentMatchCount = documentCounts.value(result.documentPath);
 
-  // Group results by document while keeping the best-ranked document first
-  // and the best-ranked blocks first inside each group.
   std::stable_sort(results.begin(), results.end(),
                    [&bestRank](const Result &left, const Result &right) {
                      if (left.documentPath == right.documentPath)
@@ -1742,11 +1765,209 @@ QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
                      if (!qFuzzyCompare(leftRank + 1.0, rightRank + 1.0))
                        return leftRank < rightRank;
 
-                     return left.documentPath.localeAwareCompare(
-                                right.documentPath) < 0;
+                     return left.documentPath < right.documentPath;
                    });
+}
 
-  return results;
+SearchIndex::SearchOutcome SearchIndex::executeSearch(const QSqlDatabase &db,
+                                                      const QString &query) {
+  SearchOutcome outcome;
+  const QStringList terms = queryTerms(query);
+
+  if (terms.isEmpty() || !db.isOpen())
+    return outcome;
+
+  QSqlQuery sql(db);
+  sql.prepare(QStringLiteral(
+      "SELECT document_path, document_title, block_id, block_text, "
+      "bm25(search_index) "
+      "FROM search_index WHERE search_index MATCH ? "
+      "ORDER BY bm25(search_index) LIMIT ?"));
+  sql.addBindValue(buildFtsQuery(terms));
+  sql.addBindValue(kMaxResults + 1);
+
+  if (!sql.exec()) {
+    qWarning() << "SearchIndex: query failed:" << sql.lastError().text();
+    return outcome;
+  }
+
+  while (sql.next()) {
+    Result result;
+    result.documentPath = sql.value(0).toString();
+    result.documentTitle = sql.value(1).toString();
+    result.blockId = sql.value(2).toString();
+    result.blockText = sql.value(3).toString();
+    result.rank = sql.value(4).toDouble();
+
+    result.ranges = matchRanges(result.blockText, terms);
+    if (result.ranges.isEmpty())
+      continue;
+
+    result.matchCount = result.ranges.size();
+    result.snippet =
+        makeSnippet(result.blockText, result.ranges, &result.snippetRanges);
+    outcome.results.append(std::move(result));
+  }
+
+  if (outcome.results.size() > kMaxResults) {
+    outcome.results.resize(kMaxResults);
+    outcome.truncated = true;
+  }
+
+  finalizeResults(outcome.results);
+  return outcome;
+}
+
+SearchIndex::SearchOutcome
+SearchIndex::executeSearchInConnection(const QString &databasePath,
+                                       const QString &query) {
+  static std::atomic<quint64> connectionCounter{0};
+  const QString name = QStringLiteral("templnote_search_reader_%1")
+                           .arg(connectionCounter.fetch_add(1));
+
+  QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+  db.setDatabaseName(databasePath);
+  db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+
+  SearchOutcome outcome;
+
+  if (db.open()) {
+    QSqlQuery pragma(db);
+    pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
+    outcome = executeSearch(db, query);
+  }
+
+  db.close();
+  QSqlDatabase::removeDatabase(name);
+  return outcome;
+}
+
+void SearchIndex::searchAsync(const QString &query, quint64 token) {
+  const QString key = query.simplified();
+
+  const auto emitOutcome = [this, token](const SearchOutcome &outcome) {
+    emit searchFinished(token, outcome);
+  };
+
+  if (key.isEmpty() || !m_db.isOpen()) {
+    QMetaObject::invokeMethod(
+        this, [emitOutcome]() { emitOutcome(SearchOutcome{}); },
+        Qt::QueuedConnection);
+    return;
+  }
+
+  if (const auto cached = m_searchCache.constFind(key);
+      cached != m_searchCache.constEnd()) {
+    SearchOutcome outcome{cached->results, cached->truncated};
+    const quint64 generation = m_cacheGeneration;
+    QMetaObject::invokeMethod(
+        this,
+        [this, emitOutcome, outcome, generation]() {
+          if (generation == m_cacheGeneration)
+            emitOutcome(outcome);
+        },
+        Qt::QueuedConnection);
+    return;
+  }
+
+  const QString databasePath = m_databasePath;
+  const quint64 generation = m_cacheGeneration;
+
+  auto *watcher = new QFutureWatcher<SearchOutcome>(this);
+
+  connect(watcher, &QFutureWatcherBase::finished, this,
+          [this, watcher, key, token, generation]() {
+            const SearchOutcome outcome = watcher->result();
+            watcher->deleteLater();
+
+            // The index may have changed while the worker was running; do not
+            // repopulate the cache with a stale result.
+            if (generation != m_cacheGeneration)
+              return;
+
+            cacheSearchResult(key,
+                              CachedSearch{outcome.results, outcome.truncated});
+            emit searchFinished(token, outcome);
+          });
+
+  watcher->setFuture(
+      QtConcurrent::run(executeSearchInConnection, databasePath, key));
+}
+
+QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
+                                                bool *truncated) const {
+  QVector<Result> results;
+
+  if (truncated)
+    *truncated = false;
+
+  const QString key = query.simplified();
+
+  if (key.isEmpty() || !m_db.isOpen())
+    return results;
+
+  if (const auto cached = m_searchCache.constFind(key);
+      cached != m_searchCache.constEnd()) {
+    if (truncated)
+      *truncated = cached->truncated;
+    return cached->results;
+  }
+
+  const QStringList terms = queryTerms(key);
+
+  if (terms.isEmpty())
+    return results;
+
+  // A longer query that starts with a cached query can be answered by
+  // filtering the cached rows; this makes backspacing/typing much cheaper.
+  QString prefixKey;
+  for (const QString &candidate : std::as_const(m_searchCacheOrder)) {
+    if (key.startsWith(candidate) && candidate.size() > prefixKey.size())
+      prefixKey = candidate;
+  }
+
+  if (!prefixKey.isEmpty()) {
+    const CachedSearch base = m_searchCache.value(prefixKey);
+
+    for (const Result &row : std::as_const(base.results)) {
+      // FTS combines terms with AND, so every term must be present. matchRanges
+      // returns the union of term ranges, so check each term separately too.
+      bool allTermsMatch = true;
+
+      for (const QString &term : std::as_const(terms)) {
+        if (matchRanges(row.blockText, {term}).isEmpty()) {
+          allTermsMatch = false;
+          break;
+        }
+      }
+
+      if (!allTermsMatch)
+        continue;
+
+      const QVector<MatchRange> ranges = matchRanges(row.blockText, terms);
+      if (ranges.isEmpty())
+        continue;
+
+      Result result = row;
+      result.ranges = ranges;
+      result.matchCount = ranges.size();
+      result.snippet =
+          makeSnippet(result.blockText, result.ranges, &result.snippetRanges);
+      results.append(std::move(result));
+    }
+
+    finalizeResults(results);
+    cacheSearchResult(key, CachedSearch{results, false});
+    return results;
+  }
+
+  const SearchOutcome outcome = executeSearch(m_db, key);
+
+  if (truncated)
+    *truncated = outcome.truncated;
+
+  cacheSearchResult(key, CachedSearch{outcome.results, outcome.truncated});
+  return outcome.results;
 }
 
 QString SearchIndex::documentsRoot() const { return m_documentsRoot; }

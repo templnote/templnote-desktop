@@ -94,8 +94,8 @@ int BlockModel::rowCount(const QModelIndex &parent) const {
   return m_document.count();
 }
 
-bool BlockModel::canUndo() const { return !m_undoStack.isEmpty(); }
-bool BlockModel::canRedo() const { return !m_redoStack.isEmpty(); }
+bool BlockModel::canUndo() const { return !m_undoStack.empty(); }
+bool BlockModel::canRedo() const { return !m_redoStack.empty(); }
 
 void BlockModel::saveHistory(const QVector<PatchOp> &patch,
                              const QString &focusBeforeId,
@@ -105,8 +105,13 @@ void BlockModel::saveHistory(const QVector<PatchOp> &patch,
   entry.focusBeforeId = focusBeforeId;
   entry.focusAfterId = focusAfterId;
   entry.patch = patch;
+  entry.stateBeforeId = m_currentStateId;
+  entry.stateAfterId = ++m_stateCounter;
+  m_currentStateId = entry.stateAfterId;
+  ++m_contentRevision;
+  emit contentRevisionChanged();
 
-  m_undoStack.append(entry);
+  m_undoStack.push_back(entry);
   m_redoStack.clear();
   trimHistory();
   closeTextGroup();
@@ -128,13 +133,17 @@ void BlockModel::saveTextHistory(const QString &id, const QString &before,
   const bool canMerge =
       m_textGroupOpen && m_textGroupBlockId == id &&
       m_textGroupTimer.isValid() && m_textGroupTimer.elapsed() < 750 &&
-      isSingleCharacterEdit && !m_undoStack.isEmpty() &&
-      m_undoStack.last().kind == HistoryEntry::Kind::TextEdit &&
-      m_undoStack.last().blockId == id &&
-      m_undoStack.last().textAfter == before;
+      isSingleCharacterEdit && !m_undoStack.empty() &&
+      m_undoStack.back().kind == HistoryEntry::Kind::TextEdit &&
+      m_undoStack.back().blockId == id &&
+      m_undoStack.back().textAfter == before;
 
   if (canMerge) {
-    m_undoStack.last().textAfter = after;
+    m_undoStack.back().textAfter = after;
+    m_undoStack.back().stateAfterId = ++m_stateCounter;
+    m_currentStateId = m_undoStack.back().stateAfterId;
+    ++m_contentRevision;
+    emit contentRevisionChanged();
     m_textGroupTimer.restart();
   } else {
     HistoryEntry entry;
@@ -144,8 +153,13 @@ void BlockModel::saveTextHistory(const QString &id, const QString &before,
     entry.textAfter = after;
     entry.focusBeforeId = id;
     entry.focusAfterId = id;
+    entry.stateBeforeId = m_currentStateId;
+    entry.stateAfterId = ++m_stateCounter;
+    m_currentStateId = entry.stateAfterId;
+    ++m_contentRevision;
+    emit contentRevisionChanged();
 
-    m_undoStack.append(entry);
+    m_undoStack.push_back(entry);
     m_redoStack.clear();
 
     m_textGroupBlockId = id;
@@ -176,7 +190,7 @@ void BlockModel::closeTextGroup() {
 
 void BlockModel::trimHistory() {
   while (m_undoStack.size() > kMaxHistoryEntries)
-    m_undoStack.removeFirst();
+    m_undoStack.pop_front();
 }
 
 void BlockModel::invalidateNumberIndices() { m_numberIndicesDirty = true; }
@@ -611,7 +625,9 @@ bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
   if (block->type == BlockType::Bullet || block->type == BlockType::NumberedList || block->type == BlockType::Todo)
     return false;
 
-  const QString currentAlign = block->metadata.value(QStringLiteral("align")).toString();
+  QString currentAlign = block->metadata.value(QStringLiteral("align")).toString();
+  if (currentAlign.isEmpty())
+    currentAlign = QStringLiteral("left");
   const QString targetAlign = (align == QLatin1String("center") || align == QLatin1String("right"))
                                   ? align
                                   : QStringLiteral("left");
@@ -932,10 +948,21 @@ bool BlockModel::isModified() const { return m_modified; }
 
 QString BlockModel::lastError() const { return m_lastError; }
 
-void BlockModel::markModified() {
-  setModified(true);
-  scheduleAutosave();
+bool BlockModel::hasUnsavedChanges() const {
+  return m_currentStateId != m_savedStateId ||
+         m_document.isFullWidth() != m_savedFullWidth ||
+         m_document.hasFullWidthSet() != m_savedHasFullWidth;
 }
+
+void BlockModel::syncModifiedState() {
+  const bool modified = hasUnsavedChanges();
+  setModified(modified);
+
+  if (modified)
+    scheduleAutosave();
+}
+
+void BlockModel::markModified() { syncModifiedState(); }
 
 void BlockModel::emitNumberIndexChanged(int firstRow) {
   for (int row = qMax(0, firstRow); row < m_document.count(); ++row) {
@@ -1038,6 +1065,14 @@ bool BlockModel::resetDocument(Document document) {
   m_lastHistoryBlockId.clear();
   m_lastHistoryCursorPosition = -1;
 
+  // A freshly loaded/replaced document starts at a clean, saved state.
+  m_currentStateId = ++m_stateCounter;
+  m_savedStateId = m_currentStateId;
+  m_savedFullWidth = m_document.isFullWidth();
+  m_savedHasFullWidth = m_document.hasFullWidthSet();
+  ++m_contentRevision;
+  emit contentRevisionChanged();
+
   // The cache belongs to the previous document; force the next save to write.
   m_lastSavedData.clear();
   m_lastSavedPath.clear();
@@ -1046,7 +1081,6 @@ bool BlockModel::resetDocument(Document document) {
 
   emit countChanged();
   emit historyChanged();
-  emit fullWidthChanged();
 
   return true;
 }
@@ -1114,6 +1148,13 @@ bool BlockModel::saveDocument(const QString &path) {
     m_lastSavedPath = absolutePath;
     setLastModified(modified.toLocalTime());
   }
+
+  // Closing the group guarantees that the next edit gets its own history
+  // entry, so undoing it lands exactly on the state written here.
+  closeTextGroup();
+  m_savedStateId = m_currentStateId;
+  m_savedFullWidth = m_document.isFullWidth();
+  m_savedHasFullWidth = m_document.hasFullWidthSet();
 
   setCurrentFilePath(absolutePath);
   setModified(false);
@@ -1195,6 +1236,11 @@ bool BlockModel::loadDocument(const QString &path) {
 }
 
 bool BlockModel::createDocument(const QString &path) {
+  // Creating a document replaces the open one, so never discard unsaved edits
+  // if the caller has not persisted them yet.
+  if (m_modified && !saveCurrentDocument())
+    return false;
+
   Document document;
   document.appendBlock(Block::create(BlockType::Paragraph));
 
@@ -1236,6 +1282,11 @@ void BlockModel::setFullWidth(bool fullWidth) {
     return;
 
   m_document.setFullWidth(fullWidth);
+  // Full width is part of the saved JSON but is not undoable, so it needs its
+  // own state id to keep the dirty flag correct.
+  m_currentStateId = ++m_stateCounter;
+  ++m_contentRevision;
+  emit contentRevisionChanged();
   markModified();
   emit fullWidthChanged();
 }
@@ -1243,6 +1294,8 @@ void BlockModel::setFullWidth(bool fullWidth) {
 bool BlockModel::hasFullWidthSet() const {
   return m_document.hasFullWidthSet();
 }
+
+int BlockModel::contentRevision() const { return m_contentRevision; }
 
 bool BlockModel::renameDocument(const QString &newBaseName) {
   if (m_currentFilePath.isEmpty())
@@ -1414,31 +1467,41 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
 
       if (row >= 0) {
         beginRemoveRows({}, row, row);
-        m_document.removeBlock(op.block.id);
+        const bool removed = m_document.removeBlock(op.block.id);
         endRemoveRows();
-        return true;
+        return removed;
       }
     } else {
+      // Validate before announcing the row: a rejected insert used to still
+      // emit begin/endInsertRows and desync the view from the document.
+      if (op.to < 0 || op.to > m_document.count() ||
+          op.block.id.isEmpty() || m_document.indexOf(op.block.id) >= 0)
+        break;
+
       beginInsertRows({}, op.to, op.to);
-      m_document.insertBlock(op.to, op.block);
+      const bool inserted = m_document.insertBlock(op.to, op.block);
       endInsertRows();
-      return true;
+      return inserted;
     }
     break;
 
   case PatchOp::Type::Remove:
     if (inverse) {
+      if (op.from < 0 || op.from > m_document.count() ||
+          op.block.id.isEmpty() || m_document.indexOf(op.block.id) >= 0)
+        break;
+
       beginInsertRows({}, op.from, op.from);
-      m_document.insertBlock(op.from, op.block);
+      const bool inserted = m_document.insertBlock(op.from, op.block);
       endInsertRows();
-      return true;
+      return inserted;
     }
 
     if (const int row = m_document.indexOf(op.block.id); row >= 0) {
       beginRemoveRows({}, row, row);
-      m_document.removeBlock(op.block.id);
+      const bool removed = m_document.removeBlock(op.block.id);
       endRemoveRows();
-      return true;
+      return removed;
     }
     break;
 
@@ -1507,33 +1570,37 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
 }
 
 bool BlockModel::undo() {
-  if (m_undoStack.isEmpty())
+  if (m_undoStack.empty())
     return false;
 
   closeTextGroup();
 
-  const HistoryEntry entry = m_undoStack.takeLast();
-  m_redoStack.append(entry);
+  const HistoryEntry entry = m_undoStack.back();
+  m_undoStack.pop_back();
+  m_redoStack.push_back(entry);
 
   applyHistoryEntry(entry, true);
 
-  markModified();
+  m_currentStateId = entry.stateBeforeId;
+  syncModifiedState();
   emit historyChanged();
   return true;
 }
 
 bool BlockModel::redo() {
-  if (m_redoStack.isEmpty())
+  if (m_redoStack.empty())
     return false;
 
   closeTextGroup();
 
-  const HistoryEntry entry = m_redoStack.takeLast();
-  m_undoStack.append(entry);
+  const HistoryEntry entry = m_redoStack.back();
+  m_redoStack.pop_back();
+  m_undoStack.push_back(entry);
 
   applyHistoryEntry(entry, false);
 
-  markModified();
+  m_currentStateId = entry.stateAfterId;
+  syncModifiedState();
   emit historyChanged();
   return true;
 }

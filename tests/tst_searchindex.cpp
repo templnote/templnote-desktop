@@ -409,6 +409,40 @@ private slots:
     QCOMPARE(results.first().documentPath, path);
   }
 
+  void asyncSearchDeliversResultsWithToken() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    QVERIFY(!writeDocument(root, QStringLiteral("Async.templnote"),
+                           QStringLiteral("Async"),
+                           {QStringLiteral("asynctoken in a block")})
+                 .isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+
+    quint64 receivedToken = 0;
+    int receivedCount = -1;
+
+    connect(&index, &SearchIndex::searchFinished, &index,
+            [&](quint64 token, const SearchIndex::SearchOutcome &outcome) {
+              receivedToken = token;
+              receivedCount = outcome.results.size();
+            });
+
+    index.searchAsync(QStringLiteral("asynctoken"), 42);
+    QTRY_VERIFY_WITH_TIMEOUT(receivedToken == 42, 3000);
+    QCOMPARE(receivedCount, 1);
+
+    // A cached query is delivered asynchronously too, with its token intact.
+    receivedToken = 0;
+    receivedCount = -1;
+    index.searchAsync(QStringLiteral("asynctoken"), 43);
+    QTRY_VERIFY_WITH_TIMEOUT(receivedToken == 43, 3000);
+    QCOMPARE(receivedCount, 1);
+  }
+
   void resultsModelExposesRolesAndMaps() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
