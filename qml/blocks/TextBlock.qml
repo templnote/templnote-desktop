@@ -929,6 +929,7 @@ Item {
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
+  signal tabRequested(int direction)
   signal commandMenuRequested(string query, real xPosition, real yPosition, real cursorHeight)
   signal commandMenuDismissed()
   signal commandMenuAccepted()
@@ -1783,10 +1784,10 @@ Item {
               )
 
               // Insert a new paragraph below the divider so the user can continue typing
-              const row = root.model.indexOfBlock(root.blockId)
-              if (row >= 0) {
-                root.model.insertBlock(row + 1, 0, "")
+              const newId = root.model.insertBlockAfter(root.blockId, 0, "")
+              if (newId.length > 0) {
                 root.transformingShortcut = false
+                const row = root.model.indexOfBlock(root.blockId)
                 root.focusDelegateRequested(row + 1, 0)
                 return
               }
@@ -1985,6 +1986,14 @@ Item {
             if (event.key === Qt.Key_Backspace && editor.cursorPosition === 0) {
               event.accepted = true
               root.backspacePressed()
+              return
+            }
+
+            // Tab moves between editable blocks. Without this the TextEdit's
+            // default handling just switches QML focus and skips the editor.
+            if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+              event.accepted = true
+              root.tabRequested(event.key === Qt.Key_Backtab ? -1 : 1)
               return
             }
 

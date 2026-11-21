@@ -2,6 +2,7 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -9,6 +10,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QUuid>
+#include <QUrl>
 
 #include "../src/model/BlockModel.h"
 #include "../src/storage/AppPaths.h"
@@ -935,6 +937,601 @@ private slots:
     QCOMPARE(model.documentTitle(), QString("Untitled"));
     QVERIFY(!model.isModified());
     QVERIFY(model.document().blockAt(0)->text.isEmpty());
+  }
+
+  void createDocumentPersistsEditsFromNeverSavedDocument() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    QVERIFY(model.closeDocument());
+
+    const QString id = model.appendBlock(0, QStringLiteral("untitled content"));
+    QVERIFY(!id.isEmpty());
+    QVERIFY(model.isModified());
+    QVERIFY(model.currentFilePath().isEmpty());
+
+    QVERIFY(model.createDocument(directory.filePath("Fresh")));
+    QCOMPARE(model.documentTitle(), QStringLiteral("Fresh"));
+    QVERIFY(!model.isModified());
+
+    // The old edits must survive in a fresh Untitled file rather than being
+    // refused or silently discarded.
+    QString recovered;
+    QDirIterator it(AppPaths::documentsDirectory(),
+                    QStringList{QStringLiteral("Untitled*.templnote")},
+                    QDir::Files);
+
+    while (it.hasNext()) {
+      const QString path = it.next();
+      QFile file(path);
+
+      if (file.open(QIODevice::ReadOnly) &&
+          file.readAll().contains("untitled content")) {
+        recovered = path;
+        break;
+      }
+    }
+
+    QVERIFY(!recovered.isEmpty());
+    QFile::remove(recovered);
+  }
+
+  void blocksOfColumnCacheTracksStructuralEdits() {
+    BlockModel model;
+    model.createColumnsLayout(0, 2);
+    const QStringList columns = model.columnIdsOf(model.blockIdAt(0));
+    QCOMPARE(columns.size(), 2);
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 1);
+
+    const QString added = model.appendBlockToColumn(columns.first());
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 2);
+    QVERIFY(model.removeBlock(added));
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 1);
+
+    QVERIFY(!model.appendBlock(0, QStringLiteral("top level")).isEmpty());
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 1);
+  }
+
+  void attachmentCacheReclaimsUnreferencedFiles() {
+    QTemporaryDir sourceDirectory;
+    QTemporaryDir documentDirectory;
+    QVERIFY(sourceDirectory.isValid());
+    QVERIFY(documentDirectory.isValid());
+
+    const QString source = sourceDirectory.filePath("source.png");
+    {
+      QFile file(source);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      QVERIFY(file.write("image data") > 0);
+    }
+
+    BlockModel model;
+    QVERIFY(model.closeDocument());
+
+    const QString url = model.importAttachment(QUrl::fromLocalFile(source));
+    QVERIFY(url.startsWith(QStringLiteral("file://")));
+    const QString cached = QUrl(url).toLocalFile();
+    QVERIFY(QFile::exists(cached));
+
+    // Nothing references the attachment, so saving reclaims it.
+    QVERIFY(model.saveDocument(documentDirectory.filePath("Cleanup")));
+    QVERIFY(!QFile::exists(cached));
+
+    // A referenced attachment must survive the same sweep.
+    const QString keptUrl = model.importAttachment(QUrl::fromLocalFile(source));
+    const QString kept = QUrl(keptUrl).toLocalFile();
+    QVERIFY(QFile::exists(kept));
+
+    const QString blockId =
+        model.appendBlock(static_cast<int>(BlockType::Image));
+    QVERIFY(model.setBlockImageSource(blockId, keptUrl));
+    QVERIFY(model.saveDocument(documentDirectory.filePath("Keep")));
+    QVERIFY(QFile::exists(kept));
+
+    QFile::remove(kept);
+  }
+
+  void appendToEmptyDocumentCreatesFirstBlock() {
+    BlockModel model;
+    QVERIFY(model.closeDocument());
+    QCOMPARE(model.count(), 0);
+
+    const QString id = model.appendBlock(0, "");
+    QVERIFY(!id.isEmpty());
+    QCOMPARE(model.count(), 1);
+    QCOMPARE(model.blockIdAt(0), id);
+  }
+
+  void createColumnsLayout() {
+    BlockModel model;
+    const QString originalId = model.blockIdAt(0);
+    const int originalCount = model.count();
+
+    const QString focusId = model.createColumnsLayout(0, 3);
+
+    QVERIFY(!focusId.isEmpty());
+    QCOMPARE(model.count(), originalCount + 6);
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Columns);
+    QCOMPARE(model.document().blockAt(0)->id, originalId);
+
+    const QStringList columns = model.columnIdsOf(originalId);
+    QCOMPARE(columns.size(), 3);
+
+    double total = 0.0;
+    for (const QString &id : columns) {
+      const Block *column = model.document().findBlock(id);
+      QVERIFY(column);
+      QCOMPARE(column->type, BlockType::Column);
+      QCOMPARE(column->parentId, originalId);
+      total += model.columnWidth(id);
+      QCOMPARE(model.blocksOfColumn(id).size(), 1);
+    }
+    QVERIFY(qAbs(total - 800.0) < 0.0001);
+
+    const Block *child = model.document().findBlock(focusId);
+    QVERIFY(child);
+    QCOMPARE(child->parentId, columns.first());
+    QCOMPARE(model.columnIdOfBlock(focusId), columns.first());
+  }
+
+  void createColumnsLayoutFitsAvailableWidth() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    const QString focusId = model.createColumnsLayout(0, 3, 900.0);
+    QVERIFY(!focusId.isEmpty());
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    QCOMPARE(columns.size(), 3);
+
+    // The editor's available width is split evenly on creation.
+    for (const QString &id : columns)
+      QVERIFY(qFuzzyCompare(model.columnWidth(id), 300.0));
+
+    // A single pane can still be resized afterwards without touching others.
+    const double other = model.columnWidth(columns[2]);
+    QVERIFY(model.setColumnWidth(columns.first(), 460.0));
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns.first()), 460.0));
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns[2]), other));
+  }
+
+  void createColumnsLayoutClampsNarrowWidth() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    QVERIFY(!model.createColumnsLayout(0, 3, 150.0).isEmpty());
+
+    for (const QString &id : model.columnIdsOf(layoutId))
+      QVERIFY(model.columnWidth(id) >= 80.0);
+  }
+
+  void createColumnsLayoutRejectsBadInput() {
+    BlockModel model;
+    const int originalCount = model.count();
+
+    QVERIFY(model.createColumnsLayout(0, 1).isEmpty());
+    QVERIFY(model.createColumnsLayout(0, 6).isEmpty());
+    QVERIFY(model.createColumnsLayout(-1, 2).isEmpty());
+    QCOMPARE(model.count(), originalCount);
+
+    const QString focusId = model.createColumnsLayout(0, 2);
+    QVERIFY(!focusId.isEmpty());
+    QVERIFY(model.createColumnsLayout(0, 2).isEmpty());
+  }
+
+  void columnsVisibleModelAndMapping() {
+    BlockModel model;
+    model.createColumnsLayout(0, 2);
+
+    const QString layoutId = model.blockIdAt(0);
+    const QString childId = model.blocksOfColumn(model.columnIdsOf(layoutId)[1])[0];
+
+    QCOMPARE(model.visibleCount(), 2);
+    QCOMPARE(model.blockIdAtVisibleRow(0), layoutId);
+    QCOMPARE(model.visibleRowOf(layoutId), 0);
+    // A nested child maps to the visible row of its layout.
+    QCOMPARE(model.visibleRowOf(childId), 0);
+    QVERIFY(model.topLevelAncestorId(childId) == layoutId);
+  }
+
+  void columnsUndoRedo() {
+    BlockModel model;
+    const QString originalId = model.blockIdAt(0);
+    const QString originalText = model.document().blockAt(0)->text;
+    const int originalCount = model.count();
+
+    model.createColumnsLayout(0, 2);
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Columns);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.count(), originalCount);
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Heading);
+    QCOMPARE(model.document().blockAt(0)->text, originalText);
+    QCOMPARE(model.document().blockAt(0)->id, originalId);
+
+    QVERIFY(model.redo());
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Columns);
+    QCOMPARE(model.columnIdsOf(originalId).size(), 2);
+  }
+
+  void insertColumnKeepsExistingWidths() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList before = model.columnIdsOf(layoutId);
+    const double widthBefore = model.columnWidth(before.first());
+    QVERIFY(model.insertColumn(layoutId, before.first()));
+
+    const QStringList after = model.columnIdsOf(layoutId);
+    QCOMPARE(after.size(), 3);
+    QCOMPARE(after[0], before[0]);
+    QCOMPARE(after[2], before[1]);
+    QVERIFY(qFuzzyCompare(model.columnWidth(after[0]), widthBefore));
+    QVERIFY(qFuzzyCompare(model.columnWidth(after[1]), widthBefore));
+    QCOMPARE(model.blocksOfColumn(after[1]).size(), 1);
+  }
+
+  void removeColumnMergesIntoNeighbor() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 3);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString firstChild = model.blocksOfColumn(columns[0])[0];
+    model.updateBlockText(firstChild, QStringLiteral("moved text"));
+
+    QVERIFY(model.removeColumn(columns[0]));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+    QVERIFY(!model.document().findBlock(columns[0]));
+    QCOMPARE(model.columnIdOfBlock(firstChild), columns[1]);
+    QCOMPARE(model.document().findBlock(firstChild)->text,
+             QStringLiteral("moved text"));
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 3);
+    QCOMPARE(model.columnIdOfBlock(firstChild), columns[0]);
+  }
+
+  void removeLastColumnCollapsesToParagraph() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    const int countBefore = model.count();
+    const QString focusId = model.createColumnsLayout(0, 2);
+    Q_UNUSED(focusId)
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString child = model.blocksOfColumn(columns.last())[0];
+    model.updateBlockText(child, QStringLiteral("kept text"));
+
+    QVERIFY(model.removeColumn(columns.first()));
+
+    const Block *collapsed = model.document().blockAt(0);
+    QCOMPARE(collapsed->type, BlockType::Paragraph);
+    QCOMPARE(collapsed->id, layoutId);
+    QVERIFY(collapsed->parentId.isEmpty());
+    QVERIFY(model.columnIdsOf(layoutId).isEmpty());
+    QCOMPARE(model.count(), countBefore + 2);
+
+    QCOMPARE(model.columnIdOfBlock(child), QString());
+    QCOMPARE(model.document().findBlock(child)->text,
+             QStringLiteral("kept text"));
+    // The merged child from the removed column precedes the surviving one.
+    QCOMPARE(model.visibleRowOf(child), 2);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Columns);
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+    QCOMPARE(model.columnIdOfBlock(child), columns.last());
+  }
+
+  void setColumnWidthOnlyChangesOneColumn() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 3);
+    const QStringList columns = model.columnIdsOf(layoutId);
+
+    const double otherWidth = model.columnWidth(columns[1]);
+
+    QVERIFY(model.setColumnWidth(columns.first(), 460));
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns.first()), 460.0));
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns[1]), otherWidth));
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns[2]), otherWidth));
+
+    QVERIFY(model.setColumnWidth(columns.first(), 10));
+    QVERIFY(model.columnWidth(columns.first()) >= 80.0);
+
+  }
+
+  void moveBlockBetweenColumns() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString child = model.blocksOfColumn(columns.first())[0];
+
+    QVERIFY(model.moveBlockToColumn(child, columns.last(), 0));
+    QCOMPARE(model.columnIdOfBlock(child), columns.last());
+    QVERIFY(model.blocksOfColumn(columns.first()).isEmpty());
+    QCOMPARE(model.blocksOfColumn(columns.last()).size(), 2);
+    QCOMPARE(model.blocksOfColumn(columns.last()).first(), child);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdOfBlock(child), columns.first());
+  }
+
+  void columnActions() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 3);
+    const QStringList original = model.columnIdsOf(layoutId);
+
+    QVERIFY(model.moveColumn(original[0], 1));
+    QCOMPARE(model.columnIdsOf(layoutId)[0], original[1]);
+    QCOMPARE(model.columnIdsOf(layoutId)[1], original[0]);
+
+    QVERIFY(model.equalizeColumns(layoutId));
+    for (const QString &id : model.columnIdsOf(layoutId))
+      QVERIFY(qFuzzyCompare(model.columnWidth(id), 800.0 / 3));
+
+    const QString child = model.blocksOfColumn(original[0])[0];
+    QVERIFY(!model.appendBlockToColumn(original[0]).isEmpty());
+    QCOMPARE(model.blocksOfColumn(original[0]).size(), 2);
+
+    const QString copyId = model.duplicateBlock(child);
+    QVERIFY(!copyId.isEmpty());
+    QCOMPARE(model.document().findBlock(copyId)->text,
+             model.document().findBlock(child)->text);
+    QVERIFY(copyId != child);
+
+    const QString firstBefore = model.columnIdsOf(layoutId).first();
+    QVERIFY(model.insertColumn(layoutId, QString()));
+    QVERIFY(model.columnIdsOf(layoutId).first() != firstBefore);
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 4);
+  }
+
+  void resizeGestureIsSingleUndoStep() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const double before = model.columnWidth(columns.first());
+
+    QVERIFY(model.beginColumnResize(layoutId));
+    QVERIFY(model.setColumnWidth(columns.first(), 500));
+    QVERIFY(model.setColumnWidth(columns.first(), 600));
+    QVERIFY(model.setColumnWidth(columns.first(), 700));
+    QVERIFY(model.endColumnResize());
+
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns.first()), 700.0));
+
+    QVERIFY(model.undo());
+    QVERIFY(qFuzzyCompare(model.columnWidth(columns.first()), before));
+  }
+
+  void moveColumnToIndexReorders() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 3);
+    const QStringList original = model.columnIdsOf(layoutId);
+
+    QVERIFY(model.moveColumnToIndex(original.first(), 2));
+    QCOMPARE(model.columnIdsOf(layoutId)[2], original.first());
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdsOf(layoutId)[0], original.first());
+  }
+
+  void structuralEditDoesNotReindexUnrelatedNumberedRuns() {
+    BlockModel model;
+
+    for (int i = 0; i < 10; ++i)
+      model.appendBlock(static_cast<int>(BlockType::NumberedList),
+                        QStringLiteral("Item %1").arg(i));
+
+    // Duplicating a block at the end uses applyPatch(). The numbered run above
+    // is separated from the edit, so no NumberIndexRole update is needed.
+    const QString endId = model.appendBlock(0, QStringLiteral("end"));
+    QSignalSpy spy(&model, &QAbstractItemModel::dataChanged);
+
+    QVERIFY(!model.duplicateBlock(endId).isEmpty());
+
+    int numberedUpdates = 0;
+
+    for (const QList<QVariant> &args : std::as_const(spy)) {
+      const QList<int> roles = args.value(2).value<QList<int>>();
+
+      if (roles.contains(BlockModel::NumberIndexRole))
+        ++numberedUpdates;
+    }
+
+    // The old implementation rescanned from row 0 and emitted one signal per
+    // numbered block in the document.
+    QCOMPARE(numberedUpdates, 0);
+  }
+
+  void undoRedoBumpContentRevision() {
+    BlockModel model;
+    const QString id = model.blockIdAt(0);
+    QSignalSpy spy(&model, &BlockModel::contentRevisionChanged);
+
+    const int beforeEdit = model.contentRevision();
+    QVERIFY(model.updateBlockText(id, QStringLiteral("changed")));
+    const int afterEdit = model.contentRevision();
+    QVERIFY(afterEdit > beforeEdit);
+
+    QVERIFY(model.undo());
+    const int afterUndo = model.contentRevision();
+    QVERIFY(afterUndo > afterEdit);
+
+    QVERIFY(model.redo());
+    QVERIFY(model.contentRevision() > afterUndo);
+
+    QVERIFY(spy.count() >= 3);
+  }
+
+  void movingBlockAboveLayoutKeepsColumns() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(1);
+    model.createColumnsLayout(1, 2);
+    const QString above = model.blockIdAt(0);
+
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+
+    // Moving the block above the layout used to break the row-contiguity
+    // assumption and make the layout appear empty.
+    QVERIFY(model.moveBlock(above, 1));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+
+    for (const QString &columnId : model.columnIdsOf(layoutId))
+      QCOMPARE(model.blocksOfColumn(columnId).size(), 1);
+  }
+
+  void movingLayoutKeepsItsColumns() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+
+    // Alt+Down moves only the layout row; the column wrappers used to be left
+    // behind and the layout rendered empty.
+    const int belowRow = model.sourceRowOfVisibleRow(1);
+    QVERIFY(belowRow > 0);
+    QVERIFY(model.moveBlock(layoutId, belowRow));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+
+    for (const QString &columnId : model.columnIdsOf(layoutId))
+      QCOMPARE(model.blocksOfColumn(columnId).size(), 1);
+
+    // ...and moving it back up keeps working too.
+    QVERIFY(model.moveBlock(layoutId, 0));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+  }
+
+  void duplicateLayoutCopiesSubtree() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString child = model.blocksOfColumn(columns.first()).first();
+    QVERIFY(model.updateBlockText(child, QStringLiteral("kept")));
+
+    const int countBefore = model.count();
+    const QString copyId = model.duplicateBlock(layoutId);
+
+    QVERIFY(!copyId.isEmpty());
+    QVERIFY(copyId != layoutId);
+    QCOMPARE(model.count(), countBefore + 5); // layout + 2 columns + 2 children
+
+    const QStringList copiedColumns = model.columnIdsOf(copyId);
+    QCOMPARE(copiedColumns.size(), 2);
+    QVERIFY(copiedColumns.first() != columns.first());
+    QVERIFY(copiedColumns.last() != columns.last());
+
+    const QString copiedChild =
+        model.blocksOfColumn(copiedColumns.first()).first();
+    QVERIFY(!copiedChild.isEmpty());
+    QVERIFY(copiedChild != child);
+    QCOMPARE(model.document().findBlock(copiedChild)->text,
+             QStringLiteral("kept"));
+
+    // The whole duplicate is one undo step.
+    QVERIFY(model.undo());
+    QCOMPARE(model.count(), countBefore);
+    QVERIFY(!model.document().findBlock(copyId));
+  }
+
+  void removeLayoutRemovesWholeSubtree() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString child = model.blocksOfColumn(columns.first()).first();
+    const int layoutCount = model.count();
+
+    QVERIFY(model.removeBlock(layoutId));
+    QCOMPARE(model.count(), layoutCount - 5);
+    QVERIFY(!model.document().findBlock(layoutId));
+    QVERIFY(!model.document().findBlock(columns.first()));
+    QVERIFY(!model.document().findBlock(child));
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.count(), layoutCount);
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 1);
+  }
+
+  void mergeAtStartOfColumnDoesNotMergeIntoWrapper() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString child = model.blocksOfColumn(columns.first()).first();
+    QVERIFY(model.updateBlockText(child, QStringLiteral("Hello")));
+
+    // Backspace at the start of the first paragraph used to move the text onto
+    // the Column wrapper and delete the paragraph.
+    QVERIFY(!model.mergeWithPrevious(child));
+
+    const Block *childBlock = model.document().findBlock(child);
+    QVERIFY(childBlock);
+    QCOMPARE(childBlock->text, QStringLiteral("Hello"));
+    QCOMPARE(model.document().findBlock(columns.first())->text, QString());
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 1);
+  }
+
+  void insertColumnRepairsEmptyLayout() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+
+    // Simulate a document saved by the old duplication bug: a Columns block
+    // with no Column children.
+    QVERIFY(model.changeBlockType(layoutId, static_cast<int>(BlockType::Columns)));
+    QVERIFY(model.columnIdsOf(layoutId).isEmpty());
+
+    QVERIFY(model.insertColumn(layoutId, QString()));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 1);
+    QCOMPARE(model.blocksOfColumn(model.columnIdsOf(layoutId).first()).size(), 1);
+  }
+
+  void insertBlockAfterColumnChildStaysInColumn() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString child = model.blocksOfColumn(columns.first()).first();
+
+    const QString newId = model.insertBlockAfter(child, 0, QString());
+
+    QVERIFY(!newId.isEmpty());
+    QCOMPARE(model.parentBlockId(newId), columns.first());
+    QCOMPARE(model.blocksOfColumn(columns.first()).size(), 2);
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+    QCOMPARE(model.visibleCount(), 2);
+  }
+
+  void columnsSurviveSaveLoad() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    const QString path = directory.filePath(QStringLiteral("columns"));
+    model.createColumnsLayout(0, 3);
+    QVERIFY(model.saveDocument(path));
+
+    BlockModel loaded;
+    QVERIFY(loaded.loadDocument(path + QStringLiteral(".templnote")));
+
+    const QString layoutId = loaded.blockIdAt(0);
+    QCOMPARE(loaded.document().blockAt(0)->type, BlockType::Columns);
+    QCOMPARE(loaded.columnIdsOf(layoutId).size(), 3);
+    for (const QString &id : loaded.columnIdsOf(layoutId))
+      QCOMPARE(loaded.blocksOfColumn(id).size(), 1);
+    QCOMPARE(loaded.visibleCount(), 2);
   }
 };
 

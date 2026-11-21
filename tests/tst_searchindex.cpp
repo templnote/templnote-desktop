@@ -351,6 +351,62 @@ private slots:
     QVERIFY(truncated);
   }
 
+  void unicodeCaseFoldingKeepsHighlightOffsets() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    const QString path = writeDocument(
+        root, QStringLiteral("Unicode.templnote"), QStringLiteral("Unicode"),
+        // Lowercasing "İ" produces two code units, which used to shift every
+        // highlight offset after it by one.
+        {QString::fromUtf8("İ alpha")});
+    QVERIFY(!path.isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+
+    const auto results = index.search(QStringLiteral("alpha"));
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.first().ranges.size(), 1);
+    QCOMPARE(results.first().ranges.first().start, 2);
+    QCOMPARE(results.first().ranges.first().length, 5);
+    QCOMPARE(results.first().snippetRanges.first().start, 2);
+  }
+
+  void prefixCacheKeepsMatchesCutFromLargerQuery() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    QVector<QString> texts;
+
+    for (int i = 0; i < 300; ++i)
+      texts.append(QStringLiteral("alpha beta"));
+
+    for (int i = 0; i < 5; ++i)
+      texts.append(QStringLiteral("alpha gamma"));
+
+    QVERIFY(!writeDocument(root, QStringLiteral("Prefix.templnote"),
+                           QStringLiteral("Prefix"), texts).isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+
+    // The short query fills the cache with a truncated top-200 result set.
+    bool truncated = false;
+    QCOMPARE(index.search(QStringLiteral("alpha"), &truncated).size(), 200);
+    QVERIFY(truncated);
+
+    // The longer query must not be filtered from that truncated set, or the
+    // five "alpha gamma" blocks would disappear.
+    const auto gammaResults = index.search(QStringLiteral("alpha gamma"));
+    QCOMPARE(gammaResults.size(), 5);
+
+    for (const auto &result : gammaResults)
+      QCOMPARE(result.blockText, QStringLiteral("alpha gamma"));
+  }
+
   void renamesAndDeletesUpdateIndex() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());

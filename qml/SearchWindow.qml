@@ -183,10 +183,22 @@ Item {
 
     const switching = root.blockModel.currentFilePath !== path
 
-    // Keep unsaved edits when jumping to another document from search.
-    if (switching && root.blockModel.isModified &&
-        !root.blockModel.saveCurrentDocument())
-      return
+    // Keep unsaved edits when jumping to another document from search. An
+    // untitled document has no file of its own, so save it under a new
+    // Untitled name instead of refusing the navigation.
+    if (switching && root.blockModel.isModified) {
+      let saved = false
+
+      if (root.blockModel.currentFilePath.length > 0)
+        saved = root.blockModel.saveCurrentDocument()
+      else if (root.documentList) {
+        const path = root.documentList.createUntitledPath()
+        saved = path.length > 0 && root.blockModel.saveDocument(path)
+      }
+
+      if (!saved)
+        return
+    }
 
     root.close(false)
 

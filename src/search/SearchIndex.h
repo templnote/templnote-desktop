@@ -99,11 +99,6 @@ signals:
   void searchFinished(quint64 token, const SearchOutcome &outcome);
 
 private:
-  struct BlockRecord {
-    QString blockId;
-    QString text;
-  };
-
   struct CachedSearch {
     QVector<Result> results;
     bool truncated = false;
@@ -146,21 +141,8 @@ private:
   void scheduleFlush();
   void watchWriteFuture(QFuture<void> future);
   void flushPending();
+  void requeuePending(const QVector<PendingOp> &ops);
   void discardPending(const QString &pathPrefix);
-
-  bool replaceDocument(const QString &path, const QString &title,
-                       const QVector<BlockRecord> &blocks, bool updateMeta);
-  bool reindexDocumentFromFile(const QString &path);
-  bool reindexCurrentDocument();
-  bool upsertBlock(const QString &path, const QString &title,
-                   const QString &blockId, const QString &text);
-  bool removeBlock(const QString &path, const QString &blockId);
-  bool removeDocument(const QString &path);
-  bool removePathPrefix(const QString &path);
-  bool renamePath(const QString &oldPath, const QString &newPath);
-  bool invalidateMeta(const QString &path);
-  bool updateMeta(const QString &path, const QString &title);
-  bool readMeta(const QString &path, qint64 *modifiedMs, qint64 *size) const;
 
   static QString connectionNameFor(const SearchIndex *index);
   static QString normalizedPath(const QString &path);
@@ -183,6 +165,9 @@ private:
   QString m_databasePath;
   QTimer m_flushTimer;
   QVector<PendingOp> m_pending;
+  // Failed write batches are retried with exponential backoff instead of being
+  // silently dropped.
+  int m_flushRetryCount = 0;
 
   // Small LRU of recent queries. A longer query that starts with a cached
   // query can be answered by filtering the cached results instead of hitting

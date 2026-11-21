@@ -526,11 +526,13 @@ Item {
 
     const row = root.model.indexOfBlock(root.blockId)
     if (row >= 0) {
-      const nextRow = row + 1
-      root.model.insertBlock(nextRow, 0, "")
-      Qt.callLater(function() {
-        root.focusDelegateRequested(nextRow, 0)
-      })
+      const newId = root.model.insertBlockAfter(root.blockId, 0, "")
+      if (newId.length > 0) {
+        const nextRow = row + 1
+        Qt.callLater(function() {
+          root.focusDelegateRequested(nextRow, 0)
+        })
+      }
     }
   }
 }

@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QSortFilterProxyModel>
 #include <QByteArray>
 #include <QDateTime>
+#include <QStringList>
 #include <deque>
 #include <QElapsedTimer>
 #include <QTimer>
@@ -14,6 +16,8 @@
 #include "../core/Document.h"
 
 namespace Templnote {
+class VisibleBlocksProxy;
+
 class BlockModel : public QAbstractListModel {
   Q_OBJECT
   Q_PROPERTY(int count READ count NOTIFY countChanged)
@@ -35,6 +39,10 @@ class BlockModel : public QAbstractListModel {
   // Increments on every content change; lets the QML find service reuse its
   // lowercased text cache until the document actually changes.
   Q_PROPERTY(int contentRevision READ contentRevision NOTIFY contentRevisionChanged)
+  // A view of the document with nested column children filtered out. The
+  // editor's ListView uses this so each layout occupies a single visible row;
+  // columns render their own children via blocksOfColumn().
+  Q_PROPERTY(QAbstractItemModel *visibleModel READ visibleModel CONSTANT)
 public:
   enum Roles {
     BlockIdRole = Qt::UserRole + 1,
@@ -77,7 +85,14 @@ public:
 
   Q_INVOKABLE bool insertBlock(int row, int type, const QString &text = {});
 
+  // Inserts a block directly after `afterId` and inherits its parentId. This is
+  // what keeps a paragraph inserted inside a column inside that column instead
+  // of silently promoting it to the top level.
+  Q_INVOKABLE QString insertBlockAfter(const QString &afterId, int type,
+                                       const QString &text);
+
   Q_INVOKABLE bool removeBlock(const QString &id);
+  Q_INVOKABLE QString duplicateBlock(const QString &id);
 
   Q_INVOKABLE bool updateBlockText(const QString &id, const QString &text);
 
@@ -98,6 +113,45 @@ public:
 
   Q_INVOKABLE bool setBlockMetadata(const QString &id, const QVariantMap &metadata);
 
+  // Column layouts. Every operation below is one atomic undo step.
+  // Returns the id of the first content block, which should receive focus.
+  // availableWidth is the total width the new columns should share (already
+  // net of spacing); 0 keeps the legacy fixed reference-sheet width.
+  Q_INVOKABLE QString createColumnsLayout(int row, int count,
+                                          double availableWidth = 0.0);
+  Q_INVOKABLE bool insertColumn(const QString &containerId,
+                                const QString &afterColumnId);
+  Q_INVOKABLE bool removeColumn(const QString &columnId);
+  Q_INVOKABLE bool moveBlockToColumn(const QString &blockId,
+                                     const QString &targetColumnId, int row);
+  Q_INVOKABLE bool setColumnWidth(const QString &columnId, double width);
+  // Resize gestures call begin/end around a series of setColumnWidth() calls so
+  // the whole drag becomes one undo step instead of one step per mouse move.
+  Q_INVOKABLE bool beginColumnResize(const QString &containerId);
+  Q_INVOKABLE bool endColumnResize();
+  Q_INVOKABLE double columnWidth(const QString &columnId) const;
+  Q_INVOKABLE QString appendBlockToColumn(const QString &columnId, int type = 0,
+                                          const QString &text = {});
+  Q_INVOKABLE bool moveColumn(const QString &columnId, int direction);
+  Q_INVOKABLE bool moveColumnToIndex(const QString &columnId, int targetIndex);
+  Q_INVOKABLE bool equalizeColumns(const QString &containerId);
+
+  Q_INVOKABLE QStringList columnIdsOf(const QString &containerId) const;
+  Q_INVOKABLE QStringList blocksOfColumn(const QString &columnId) const;
+  Q_INVOKABLE QString columnIdOfBlock(const QString &blockId) const;
+  Q_INVOKABLE QString parentBlockId(const QString &blockId) const;
+  Q_INVOKABLE QString topLevelAncestorId(const QString &blockId) const;
+
+  QAbstractItemModel *visibleModel() const;
+  Q_INVOKABLE int visibleCount() const;
+  Q_INVOKABLE int visibleRowOf(const QString &blockId) const;
+  Q_INVOKABLE QString blockIdAtVisibleRow(int row) const;
+  Q_INVOKABLE int sourceRowOfVisibleRow(int row) const;
+  Q_INVOKABLE int sourceRowOfBlock(const QString &blockId) const;
+  // Stable proxy exposing the blocks inside a single column, with the same
+  // roles as the main model so the shared QML delegate can be reused.
+  Q_INVOKABLE QAbstractItemModel *blocksModelForColumn(const QString &columnId);
+
   Q_INVOKABLE QString importAttachment(const QUrl &fileUrl);
 
   Q_INVOKABLE bool moveBlock(const QString &id, int destination);
@@ -115,6 +169,7 @@ public:
 
   // Id of the block at `row`, or an empty string when out of range.
   Q_INVOKABLE QString blockIdAt(int row) const;
+  Q_INVOKABLE int blockTypeAtRow(int row) const;
 
   // Writes the document to disk shortly after the last edit. Disabled by
   // default; the application enables it in Main.qml.
@@ -235,6 +290,18 @@ private:
     QVector<PatchOp> patch;
   };
 
+  // Column helpers. A layout is a Columns block whose direct children are
+  // Column blocks; the blocks inside those columns carry the column id in
+  // their parentId. Column blocks themselves are never nested.
+  QString insertBlockInternal(int row, int type, const QString &text,
+                              const QString &parentId);
+  int layoutRowOf(const QString &blockId) const;
+  bool reparentChildren(const QString &fromColumnId,
+                        const QString &toColumnId,
+                        QVector<PatchOp> &patch) const;
+  QVector<PatchOp> widthPatch(const QVector<QString> &columnIds,
+                              const QVector<double> &widths) const;
+
   void saveHistory(const QVector<PatchOp> &patch,
                    const QString &focusBeforeId = {},
                    const QString &focusAfterId = {});
@@ -247,10 +314,15 @@ private:
   void applyPatch(const QVector<PatchOp> &patch, bool undo);
   bool applyPatchOp(const PatchOp &op, bool inverse);
 
-  void invalidateNumberIndices();
+  void invalidateStructureCaches();
+  void cleanupOrphanedAttachments();
   void rebuildNumberIndices() const;
 
   Document m_document;
+  VisibleBlocksProxy *m_visibleModel = nullptr;
+  QHash<QString, VisibleBlocksProxy *> m_columnModels;
+  bool m_columnResizeActive = false;
+  QHash<QString, Block> m_columnResizeBefore;
   // A deque keeps history trimming O(1) after kMaxHistoryEntries is reached.
   std::deque<HistoryEntry> m_undoStack;
   std::deque<HistoryEntry> m_redoStack;
@@ -282,6 +354,11 @@ private:
   // or block-type change instead of being recomputed on every role lookup.
   mutable QVector<int> m_numberIndices;
   mutable bool m_numberIndicesDirty = true;
+
+  // blocksOfColumn() is called from QML on every dataChanged/rowsMoved while a
+  // column is hovered or resized. Keep the child id lists cached and invalidate
+  // them together with the rest of the structural caches.
+  mutable QHash<QString, QStringList> m_columnChildren;
 
   // Consecutive single-character edits in the same block are merged into one
   // history entry until a word boundary or a short pause is reached.

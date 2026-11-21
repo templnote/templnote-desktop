@@ -361,49 +361,63 @@ bool row_removeBlock(QSqlDatabase &db, const QString &path,
   return invalidate.exec();
 }
 
-bool replaceFromFile(QSqlDatabase &db, const QString &path) {
-  const QString normalized = normalizePath(path);
+bool parseDocumentFile(const QString &normalized, QString *title,
+                       QVector<WriteBlock> *blocks) {
   QFile file(normalized);
 
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    row_removeDocument(db, normalized);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     return false;
-  }
-
-  if (row_indexIsCurrent(db, normalized)) {
-    file.close();
-    return true;
-  }
 
   QJsonParseError parseError{};
   const QJsonDocument parsed =
       QJsonDocument::fromJson(file.readAll(), &parseError);
   file.close();
 
-  if (parseError.error != QJsonParseError::NoError || !parsed.isObject()) {
-    row_removeDocument(db, normalized);
+  if (parseError.error != QJsonParseError::NoError || !parsed.isObject())
     return false;
-  }
 
   Document document;
   QString documentError;
 
-  if (!document.fromJson(parsed.object(), &documentError)) {
+  if (!document.fromJson(parsed.object(), &documentError))
+    return false;
+
+  QString parsedTitle =
+      parsed.object().value(QStringLiteral("title")).toString().trimmed();
+
+  if (parsedTitle.isEmpty())
+    parsedTitle = QFileInfo(normalized).completeBaseName();
+
+  blocks->clear();
+  blocks->reserve(document.blocks().size());
+
+  for (const Block &block : document.blocks())
+    blocks->append({block.id, block.text});
+
+  if (title)
+    *title = parsedTitle;
+
+  return true;
+}
+
+bool replaceFromFile(QSqlDatabase &db, const QString &path) {
+  const QString normalized = normalizePath(path);
+
+  if (!QFileInfo::exists(normalized)) {
     row_removeDocument(db, normalized);
     return false;
   }
 
-  QString title =
-      parsed.object().value(QStringLiteral("title")).toString().trimmed();
+  if (row_indexIsCurrent(db, normalized))
+    return true;
 
-  if (title.isEmpty())
-    title = QFileInfo(normalized).completeBaseName();
-
+  QString title;
   QVector<WriteBlock> blocks;
-  blocks.reserve(document.blocks().size());
 
-  for (const Block &block : document.blocks())
-    blocks.append({block.id, block.text});
+  if (!parseDocumentFile(normalized, &title, &blocks)) {
+    row_removeDocument(db, normalized);
+    return false;
+  }
 
   return row_replaceDocument(db, normalized, title, blocks, true);
 }
@@ -415,11 +429,12 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
   if (!db.isOpen() || root.isEmpty())
     return;
 
-  if (!db.transaction())
-    return;
-
-  bool ok = true;
-  QSet<QString> found;
+  struct Update {
+    QString path;
+    QString title;
+    QVector<WriteBlock> blocks;
+    bool updateMeta = true;
+  };
 
   // Read all metadata in one query instead of issuing one SELECT per file.
   // The scan below only needs the previously recorded timestamp/size.
@@ -439,10 +454,17 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
     }
   }
 
+  // Parse every changed file before opening a transaction. File IO and JSON
+  // parsing used to happen inside one scan-wide transaction, which held the
+  // SQLite write lock for the whole tree.
+  QVector<Update> updates;
+  QSet<QString> removals;
+  QSet<QString> found;
+
   QDirIterator it(root, QDir::Files | QDir::Readable,
                   QDirIterator::Subdirectories);
 
-  while (ok && it.hasNext()) {
+  while (it.hasNext()) {
     const QFileInfo info(it.next());
 
     if (info.suffix().compare(QStringLiteral("templnote"),
@@ -454,25 +476,31 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
     found.insert(path);
 
     if (!currentDocumentPath.isEmpty() && path == currentDocumentPath) {
-      ok = row_replaceDocument(db, path, currentDocumentTitle, currentBlocks,
-                               false);
+      updates.append(
+          {path, currentDocumentTitle, currentBlocks, false});
       continue;
     }
 
     const auto meta = metadata.constFind(path);
-    const qint64 currentModified = info.lastModified().toMSecsSinceEpoch();
-    const qint64 currentSize = info.size();
 
-    if (meta == metadata.constEnd() || meta->first != currentModified ||
-        meta->second != currentSize) {
-      ok = replaceFromFile(db, path);
+    if (meta != metadata.constEnd() &&
+        meta->first == info.lastModified().toMSecsSinceEpoch() &&
+        meta->second == info.size()) {
+      continue;
     }
+
+    Update update;
+    update.path = path;
+
+    if (parseDocumentFile(path, &update.title, &update.blocks))
+      updates.append(std::move(update));
+    else
+      removals.insert(path);
   }
 
   // Remove index entries and metadata for files that disappeared.
   QSet<QString> knownPaths;
-
-  if (ok) {
+  {
     QSqlQuery query(db);
 
     if (query.exec(QStringLiteral("SELECT document_path FROM search_meta"))) {
@@ -489,20 +517,76 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
 
   for (const QString &path : std::as_const(knownPaths)) {
     if (!found.contains(path))
-      ok = row_removeDocument(db, path) && ok;
+      removals.insert(path);
   }
 
-  if (!ok)
-    db.rollback();
-  else if (!db.commit())
-    db.rollback();
+  // Commit one document at a time. A single unreadable or malformed file can
+  // no longer roll back an otherwise good scan, and live writes only ever wait
+  // for a short transaction instead of the whole tree.
+  for (const Update &update : std::as_const(updates)) {
+    if (!db.transaction()) {
+      qWarning() << "SearchIndex: sync transaction failed:"
+                 << db.lastError().text();
+      continue;
+    }
+
+    const bool ok = row_replaceDocument(db, update.path, update.title,
+                                        update.blocks, update.updateMeta);
+
+    if (!ok || !db.commit()) {
+      db.rollback();
+      qWarning() << "SearchIndex: sync update failed for" << update.path;
+    }
+  }
+
+  for (const QString &path : std::as_const(removals)) {
+    if (!db.transaction()) {
+      qWarning() << "SearchIndex: sync transaction failed:"
+                 << db.lastError().text();
+      continue;
+    }
+
+    const bool ok = row_removeDocument(db, path);
+
+    if (!ok || !db.commit()) {
+      db.rollback();
+      qWarning() << "SearchIndex: sync removal failed for" << path;
+    }
+  }
+}
+
+void executeClearIndex(const QString &databasePath) {
+  static std::atomic<quint64> clearCounter{0};
+
+  const QString connectionName =
+      QStringLiteral("templnote_search_clear_%1")
+          .arg(clearCounter.fetch_add(1));
+
+  {
+    QSqlDatabase db =
+        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
+    db.setDatabaseName(databasePath);
+
+    if (db.open()) {
+      QSqlQuery pragma(db);
+      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
+
+      QSqlQuery query(db);
+      query.exec(QStringLiteral("DELETE FROM search_index"));
+      query.exec(QStringLiteral("DELETE FROM search_rows"));
+      query.exec(QStringLiteral("DELETE FROM search_meta"));
+    }
+
+    db.close();
+  }
+
+  QSqlDatabase::removeDatabase(connectionName);
 }
 
 void executeIncrementalSync(const QString &databasePath, const QString &root,
                             const QString &currentDocumentPath,
                             const QString &currentDocumentTitle,
-                            const QVector<WriteBlock> &currentBlocks) {
-  static std::atomic<quint64> syncCounter{0};
+                            const QVector<WriteBlock> &currentBlocks) {  static std::atomic<quint64> syncCounter{0};
 
   const QString connectionName =
       QStringLiteral("templnote_search_sync_%1")
@@ -526,7 +610,7 @@ void executeIncrementalSync(const QString &databasePath, const QString &root,
   QSqlDatabase::removeDatabase(connectionName);
 }
 
-void executeWriteBatch(const QString &databasePath, const QVector<WriteOp> &ops) {
+bool executeWriteBatch(const QString &databasePath, const QVector<WriteOp> &ops) {
   static std::atomic<quint64> connectionCounter{0};
 
   const QString connectionName =
@@ -592,6 +676,8 @@ void executeWriteBatch(const QString &databasePath, const QVector<WriteOp> &ops)
 
   if (!ok)
     qWarning() << "SearchIndex: background write batch failed";
+
+  return ok;
 }
 } // namespace
 
@@ -1201,10 +1287,61 @@ void SearchIndex::flushPending() {
 
   const QString databasePath = m_databasePath;
 
-  watchWriteFuture(QtConcurrent::run(
+  // Keep the original pending ops so a failed transaction can be retried
+  // instead of silently dropping index updates.
+  auto *watcher = new QFutureWatcher<bool>(this);
+
+  connect(watcher, &QFutureWatcherBase::finished, this,
+          [this, watcher, pending]() {
+            const bool ok = watcher->result();
+            watcher->deleteLater();
+
+            if (ok) {
+              m_flushRetryCount = 0;
+            } else {
+              requeuePending(pending);
+              ++m_flushRetryCount;
+
+              const int shift = qMin(m_flushRetryCount, 6);
+              m_flushTimer.start(
+                  qMin(30000, kFlushDelayMs * (1 << shift)));
+            }
+
+            invalidateSearchCache();
+            emit indexUpdated();
+          });
+
+  watcher->setFuture(QtConcurrent::run(
       &m_writePool, [databasePath, ops = std::move(ops)]() {
-        executeWriteBatch(databasePath, ops);
+        return executeWriteBatch(databasePath, ops);
       }));
+}
+
+void SearchIndex::requeuePending(const QVector<PendingOp> &ops) {
+  for (const PendingOp &op : ops) {
+    if (op.path.isEmpty())
+      continue;
+
+    // Newer operations queued while the batch was in flight win. A full
+    // document refresh is superseded by any newer block op for the same path,
+    // because those ops describe the changes since that snapshot.
+    bool superseded = false;
+
+    for (const PendingOp &current : std::as_const(m_pending)) {
+      if (current.path != op.path)
+        continue;
+
+      if (current.type == PendingOp::Type::FullDocument ||
+          op.type == PendingOp::Type::FullDocument ||
+          current.blockId == op.blockId) {
+        superseded = true;
+        break;
+      }
+    }
+
+    if (!superseded)
+      m_pending.append(op);
+  }
 }
 
 void SearchIndex::discardPending(const QString &pathPrefix) {
@@ -1217,386 +1354,9 @@ void SearchIndex::discardPending(const QString &pathPrefix) {
                   m_pending.end());
 }
 
-bool SearchIndex::replaceDocument(const QString &path, const QString &title,
-                                  const QVector<BlockRecord> &blocks,
-                                  bool updateMetaRow) {
-  if (path.isEmpty() || !m_db.isOpen())
-    return false;
-
-  if (!m_db.transaction())
-    return false;
-
-  QSqlQuery remove(m_db);
-  remove.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ?"));
-  remove.addBindValue(path);
-
-  if (!remove.exec()) {
-    m_db.rollback();
-    return false;
-  }
-
-  QSqlQuery insert(m_db);
-  insert.prepare(QStringLiteral(
-      "INSERT INTO search_index(document_path, document_title, block_id, "
-      "block_text) VALUES(?, ?, ?, ?)"));
-
-  for (const BlockRecord &block : blocks) {
-    if (block.text.isEmpty())
-      continue;
-
-    insert.addBindValue(path);
-    insert.addBindValue(title);
-    insert.addBindValue(block.blockId);
-    insert.addBindValue(block.text);
-
-    if (!insert.exec()) {
-      qWarning() << "SearchIndex: insert block failed:"
-                 << insert.lastError().text();
-      m_db.rollback();
-      return false;
-    }
-  }
-
-  if (updateMetaRow) {
-    updateMeta(path, title);
-  } else {
-    // The blocks did not necessarily come from the file on disk, so make the
-    // next startup reindex this document.
-    if (!invalidateMeta(path)) {
-      m_db.rollback();
-      return false;
-    }
-  }
-
-  if (!m_db.commit()) {
-    m_db.rollback();
-    return false;
-  }
-
-  return true;
-}
-
-bool SearchIndex::reindexDocumentFromFile(const QString &path) {
-  m_writePool.waitForDone();
-
-  const QString normalized = normalizedPath(path);
-
-  if (normalized.isEmpty())
-    return false;
-
-  QFile file(normalized);
-
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    removeDocument(normalized);
-    return false;
-  }
-
-  QJsonParseError parseError{};
-  const QJsonDocument parsed =
-      QJsonDocument::fromJson(file.readAll(), &parseError);
-  file.close();
-
-  if (parseError.error != QJsonParseError::NoError || !parsed.isObject()) {
-    removeDocument(normalized);
-    return false;
-  }
-
-  Document document;
-  QString documentError;
-
-  if (!document.fromJson(parsed.object(), &documentError)) {
-    removeDocument(normalized);
-    return false;
-  }
-
-  QString title =
-      parsed.object().value(QStringLiteral("title")).toString().trimmed();
-
-  if (title.isEmpty())
-    title = QFileInfo(normalized).completeBaseName();
-
-  QVector<BlockRecord> blocks;
-  blocks.reserve(document.blocks().size());
-
-  for (const Block &block : document.blocks())
-    blocks.append({block.id, block.text});
-
-  return replaceDocument(normalized, title, blocks, true);
-}
-
-bool SearchIndex::reindexCurrentDocument() {
-  if (!m_blockModel)
-    return false;
-
-  const QString path = normalizedPath(m_blockModel->currentFilePath());
-
-  if (path.isEmpty())
-    return false;
-
-  QVector<BlockRecord> blocks;
-  blocks.reserve(m_blockModel->rowCount());
-
-  for (int row = 0; row < m_blockModel->rowCount(); ++row) {
-    const QModelIndex index = m_blockModel->index(row);
-
-    const QString blockId =
-        m_blockModel->data(index, BlockModel::BlockIdRole).toString();
-    const QString text =
-        m_blockModel->data(index, BlockModel::ContentRole).toString();
-
-    if (!blockId.isEmpty())
-      blocks.append({blockId, text});
-  }
-
-  return replaceDocument(path, m_blockModel->documentTitle(), blocks, false);
-}
-
-bool SearchIndex::upsertBlock(const QString &path, const QString &title,
-                              const QString &blockId, const QString &text) {
-  if (path.isEmpty() || blockId.isEmpty() || !m_db.isOpen())
-    return false;
-
-  if (!m_db.transaction())
-    return false;
-
-  QSqlQuery remove(m_db);
-  remove.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ? AND block_id = ?"));
-  remove.addBindValue(path);
-  remove.addBindValue(blockId);
-
-  if (!remove.exec()) {
-    m_db.rollback();
-    return false;
-  }
-
-  if (!text.isEmpty()) {
-    QSqlQuery insert(m_db);
-    insert.prepare(QStringLiteral(
-        "INSERT INTO search_index(document_path, document_title, block_id, "
-        "block_text) VALUES(?, ?, ?, ?)"));
-    insert.addBindValue(path);
-    insert.addBindValue(title);
-    insert.addBindValue(blockId);
-    insert.addBindValue(text);
-
-    if (!insert.exec()) {
-      m_db.rollback();
-      return false;
-    }
-  }
-
-  // Live edits are not necessarily on disk. Invalidate the file metadata so
-  // the next startup reindexes this document from the saved file.
-  invalidateMeta(path);
-
-  if (!m_db.commit()) {
-    m_db.rollback();
-    return false;
-  }
-
-  return true;
-}
-
-bool SearchIndex::removeBlock(const QString &path, const QString &blockId) {
-  if (path.isEmpty() || blockId.isEmpty() || !m_db.isOpen())
-    return false;
-
-  if (!m_db.transaction())
-    return false;
-
-  QSqlQuery remove(m_db);
-  remove.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ? AND block_id = ?"));
-  remove.addBindValue(path);
-  remove.addBindValue(blockId);
-
-  const bool ok = remove.exec();
-  invalidateMeta(path);
-
-  if (!ok || !m_db.commit()) {
-    m_db.rollback();
-    return false;
-  }
-
-  return true;
-}
-
-bool SearchIndex::removeDocument(const QString &path) {
-  if (path.isEmpty() || !m_db.isOpen())
-    return false;
-
-  m_writePool.waitForDone();
-
-  if (!m_db.transaction())
-    return false;
-
-  QSqlQuery removeIndex(m_db);
-  removeIndex.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ?"));
-  removeIndex.addBindValue(path);
-
-  QSqlQuery removeMeta(m_db);
-  removeMeta.prepare(
-      QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
-  removeMeta.addBindValue(path);
-
-  const bool ok = removeIndex.exec() && removeMeta.exec();
-
-  if (!ok || !m_db.commit()) {
-    m_db.rollback();
-    return false;
-  }
-
-  return true;
-}
-
-bool SearchIndex::removePathPrefix(const QString &path) {
-  if (path.isEmpty() || !m_db.isOpen())
-    return false;
-
-  m_writePool.waitForDone();
-
-  const QString prefix = escapeLike(path) + QStringLiteral("/%");
-
-  if (!m_db.transaction())
-    return false;
-
-  QSqlQuery removeIndex(m_db);
-  removeIndex.prepare(QStringLiteral(
-      "DELETE FROM search_index WHERE document_path = ? OR document_path "
-      "LIKE ? ESCAPE '\\'"));
-  removeIndex.addBindValue(path);
-  removeIndex.addBindValue(prefix);
-
-  QSqlQuery removeMeta(m_db);
-  removeMeta.prepare(QStringLiteral(
-      "DELETE FROM search_meta WHERE document_path = ? OR document_path "
-      "LIKE ? ESCAPE '\\'"));
-  removeMeta.addBindValue(path);
-  removeMeta.addBindValue(prefix);
-
-  const bool ok = removeIndex.exec() && removeMeta.exec();
-
-  if (!ok || !m_db.commit()) {
-    m_db.rollback();
-    return false;
-  }
-
-  return true;
-}
-
-bool SearchIndex::renamePath(const QString &oldPath, const QString &newPath) {
-  if (oldPath.isEmpty() || newPath.isEmpty() || oldPath == newPath ||
-      !m_db.isOpen()) {
-    return false;
-  }
-
-  m_writePool.waitForDone();
-
-  const QString prefix = escapeLike(oldPath) + QStringLiteral("/%");
-  const QString newTitle = QFileInfo(newPath).completeBaseName();
-  const int suffixStart = oldPath.length() + 1;
-
-  if (!m_db.transaction())
-    return false;
-
-  QSqlQuery updateIndex(m_db);
-  updateIndex.prepare(QStringLiteral(
-      "UPDATE search_index SET "
-      "document_path = ? || substr(document_path, ?), "
-      "document_title = CASE WHEN document_path = ? THEN ? "
-      "ELSE document_title END "
-      "WHERE document_path = ? OR document_path LIKE ? ESCAPE '\\'"));
-  updateIndex.addBindValue(newPath);
-  updateIndex.addBindValue(suffixStart);
-  updateIndex.addBindValue(oldPath);
-  updateIndex.addBindValue(newTitle);
-  updateIndex.addBindValue(oldPath);
-  updateIndex.addBindValue(prefix);
-
-  QSqlQuery updateMeta(m_db);
-  updateMeta.prepare(QStringLiteral(
-      "UPDATE search_meta SET "
-      "document_path = ? || substr(document_path, ?), "
-      "document_title = CASE WHEN document_path = ? THEN ? "
-      "ELSE document_title END "
-      "WHERE document_path = ? OR document_path LIKE ? ESCAPE '\\'"));
-  updateMeta.addBindValue(newPath);
-  updateMeta.addBindValue(suffixStart);
-  updateMeta.addBindValue(oldPath);
-  updateMeta.addBindValue(newTitle);
-  updateMeta.addBindValue(oldPath);
-  updateMeta.addBindValue(prefix);
-
-  const bool ok = updateIndex.exec() && updateMeta.exec();
-
-  if (!ok || !m_db.commit()) {
-    m_db.rollback();
-    return false;
-  }
-
-  return true;
-}
-
-bool SearchIndex::invalidateMeta(const QString &path) {
-  QSqlQuery query(m_db);
-  query.prepare(
-      QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
-  query.addBindValue(path);
-  return query.exec();
-}
-
-bool SearchIndex::updateMeta(const QString &path, const QString &title) {
-  const QFileInfo info(path);
-  const qint64 modified =
-      info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0;
-  const qint64 size = info.exists() ? info.size() : 0;
-
-  QSqlQuery remove(m_db);
-  remove.prepare(
-      QStringLiteral("DELETE FROM search_meta WHERE document_path = ?"));
-  remove.addBindValue(path);
-
-  if (!remove.exec())
-    return false;
-
-  QSqlQuery insert(m_db);
-  insert.prepare(QStringLiteral(
-      "INSERT INTO search_meta(document_path, document_title, modified_ms, "
-      "size) VALUES(?, ?, ?, ?)"));
-  insert.addBindValue(path);
-  insert.addBindValue(title);
-  insert.addBindValue(modified);
-  insert.addBindValue(size);
-
-  return insert.exec();
-}
-
-bool SearchIndex::readMeta(const QString &path, qint64 *modifiedMs,
-                           qint64 *size) const {
-  QSqlQuery query(m_db);
-  query.prepare(QStringLiteral(
-      "SELECT modified_ms, size FROM search_meta WHERE document_path = ?"));
-  query.addBindValue(path);
-
-  if (!query.exec() || !query.next())
-    return false;
-
-  if (modifiedMs)
-    *modifiedMs = query.value(0).toLongLong();
-  if (size)
-    *size = query.value(1).toLongLong();
-
-  return true;
-}
-
 void SearchIndex::syncIncremental() {
-  if (!m_db.isOpen())
+  if (!m_db.isOpen() || m_databasePath.isEmpty())
     return;
-
-  m_writePool.waitForDone();
 
   const QString root = documentsRoot();
 
@@ -1628,7 +1388,19 @@ void SearchIndex::syncIncremental() {
     }
   }
 
-  performIncrementalSync(m_db, root, currentPath, currentTitle, currentBlocks);
+  // The synchronous entry point is used by tests. Run the scan on the writer
+  // pool so it is ordered with live edits, and wait only for this scan instead
+  // of blocking on every queued job with waitForDone().
+  const QString databasePath = m_databasePath;
+
+  QFuture<void> future = QtConcurrent::run(
+      &m_writePool, [databasePath, root, currentPath, currentTitle,
+                     currentBlocks]() {
+        executeIncrementalSync(databasePath, root, currentPath, currentTitle,
+                               currentBlocks);
+      });
+
+  future.waitForFinished();
 
   invalidateSearchCache();
   emit indexUpdated();
@@ -1703,19 +1475,26 @@ void SearchIndex::syncIncrementalAsync() {
 }
 
 void SearchIndex::rebuild() {
-  if (!m_db.isOpen())
+  if (!m_db.isOpen() || m_databasePath.isEmpty())
     return;
 
-  // Clear through the writer pool first so no in-flight batch can reinsert
-  // rows after the wipe. The expensive rescan itself stays asynchronous.
-  m_writePool.waitForDone();
+  // Wipe through the writer pool so queued live writes are applied first and
+  // no in-flight batch can reinsert rows after the clear. The rescan itself is
+  // queued behind the clear on the same single-thread pool.
+  const QString databasePath = m_databasePath;
 
-  QSqlQuery query(m_db);
-  query.exec(QStringLiteral("DELETE FROM search_index"));
-  query.exec(QStringLiteral("DELETE FROM search_rows"));
-  query.exec(QStringLiteral("DELETE FROM search_meta"));
+  auto *watcher = new QFutureWatcher<void>(this);
 
-  syncIncrementalAsync();
+  connect(watcher, &QFutureWatcherBase::finished, this,
+          [this, watcher]() {
+            watcher->deleteLater();
+            invalidateSearchCache();
+            emit indexUpdated();
+            syncIncrementalAsync();
+          });
+
+  watcher->setFuture(QtConcurrent::run(
+      &m_writePool, [databasePath]() { executeClearIndex(databasePath); }));
 }
 
 void SearchIndex::invalidateSearchCache() {
@@ -1920,10 +1699,19 @@ QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
 
   // A longer query that starts with a cached query can be answered by
   // filtering the cached rows; this makes backspacing/typing much cheaper.
+  // Only a complete (untruncated) result set may be used: a truncated cache
+  // would silently drop matches that were cut off by kMaxResults.
   QString prefixKey;
   for (const QString &candidate : std::as_const(m_searchCacheOrder)) {
-    if (key.startsWith(candidate) && candidate.size() > prefixKey.size())
-      prefixKey = candidate;
+    if (!key.startsWith(candidate) || candidate.size() <= prefixKey.size())
+      continue;
+
+    const auto cached = m_searchCache.constFind(candidate);
+
+    if (cached == m_searchCache.constEnd() || cached->truncated)
+      continue;
+
+    prefixKey = candidate;
   }
 
   if (!prefixKey.isEmpty()) {
@@ -2018,8 +1806,11 @@ SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
   if (text.isEmpty())
     return ranges;
 
-  const QString haystack = text.toLower();
-
+  // Match against the original text, not a lowercased copy: Unicode case
+  // folding can change the number of code units (e.g. "İ" folds to "i" plus a
+  // combining dot), which would shift every offset after it and highlight the
+  // wrong characters. Case-insensitive indexOf() maps matches back to positions
+  // in `text`.
   for (const QString &term : terms) {
     // The FTS query tokenizes terms and matches token prefixes. Split the
     // term the same way so punctuation-containing queries still highlight the
@@ -2029,7 +1820,7 @@ SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
 
     for (const QChar character : term) {
       if (isTokenCharacter(character)) {
-        token.append(character.toLower());
+        token.append(character);
       } else if (!token.isEmpty()) {
         needles.append(token);
         token.clear();
@@ -2042,15 +1833,15 @@ SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
     for (const QString &needle : needles) {
       int from = 0;
 
-      while (from <= haystack.length() - needle.length()) {
-        const int start = haystack.indexOf(needle, from);
+      while (from <= text.length() - needle.length()) {
+        const int start = text.indexOf(needle, from, Qt::CaseInsensitive);
 
         if (start < 0)
           break;
 
         // Only a match at the beginning of a token is a real FTS prefix
         // match; "edit" must not highlight the middle of "credit".
-        if (start == 0 || !isTokenCharacter(haystack.at(start - 1))) {
+        if (start == 0 || !isTokenCharacter(text.at(start - 1))) {
           ranges.append({start, static_cast<int>(needle.length())});
           from = start + needle.length();
         } else {

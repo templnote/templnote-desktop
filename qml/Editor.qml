@@ -20,6 +20,10 @@ Item {
   property real selectionToolbarAnchorY: 0
   property real selectionToolbarGap: 6
   property var pendingSelection: null
+  // Block currently under the pointer in the left gutter. Drives gutter-handle
+  // visibility and the editor-level gutter menu, independent of delegate-local
+  // hover handlers (which the block hover area can swallow).
+  property string gutterHoverBlockId: ""
 
   // Paper sheet width always stays at standard 800px column (+ 64px padding) so
   // full width block mode does not alter paper/wallpaper sheet boundaries.
@@ -31,6 +35,7 @@ Item {
   property int pendingFocusPosition: 0
   property int pendingFocusRangeStart: -1
   property int pendingFocusRangeEnd: -1
+  property real pendingFocusX: -1
   property int pendingFocusAttempts: 0
 
   Timer {
@@ -88,7 +93,7 @@ Item {
   function updateDragTarget() {
     if (!root.isDraggingBlock) return
 
-    const count = root.model.count
+    const count = root.model.visibleCount()
     if (count <= 0) return
 
     const contentY = documentView.mapFromItem(null, 0, root.dragGlobalY).y
@@ -207,7 +212,7 @@ Item {
 
   function caretContext() {
     const row = root.caretBlockId.length > 0
-                ? root.model.indexOfBlock(root.caretBlockId)
+                ? root.model.visibleRowOf(root.caretBlockId)
                 : -1
 
     if (row < 0)
@@ -297,7 +302,7 @@ Item {
   }
 
   function scrollToSearchMatch(match) {
-    const row = root.model.indexOfBlock(match.blockId)
+    const row = root.model.visibleRowOf(match.blockId)
 
     if (row < 0)
       return
@@ -308,7 +313,7 @@ Item {
   // Enter on the find bar: move the caret into the matched block and select
   // the matched range so it stays visible after the highlights are cleared.
   function focusSearchMatch(match) {
-    if (root.model.indexOfBlock(match.blockId) < 0)
+    if (root.model.visibleRowOf(match.blockId) < 0)
       return
 
     root.requestFocusBlock(match.blockId, match.start,
@@ -317,7 +322,7 @@ Item {
 
   // Sets a focus intent. The delegate applies it when it exists, so a model
   // reset or delegate reuse never leaves the caret in the wrong block.
-  function requestFocusBlock(blockId, position, rangeStart, rangeEnd) {
+  function requestFocusBlock(blockId, position, rangeStart, rangeEnd, xPosition) {
     if (!blockId || blockId.length === 0)
       return
 
@@ -325,9 +330,10 @@ Item {
     root.pendingFocusPosition = position
     root.pendingFocusRangeStart = rangeStart === undefined ? -1 : rangeStart
     root.pendingFocusRangeEnd = rangeEnd === undefined ? -1 : rangeEnd
+    root.pendingFocusX = xPosition === undefined ? -1 : xPosition
     root.pendingFocusAttempts = 0
 
-    const row = root.model.indexOfBlock(blockId)
+    const row = root.model.visibleRowOf(blockId)
 
     if (row >= 0)
       documentView.positionViewAtIndex(row, ListView.Contain)
@@ -339,7 +345,7 @@ Item {
     if (root.pendingFocusBlockId.length === 0)
       return
 
-    const row = root.model.indexOfBlock(root.pendingFocusBlockId)
+    const row = root.model.visibleRowOf(root.pendingFocusBlockId)
 
     if (row < 0) {
       root.pendingFocusBlockId = ""
@@ -352,8 +358,31 @@ Item {
     // occupied this row before the model changed. Do not clear the intent in
     // that case: retry once the view has caught up, otherwise the caret stays
     // in the old block (for example after Ctrl+Enter in a code block).
-    if (!delegate || delegate.blockId !== root.pendingFocusBlockId) {
+    if (!delegate) {
       if (root.pendingFocusAttempts < 30) {
+        ++root.pendingFocusAttempts
+        pendingFocusRetryTimer.restart()
+      }
+      return
+    }
+
+    const position = root.pendingFocusPosition
+    const rangeStart = root.pendingFocusRangeStart
+    const rangeEnd = root.pendingFocusRangeEnd
+    const focusX = root.pendingFocusX
+
+    // A focus request for a block inside a column lands on the layout's
+    // visible delegate. Let it route the intent to the right inner delegate.
+    if (delegate.blockId !== root.pendingFocusBlockId) {
+      if (delegate.focusChildBlock
+          && delegate.focusChildBlock(root.pendingFocusBlockId, position,
+                                      rangeStart, rangeEnd, focusX)) {
+        root.pendingFocusBlockId = ""
+        root.pendingFocusAttempts = 0
+        root.pendingFocusRangeStart = -1
+        root.pendingFocusRangeEnd = -1
+        root.pendingFocusX = -1
+      } else if (root.pendingFocusAttempts < 30) {
         ++root.pendingFocusAttempts
         pendingFocusRetryTimer.restart()
       }
@@ -362,28 +391,158 @@ Item {
 
     // The delegate's Component.onCompleted/onBlockIdChanged applies the
     // intent once it materializes.
-    const position = root.pendingFocusPosition
-    const rangeStart = root.pendingFocusRangeStart
-    const rangeEnd = root.pendingFocusRangeEnd
-
     root.pendingFocusBlockId = ""
     root.pendingFocusAttempts = 0
     root.pendingFocusRangeStart = -1
     root.pendingFocusRangeEnd = -1
+    root.pendingFocusX = -1
 
     delegate.refreshBlock()
 
-    if (rangeStart >= 0)
+    if (focusX >= 0)
+      delegate.focusBlockAtX(focusX)
+    else if (rangeStart >= 0)
       delegate.focusBlockAtRange(rangeStart, rangeEnd)
     else
       delegate.focusBlock(position)
   }
 
-  function focusDelegateAt(row, position) {
+  // Mapping helpers between the flat document rows and the visible rows shown
+  // by documentView. Column children live in the document but are rendered by
+  // their ColumnsBlock, so they share the visible row of their layout.
+  function moveBlockToVisibleRow(blockId, visibleRow) {
+    const sourceRow = root.model.sourceRowOfVisibleRow(visibleRow)
+    return sourceRow >= 0 && root.model.moveBlock(blockId, sourceRow)
+  }
+
+  function sourceRowOfBlock(blockId) {
+    return root.model.sourceRowOfBlock(blockId)
+  }
+
+  // Editable blocks are the ones that host a caret. Column/Columns wrappers and
+  // dividers are skipped so arrow navigation walks the flat document in visual
+  // order, including across column boundaries.
+  function editableBlockAtSourceRow(row) {
     if (row < 0 || row >= root.model.count)
+      return ""
+
+    const type = root.model.blockTypeAtRow(row)
+
+    if (type === 7 || type === 12 || type === 13)
+      return ""
+
+    return root.model.blockIdAt(row)
+  }
+
+  // Previous block that can host a caret. This walks the flat document instead
+  // of the ListView: the previous block may be in a different column list (or
+  // not instantiated yet), in which case itemAtIndex() returns null and a
+  // backspace that removes the current block would leave no caret anywhere.
+  function previousEditableBlockId(blockId) {
+    const from = sourceRowOfBlock(blockId)
+
+    if (from < 0)
+      return ""
+
+    for (let row = from - 1; row >= 0; --row) {
+      const id = editableBlockAtSourceRow(row)
+
+      if (id.length > 0)
+        return id
+    }
+
+    return ""
+  }
+
+  function focusAdjacentEditable(blockId, direction, xPosition) {
+    const from = sourceRowOfBlock(blockId)
+
+    if (from < 0)
+      return false
+
+    let row = from + direction
+
+    while (row >= 0 && row < root.model.count) {
+      const id = editableBlockAtSourceRow(row)
+
+      if (id.length > 0) {
+        root.requestFocusBlock(id, -1, -1, -1, xPosition)
+        return true
+      }
+
+      row += direction
+    }
+
+    return false
+  }
+
+  // Inserts an empty paragraph directly after a block and returns its id. The
+  // new block inherits the source block's parentId, so inserting inside a
+  // column keeps the paragraph in that column.
+  function insertParagraphAfter(blockId) {
+    return root.model.insertBlockAfter(blockId, 0, "")
+  }
+
+  // The drag API lives on the parent ColumnsBlock's renderer, not on the
+  // nested block's own renderer. Resolve the visible layout delegate for a
+  // child id and forward the gesture to it.
+  property string nestedDragChildId: ""
+
+  function nestedDragRenderer(childId) {
+    if (!root.model || childId.length === 0)
+      return null
+
+    const columnId = root.model.parentBlockId(childId)
+    const layoutId = root.model.parentBlockId(columnId)
+    const row = root.model.visibleRowOf(layoutId)
+
+    if (row < 0)
+      return null
+
+    const delegate = documentView.itemAtIndex(row)
+    return delegate ? delegate.rendererItem : null
+  }
+
+  function beginNestedChildDrag(childId, globalX, globalY) {
+    const rendererItem = nestedDragRenderer(childId)
+
+    if (!rendererItem || typeof rendererItem.beginChildDrag !== "function")
+      return false
+
+    root.nestedDragChildId = childId
+    return rendererItem.beginChildDrag(childId, globalX, globalY)
+  }
+
+  function updateNestedChildDrag(globalX, globalY) {
+    const rendererItem = nestedDragRenderer(root.nestedDragChildId)
+
+    if (rendererItem && typeof rendererItem.updateChildDrag === "function")
+      rendererItem.updateChildDrag(globalX, globalY)
+  }
+
+  function endNestedChildDrag() {
+    const rendererItem = nestedDragRenderer(root.nestedDragChildId)
+
+    if (rendererItem && typeof rendererItem.endChildDrag === "function")
+      rendererItem.endChildDrag()
+
+    root.nestedDragChildId = ""
+  }
+
+  function cancelNestedChildDrag() {
+    const rendererItem = nestedDragRenderer(root.nestedDragChildId)
+
+    if (rendererItem && typeof rendererItem.cancelChildDrag === "function")
+      rendererItem.cancelChildDrag()
+
+    root.nestedDragChildId = ""
+  }
+
+  function focusDelegateAt(row, position) {
+    if (row < 0 || row >= root.model.visibleCount())
       return
 
-    const blockId = root.model.blockIdAt(row)
+    const blockId = root.model.blockIdAtVisibleRow(row)
 
     if (blockId.length > 0)
       root.requestFocusBlock(blockId, position)
@@ -434,19 +593,19 @@ Item {
   }
 
   function restoreFocusAfterHistory(blockId, oldRow, undo, cursorPosition) {
-    let row = root.model.indexOfBlock(blockId)
+    let row = root.model.visibleRowOf(blockId)
 
     // The undo/redo may have removed the focused block (for example when
     // undoing a split). Move to the nearest surviving block in that case.
     if (row < 0) {
       const fallback = undo ? oldRow - 1 : oldRow
-      row = Math.max(0, Math.min(fallback, root.model.count - 1))
+      row = Math.max(0, Math.min(fallback, root.model.visibleCount() - 1))
     }
 
     if (row < 0)
       return
 
-    const targetId = root.model.blockIdAt(row)
+    const targetId = root.model.blockIdAtVisibleRow(row)
 
     if (targetId.length > 0) {
       // A negative position means "end of text" (structural steps).
@@ -518,13 +677,13 @@ Item {
         || root.keyboardMoveAnimating)
       return
 
-    const row = root.model.indexOfBlock(root.caretBlockId)
+    const row = root.model.visibleRowOf(root.caretBlockId)
 
     if (row < 0)
       return
 
     const target = Math.max(0, Math.min(row + direction,
-                                        root.model.count - 1))
+                                        root.model.visibleCount() - 1))
 
     if (target === row)
       return
@@ -535,7 +694,7 @@ Item {
     // drag-and-drop keeps its existing behaviour.
     root.keyboardMoveAnimating = true
 
-    if (root.model.moveBlock(root.caretBlockId, target)) {
+    if (root.moveBlockToVisibleRow(root.caretBlockId, target)) {
       keyboardMoveTimer.restart()
       root.requestFocusBlock(root.caretBlockId, position)
     } else {
@@ -595,6 +754,37 @@ Item {
   // to the editor's left edge because delegate-local MouseAreas (including the
   // drag handle) sit outside the ListView's hit-test bounds and never see
   // clicks in this strip.
+  // Hold-to-drag from the gutter handle. The handle is outside the ListView's
+  // hit-test bounds, so the editor margin owns this gesture too.
+  property string gutterPressBlockId: ""
+  property real gutterPressGlobalY: 0
+  property bool gutterWasDragging: false
+
+  Timer {
+    id: gutterHoldTimer
+    interval: 200
+    repeat: false
+
+    onTriggered: {
+      if (!leftMarginClickArea.pressed || root.gutterPressBlockId.length === 0)
+        return
+
+      const row = root.model.visibleRowOf(root.gutterPressBlockId)
+
+      if (row < 0)
+        return
+
+      const item = documentView.itemAtIndex(row)
+      root.draggingBlockId = root.gutterPressBlockId
+      root.draggingSourceIndex = row
+      root.dropTargetIndex = row
+      root.draggingVisualY = 0
+      root.draggingItemHeight = item ? item.height : 40
+      root.dragGlobalY = root.gutterPressGlobalY
+      root.gutterWasDragging = true
+    }
+  }
+
   MouseArea {
     id: leftMarginClickArea
 
@@ -606,18 +796,91 @@ Item {
     }
 
     acceptedButtons: Qt.LeftButton
+    hoverEnabled: true
 
-    onClicked: function(mouse) {
-      const point = documentView.mapFromItem(leftMarginClickArea, mouse.x,
-                                             mouse.y)
+    function rowAt(y) {
+      if (!root.model)
+        return -1
+
+      const point = documentView.mapFromItem(leftMarginClickArea, 0, y)
       const contentY = point.y + documentView.contentY
       let row = documentView.indexAt(documentView.width / 2, contentY)
 
-      if (row < 0 && root.model)
-        row = contentY < 0 ? 0 : root.model.count - 1
+      if (row < 0)
+        row = contentY < 0 ? 0 : root.model.visibleCount() - 1
 
-      if (row >= 0 && root.model && row < root.model.count)
+      return row >= 0 && row < root.model.visibleCount() ? row : -1
+    }
+
+    function blockIdAt(y) {
+      const row = rowAt(y)
+      return row >= 0 ? root.model.blockIdAtVisibleRow(row) : ""
+    }
+
+    // The handle sits outside the ListView's hit-test bounds, so the editor
+    // margin owns its hover state, menu and drag gesture instead of the delegate.
+    onPositionChanged: function(mouse) {
+      root.gutterHoverBlockId = blockIdAt(mouse.y)
+
+      if (root.isDraggingBlock) {
+        root.dragGlobalY = mapToItem(null, mouse.x, mouse.y).y
+        root.draggingVisualY = root.dragGlobalY - root.gutterPressGlobalY
+        root.updateDragTarget()
+      }
+    }
+
+    onPressed: function(mouse) {
+      root.gutterWasDragging = false
+
+      if (mouse.x < leftMarginClickArea.width - 24)
+        return
+
+      root.gutterPressBlockId = blockIdAt(mouse.y)
+      root.gutterPressGlobalY = mapToItem(null, mouse.x, mouse.y).y
+
+      if (root.gutterPressBlockId.length > 0)
+        gutterHoldTimer.restart()
+    }
+
+    onReleased: function(mouse) {
+      gutterHoldTimer.stop()
+
+      if (root.isDraggingBlock) {
+        const src = root.draggingSourceIndex
+        const dst = root.dropTargetIndex
+        const id = root.draggingBlockId
+
+        root.draggingBlockId = ""
+        root.draggingSourceIndex = -1
+        root.dropTargetIndex = -1
+        root.draggingVisualY = 0
+
+        if (src !== dst && src >= 0 && dst >= 0)
+          root.moveBlockToVisibleRow(id, dst)
+      }
+
+      root.gutterPressBlockId = ""
+    }
+
+    onExited: {
+      root.gutterHoverBlockId = ""
+      gutterHoldTimer.stop()
+    }
+
+    onClicked: function(mouse) {
+      const row = rowAt(mouse.y)
+      const blockId = row >= 0 ? root.model.blockIdAtVisibleRow(row) : ""
+
+      if (row >= 0)
         root.focusDelegateAt(row, 0)
+
+      // The right part of the margin is where the gutter handle is drawn.
+      if (blockId.length > 0
+          && mouse.x >= leftMarginClickArea.width - 24
+          && !root.gutterWasDragging) {
+        gutterOptionsMenu.blockId = blockId
+        gutterOptionsMenu.popup()
+      }
     }
   }
 
@@ -637,7 +900,7 @@ Item {
       bottomMargin: 160
     }
 
-    model: root.model
+    model: root.model.visibleModel
     spacing: 0
     clip: false
 
@@ -738,587 +1001,776 @@ Item {
       }
     }
 
-    delegate: Item {
-      id: delegateRoot
-      property Item editorRoot: root
+    // The delegate is a named Component so column layouts can reuse the exact
+    // same block rendering and keyboard behaviour for their child blocks.
+    Component {
+      id: blockDelegateComponent
 
-      // These properties receive the C++ model roles.
-      required property string blockId
-      required property string content
-      required property int blockType
-      required property int headingLevel
-      required property int nextBlockType
-      required property int numberIndex
-      required property string alignment
-      required property bool checked
-      required property string calloutType
-      required property string codeLanguage
-      required property string imageSource
-      required property real imageWidthRatio
-      required property var metadata
-      required property int index
+        Item {
+        id: delegateRoot
+        property Item editorRoot: root
 
-      readonly property real bottomGap: BlockSpacing.bottomGap(
-        delegateRoot.blockType,
-        delegateRoot.nextBlockType,
-        delegateRoot.index === root.model.count - 1
-      )
-      readonly property var rendererItem: renderer
+        // These properties receive the C++ model roles.
+        required property string blockId
+        required property string parentId
+        required property string content
+        required property int blockType
+        required property int headingLevel
+        required property int nextBlockType
+        required property int numberIndex
+        required property string alignment
+        required property bool checked
+        required property string calloutType
+        required property string codeLanguage
+        required property string imageSource
+        required property real imageWidthRatio
+        required property var metadata
+        required property int index
 
-      readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
-      readonly property bool isHovered: blockHoverArea.containsMouse || handleHover.hovered
-      readonly property real hoverX: blockHoverArea.containsMouse ? blockHoverArea.mouseX : -1
-      readonly property real hoverY: blockHoverArea.containsMouse ? blockHoverArea.mouseY : -1
+        readonly property real bottomGap: BlockSpacing.bottomGap(
+          delegateRoot.blockType,
+          delegateRoot.nextBlockType,
+          delegateRoot.index === root.model.visibleCount() - 1
+        )
+        readonly property var rendererItem: renderer
 
-      // Applies a focus intent set before this delegate existed (or while it
-      // was recycled for another block).
-      function maybeApplyPendingFocus() {
-        if (editorRoot.pendingFocusBlockId.length === 0
-            || editorRoot.pendingFocusBlockId !== delegateRoot.blockId)
-          return
+        // Column children are rendered by ColumnsBlock with this same delegate.
+        readonly property bool isColumnChild: delegateRoot.parentId.length > 0
+        readonly property string columnId: isColumnChild
+                                           ? root.model.columnIdOfBlock(delegateRoot.blockId)
+                                           : ""
+        readonly property var columnLayoutRenderer: isColumnChild
+                                                    ? root.nestedDragRenderer(delegateRoot.blockId)
+                                                    : null
 
-        const position = editorRoot.pendingFocusPosition
-        const rangeStart = editorRoot.pendingFocusRangeStart
-        const rangeEnd = editorRoot.pendingFocusRangeEnd
+        readonly property bool isBeingDragged: root.draggingBlockId === delegateRoot.blockId
+                                               || (delegateRoot.isColumnChild
+                                                   && columnLayoutRenderer
+                                                   && columnLayoutRenderer.childDraggingBlockId === delegateRoot.blockId)
+        readonly property bool isHovered: blockHoverArea.containsMouse
+                                          || gutterHoverArea.containsMouse
+                                          || handleHover.hovered
+                                          || handleArea.containsMouse
+                                          || root.gutterHoverBlockId === delegateRoot.blockId
+                                          || (delegateRoot.isColumnChild
+                                              && columnLayoutRenderer
+                                              && columnLayoutRenderer.hoveredChildBlockId === delegateRoot.blockId)
+        readonly property real hoverX: blockHoverArea.containsMouse ? blockHoverArea.mouseX : -1
+        readonly property real hoverY: blockHoverArea.containsMouse ? blockHoverArea.mouseY : -1
 
-        editorRoot.pendingFocusBlockId = ""
-        editorRoot.pendingFocusAttempts = 0
-        editorRoot.pendingFocusRangeStart = -1
-        editorRoot.pendingFocusRangeEnd = -1
-
-        refreshBlock()
-
-        if (rangeStart >= 0)
-          focusBlockAtRange(rangeStart, rangeEnd)
-        else
-          focusBlock(position)
-      }
-
-      Timer {
-        id: delegateFocusTimer
-        interval: 0
-        repeat: false
-        onTriggered: delegateRoot.maybeApplyPendingFocus()
-      }
-
-      Component.onCompleted: delegateFocusTimer.restart()
-      onBlockIdChanged: delegateFocusTimer.restart()
-
-      // MouseArea covering the block AND extending 30px into the left gutter (across the drag handle and beyond)
-      MouseArea {
-        id: blockHoverArea
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.leftMargin: -30
-        hoverEnabled: true
-        preventStealing: false
-        propagateComposedEvents: true
-        z: 10
-
-        // Allow click and press events to pass right through to the text editor, links, or handles
-        onPressed: function(mouse) { mouse.accepted = false }
-        onReleased: function(mouse) { mouse.accepted = false }
-        onClicked: function(mouse) { mouse.accepted = false }
-        onDoubleClicked: function(mouse) { mouse.accepted = false }
-      }
-
-      // Dynamic vertical shift to make room for dragged block
-      property real visualDisplacement: {
-        if (!root.isDraggingBlock || isBeingDragged)
-          return 0
-        const from = root.draggingSourceIndex
-        const to = root.dropTargetIndex
-        if (from < to) {
-          // Dragged downwards: items between (from, to] shift UP by draggingItemHeight
-          if (delegateRoot.index > from && delegateRoot.index <= to)
-            return -root.draggingItemHeight
-        } else if (from > to) {
-          // Dragged upwards: items between [to, from) shift DOWN by draggingItemHeight
-          if (delegateRoot.index >= to && delegateRoot.index < from)
-            return root.draggingItemHeight
-        }
-        return 0
-      }
-
-      width: documentView.width
-      height: renderer.implicitHeight + delegateRoot.bottomGap
-      z: isBeingDragged ? 100 : 1
-
-      // Visualization overlay to inspect delegate bounding box & focus state
-      Rectangle {
-        anchors.fill: parent
-        visible: Preferences.showBlockDebugBorders
-        color: renderer.isFocused ? Qt.rgba(0.2, 0.6, 1.0, 0.15) : Qt.rgba(1.0, 0.5, 0.0, 0.08)
-        border.color: renderer.isFocused ? "#3b82f6" : Qt.rgba(1.0, 0.5, 0.0, 0.4)
-        border.width: 1
-        z: -1
-
-        // Highlight inner renderer area to show any bottom gap/margin
-        Rectangle {
-          x: 0
-          y: 0
-          width: parent.width
-          height: renderer.implicitHeight
-          color: "transparent"
-          border.color: renderer.isFocused ? "#2563eb" : "#f97316"
-          border.width: 1
-
-          Text {
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: 2
-            text: (renderer.isFocused ? "FOCUSED | " : "UNFOCUSED | ") + "h: " + Math.round(renderer.implicitHeight) + " / total: " + Math.round(delegateRoot.height)
-            font.pixelSize: 10
-            color: renderer.isFocused ? "#2563eb" : "#c2410c"
-          }
-        }
-      }
-
-      // Block Type and Index Badge for debugging
-      Rectangle {
-        visible: Preferences.showBlockTypeBadge
-        z: 11
-        anchors.left: parent.left
-        anchors.top: parent.top
-        anchors.topMargin: 2
-        anchors.leftMargin: 2
-        width: typeBadgeText.implicitWidth + 8
-        height: 16
-        radius: 3
-        color: Qt.rgba(0, 0, 0, 0.75)
-
-        Text {
-          id: typeBadgeText
-          anchors.centerIn: parent
-          text: "#" + delegateRoot.index + " [" + delegateRoot.blockType + (delegateRoot.blockType === "heading" ? " h" + delegateRoot.headingLevel : "") + "] id:" + delegateRoot.blockId.substring(0, 6)
-          color: "#38bdf8"
-          font.pixelSize: 9
-          font.family: "monospace"
-          font.bold: true
-        }
-      }
-
-      // Drop target boundary visualizer during drag-and-drop
-      Rectangle {
-        visible: Preferences.showDragDropBounds && root.isDraggingBlock && root.dropTargetIndex === delegateRoot.index && !delegateRoot.isBeingDragged
-        z: 20
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        height: 3
-        color: "#10b981"
-
-        Rectangle {
-          anchors.verticalCenter: parent.verticalCenter
-          anchors.left: parent.left
-          width: 8
-          height: 8
-          radius: 4
-          color: "#10b981"
-        }
-      }
-
-      transform: Translate {
-        y: delegateRoot.isBeingDragged ? root.draggingVisualY : delegateRoot.visualDisplacement
-        Behavior on y {
-          enabled: !delegateRoot.isBeingDragged
-          NumberAnimation {
-            duration: 220
-            easing.type: Easing.OutBack
-            easing.overshoot: 1.15
-          }
-        }
-      }
-
-      // Gentle scale-lift and opacity when grabbing to reorder
-      scale: isBeingDragged ? 1.02 : 1.0
-      opacity: isBeingDragged ? 0.90 : 1.0
-
-      Behavior on scale {
-        NumberAnimation {
-          duration: 160
-          easing.type: Easing.OutCubic
-        }
-      }
-
-      Behavior on opacity {
-        NumberAnimation { duration: 140 }
-      }
-
-      function focusBlock(position) {
-        renderer.focusEditor(position)
-      }
-
-      function focusBlockAtX(xPosition) {
-        renderer.focusEditorAtX(xPosition)
-      }
-
-      function focusBlockAtRange(start, end) {
-        renderer.focusEditorRange(start, end)
-      }
-
-      function applyCommand(command) {
-        if (!command)
-          return
-        root.model.updateBlockText(delegateRoot.blockId, "")
-        if (root.model.changeBlockType(delegateRoot.blockId, command.type, command.level)) {
-          if (command.type === 7 /* Divider */) {
-            // Insert a new paragraph below the divider so typing can immediately continue
-            const row = delegateRoot.index
-            root.model.insertBlock(row + 1, 0, "")
-            root.focusDelegateAt(row + 1, 0)
-          } else {
-            root.focusDelegateAt(delegateRoot.index, 0)
-          }
-        }
-      }
-
-      function closeCommandMenu() {
-        renderer.commandMenuActive = false
-      }
-
-      function refreshBlock() {
-        renderer.refreshFromModel()
-      }
-
-      BlockRenderer {
-        id: renderer
-
-        anchors.top: parent.top
-        anchors.left: parent.left
-        anchors.right: parent.right
-
-        model: root.model
-        blockId: delegateRoot.blockId
-        content: delegateRoot.content
-        blockType: delegateRoot.blockType
-        headingLevel: delegateRoot.headingLevel
-        numberIndex: delegateRoot.numberIndex
-        alignment: delegateRoot.alignment
-        isChecked: delegateRoot.checked
-        calloutType: delegateRoot.calloutType || "note"
-        codeLanguage: delegateRoot.codeLanguage || ""
-        imageSource: delegateRoot.imageSource || ""
-        imageWidthRatio: delegateRoot.imageWidthRatio !== undefined ? delegateRoot.imageWidthRatio : 1.0
-        blockMetadata: delegateRoot.metadata
-        isBlockHovered: delegateRoot.isHovered
-        hoverX: delegateRoot.hoverX
-        hoverY: delegateRoot.hoverY
-        showPlaceholder: delegateRoot.index === 0 && root.model.count === 1
-        searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
-        searchNavigationActive: root.searchNavigationActive
-
-        onCaretMoved: function(position, cursorGlobalY, cursorHeight) {
-          root.caretBlockId = delegateRoot.blockId
-          root.caretPosition = position
-          root.ensureCursorVisible(cursorGlobalY, cursorHeight)
-        }
-
-        onSearchNavigated: function(direction) {
-          root.moveSearchMatch(direction)
-        }
-
-        onSearchDismissed: {
-          root.dismissSearchHighlights()
-        }
-
-        onSearchEditStarted: {
-          // Typing or pressing Enter ends the navigation session before the
-          // text change reaches the model.
-          root.dismissSearchHighlights()
-        }
-
-        onFocusRequested: function(position) {
-          root.focusDelegateAt(delegateRoot.index, position)
-        }
-
-        onFocusDelegateRequested: function(row, position) {
-          root.focusDelegateAt(row, position)
-        }
-
-        onMoveFocusRequested: function(direction, xPosition) {
-          const targetIndex = delegateRoot.index + direction
-
-          if (targetIndex < 0 || targetIndex >= root.model.count)
+        // Applies a focus intent set before this delegate existed (or while it
+        // was recycled for another block).
+        function maybeApplyPendingFocus() {
+          if (editorRoot.pendingFocusBlockId.length === 0
+              || editorRoot.pendingFocusBlockId !== delegateRoot.blockId)
             return
 
-          const targetDelegate = documentView.itemAtIndex(targetIndex)
+          const position = editorRoot.pendingFocusPosition
+          const rangeStart = editorRoot.pendingFocusRangeStart
+          const rangeEnd = editorRoot.pendingFocusRangeEnd
 
-          if (!targetDelegate)
-            return
+          editorRoot.pendingFocusBlockId = ""
+          editorRoot.pendingFocusAttempts = 0
+          editorRoot.pendingFocusRangeStart = -1
+          editorRoot.pendingFocusRangeEnd = -1
 
-          targetDelegate.focusBlockAtX(xPosition)
-        }
+          refreshBlock()
 
-        onCommandMenuRequested: function(query, xPosition, yPosition, cursorHeight) {
-          // Subsequent text changes update the filtered commands, but do not
-          // re-run placement. This keeps an already-open menu above or below
-          // the cursor instead of flipping as its height changes.
-          if (root.activeCommandDelegate === delegateRoot
-              && renderer.commandMenuActive) {
-            commandMenu.openFor(query)
-            return
-          }
-
-          root.activeCommandDelegate = delegateRoot
-
-          documentView.positionViewAtIndex(
-            delegateRoot.index,
-            ListView.Contain
-          )
-
-          Qt.callLater(function() {
-            commandMenu.openFor(query)
-
-            // xPosition and yPosition are already in root coordinates of renderer
-            const menuPosition = renderer.mapToItem(
-              root,
-              xPosition,
-              yPosition
-            )
-
-            const gap = root.commandMenuGap
-            const actualCursorHeight = cursorHeight > 0 ? cursorHeight : 20
-            const availableBottom = root.height - root.bottomReservedSpace - 1
-            const belowY = menuPosition.y + actualCursorHeight + gap
-            const aboveY = menuPosition.y - gap - commandMenu.height
-
-            let flippedAbove = false
-            let menuY = belowY
-
-            // Default to below. Flip above when not enough space below to show the full height,
-            // and there is enough space above.
-            if (belowY + commandMenu.height > availableBottom && aboveY >= 0) {
-              menuY = aboveY
-              flippedAbove = true
-            }
-
-            // Constrain horizontally within visible editor bounds
-            commandMenu.x = Math.max(
-              8,
-              Math.min(root.width - commandMenu.width - 8, menuPosition.x)
-            )
-
-            root.commandMenuAbove = flippedAbove
-            root.commandMenuAnchorY = menuPosition.y
-            commandMenu.y = menuY
-            renderer.commandMenuActive = true
-          })
-        }
-
-        onCommandMenuDismissed: {
-          if (root.activeCommandDelegate === delegateRoot) {
-            renderer.commandMenuActive = false
-            commandMenu.visible = false
-            root.activeCommandDelegate = null
-          }
-        }
-
-        onCommandMenuAccepted: {
-          if (root.activeCommandDelegate === delegateRoot) {
-            renderer.commandMenuActive = false
-            commandMenu.visible = false
-            root.activeCommandDelegate.applyCommand(commandMenu.selectedCommand)
-            root.activeCommandDelegate = null
-          }
-        }
-
-        onCommandMenuNavigated: function(direction) {
-          if (root.activeCommandDelegate === delegateRoot)
-            commandMenu.moveSelection(direction)
-        }
-
-        onSelectionChanged: function(hasSelection, xPosition, yPosition, cursorHeight) {
-          if (!hasSelection) {
-            selectionTimer.stop()
-            root.pendingSelection = null
-            if (root.activeSelectionDelegate === delegateRoot && !selectionToolbar.hasActivePopup) {
-              selectionToolbar.showToolbar = false
-              root.activeSelectionDelegate = null
-            }
-            return
-          }
-
-          // If toolbar is currently visible, hide it while actively selecting/adjusting
-          if (root.activeSelectionDelegate !== delegateRoot) {
-            selectionToolbar.showToolbar = false
-          }
-
-          root.pendingSelection = {
-            delegate: delegateRoot,
-            renderer: renderer,
-            x: xPosition,
-            y: yPosition,
-            cursorHeight: cursorHeight
-          }
-
-          if (selectionToolbar.showToolbar && root.activeSelectionDelegate === delegateRoot) {
-            selectionTimer.stop()
-            selectionTimer.triggered()
-          } else {
-            selectionTimer.restart()
-          }
-        }
-
-        onEnterPressed: {
-          if (delegateRoot.blockType === 7 /* Divider */) {
-            const nextRow = delegateRoot.index + 1
-            root.model.insertBlock(nextRow, 0, "")
-            root.focusDelegateAt(nextRow, 0)
-            return
-          }
-
-          const currentText = renderer.editorText
-          const cursorPosition = renderer.cursorPosition
-          
-          // for a smoother markdown behaviour:
-          // Check if block is empty. For Callout (type 10), check if content is empty ignoring prefix.
-          const isCallout = delegateRoot.blockType === 10
-          const isCleanEmpty = isCallout
-                               ? ((renderer.block && "cleanBody" in renderer.block) ? renderer.block.cleanBody.trim().length === 0 : (currentText.trim() === "" || currentText.indexOf("\n") < 0))
-                               : (currentText.length === 0)
-
-          if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3 || delegateRoot.blockType === 4 || delegateRoot.blockType === 5 || delegateRoot.blockType === 10) && isCleanEmpty) {
-            if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
-              root.focusDelegateAt(delegateRoot.index, 0)
-            }
-            return
-          }
-
-          const newId = root.model.splitBlock(
-            delegateRoot.blockId,
-            cursorPosition,
-            currentText
-          )
-          if (newId.length === 0) return
-
-          // The new block's delegate may not exist yet; the focus intent is
-          // applied as soon as it is created.
-          root.requestFocusBlock(newId, 0)
-        }
-
-        onBackspacePressed: {
-          const currentIndex = delegateRoot.index
-          const currentText = renderer.editorText
-          const currentType = delegateRoot.blockType
-
-          if (currentType === 7 /* Divider */) {
-            if (root.model.removeBlock(delegateRoot.blockId)) {
-              root.focusDelegateAt(Math.max(0, currentIndex - 1), -1)
-            }
-            return
-          }
-
-          // If this is a specialized block (Quote, List, Todo, Callout), pressing backspace
-          // at cursor position 0 should demote it to a Paragraph first instead of
-          // immediately merging into the previous block and deleting the current block!
-          if (currentType !== 0) {
-            if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
-              root.focusDelegateAt(currentIndex, 0)
-            }
-            return
-          }
-
-          if (currentIndex === 0)
-            return
-
-          if (currentText.length === 0) {
-            if (root.model.removeBlock(delegateRoot.blockId)) {
-              root.focusDelegateAt(currentIndex - 1, -1)
-            }
-            return
-          }
-
-          if (root.model.mergeWithPrevious(
-                delegateRoot.blockId,
-                currentText)) {
-            root.focusDelegateAt(currentIndex - 1, -1)
-          }
-        }
-
-        onUndoRequested: {
-          root.undoFrom(delegateRoot.blockId, delegateRoot.index)
-        }
-
-        onRedoRequested: {
-          root.redoFrom(delegateRoot.blockId, delegateRoot.index)
-        }
-      }
-
-      // Drag handle on the left margin
-      Item {
-        id: dragHandle
-        width: 18
-        height: 24
-        x: -20
-        y: Math.max(0, Math.round((renderer.firstLineHeight - height) / 2))
-        z: 20
-
-        // Purely mouse-hover driven: show only on the block the mouse is hovering over
-        property bool shouldShow: {
-          if (root.isDraggingBlock) return false
-          if (handleArea.pressed) return true
-          return delegateRoot.isHovered
+          if (rangeStart >= 0)
+            focusBlockAtRange(rangeStart, rangeEnd)
+          else
+            focusBlock(position)
         }
 
         Timer {
-          id: showTimer
-          interval: 200
+          id: delegateFocusTimer
+          interval: 0
           repeat: false
-          running: dragHandle.shouldShow && dragHandle.opacity === 0
-          onTriggered: {
-            if (dragHandle.shouldShow) {
-              dragHandle.opacity = 1.0
+          onTriggered: delegateRoot.maybeApplyPendingFocus()
+        }
+
+        Component.onCompleted: delegateFocusTimer.restart()
+        onBlockIdChanged: delegateFocusTimer.restart()
+
+        // Dedicated gutter hover area. blockHoverArea above is the topmost
+        // hover handler in the delegate and can swallow hover events before
+        // the handle's own handlers see them, which made the handle vanish as
+        // soon as the pointer left the text. This area keeps it alive while
+        // the pointer is anywhere in the gutter.
+        MouseArea {
+          id: gutterHoverArea
+          anchors {
+            top: parent.top
+            bottom: parent.bottom
+          }
+          // Top-level handles live outside the ListView (the editor margin
+          // owns them). Column children have a real 24px gutter inside the pane.
+          x: -30
+          width: 30
+          hoverEnabled: true
+          acceptedButtons: Qt.NoButton
+          z: 15
+        }
+
+        // MouseArea covering the block AND extending 30px into the left gutter (across the drag handle and beyond)
+        MouseArea {
+          id: blockHoverArea
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.leftMargin: -30
+          hoverEnabled: true
+          preventStealing: false
+          propagateComposedEvents: true
+          z: 10
+
+          // Allow click and press events to pass right through to the text editor, links, or handles
+          onPressed: function(mouse) { mouse.accepted = false }
+          onReleased: function(mouse) { mouse.accepted = false }
+          onClicked: function(mouse) { mouse.accepted = false }
+          onDoubleClicked: function(mouse) { mouse.accepted = false }
+        }
+
+        // Dynamic vertical shift to make room for dragged block
+        property real visualDisplacement: {
+          if (!root.isDraggingBlock || isBeingDragged)
+            return 0
+          const from = root.draggingSourceIndex
+          const to = root.dropTargetIndex
+          if (from < to) {
+            // Dragged downwards: items between (from, to] shift UP by draggingItemHeight
+            if (delegateRoot.index > from && delegateRoot.index <= to)
+              return -root.draggingItemHeight
+          } else if (from > to) {
+            // Dragged upwards: items between [to, from) shift DOWN by draggingItemHeight
+            if (delegateRoot.index >= to && delegateRoot.index < from)
+              return root.draggingItemHeight
+          }
+          return 0
+        }
+
+        // Same displacement logic as the main editor, for siblings inside the
+        // column the drag started in. Cross-column drags intentionally do not
+        // shift panes, so only same-column drags animate.
+        property real nestedDisplacement: {
+          if (!delegateRoot.isColumnChild || !columnLayoutRenderer
+              || !columnLayoutRenderer.childDragActive
+              || delegateRoot.isBeingDragged
+              || columnLayoutRenderer.childDragSourceColumn
+                 !== columnLayoutRenderer.childDragDropColumn)
+            return 0
+
+          const from = columnLayoutRenderer.childDragSourceRow
+          const to = columnLayoutRenderer.childDragDropRow
+          const height = columnLayoutRenderer.childDraggingItemHeight
+
+          if (from < to) {
+            if (delegateRoot.index > from && delegateRoot.index <= to)
+              return -height
+          } else if (from > to) {
+            if (delegateRoot.index >= to && delegateRoot.index < from)
+              return height
+          }
+
+          return 0
+        }
+
+        // Top-level delegates are parented to the document ListView's content
+        // item; column children to their pane's inner ListView. Either way the
+        // parent width is the correct writing width for this block.
+        width: parent ? parent.width : documentView.width
+        height: renderer.implicitHeight + delegateRoot.bottomGap
+        z: isBeingDragged ? 100 : 1
+
+        // Visualization overlay to inspect delegate bounding box & focus state
+        Rectangle {
+          anchors.fill: parent
+          visible: Preferences.showBlockDebugBorders
+          color: renderer.isFocused ? Qt.rgba(0.2, 0.6, 1.0, 0.15) : Qt.rgba(1.0, 0.5, 0.0, 0.08)
+          border.color: renderer.isFocused ? "#3b82f6" : Qt.rgba(1.0, 0.5, 0.0, 0.4)
+          border.width: 1
+          z: -1
+
+          // Highlight inner renderer area to show any bottom gap/margin
+          Rectangle {
+            x: 0
+            y: 0
+            width: parent.width
+            height: renderer.implicitHeight
+            color: "transparent"
+            border.color: renderer.isFocused ? "#2563eb" : "#f97316"
+            border.width: 1
+
+            Text {
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.margins: 2
+              text: (renderer.isFocused ? "FOCUSED | " : "UNFOCUSED | ") + "h: " + Math.round(renderer.implicitHeight) + " / total: " + Math.round(delegateRoot.height)
+              font.pixelSize: 10
+              color: renderer.isFocused ? "#2563eb" : "#c2410c"
             }
           }
         }
 
-        onShouldShowChanged: {
-          if (!shouldShow) {
-            showTimer.stop()
-            dragHandle.opacity = 0.0
+        // Block Type and Index Badge for debugging
+        Rectangle {
+          visible: Preferences.showBlockTypeBadge
+          z: 11
+          anchors.left: parent.left
+          anchors.top: parent.top
+          anchors.topMargin: 2
+          anchors.leftMargin: 2
+          width: typeBadgeText.implicitWidth + 8
+          height: 16
+          radius: 3
+          color: Qt.rgba(0, 0, 0, 0.75)
+
+          Text {
+            id: typeBadgeText
+            anchors.centerIn: parent
+            text: "#" + delegateRoot.index + " [" + delegateRoot.blockType + (delegateRoot.blockType === "heading" ? " h" + delegateRoot.headingLevel : "") + "] id:" + delegateRoot.blockId.substring(0, 6)
+            color: "#38bdf8"
+            font.pixelSize: 9
+            font.family: "monospace"
+            font.bold: true
           }
         }
 
-        opacity: 0.0
-        Behavior on opacity {
-          NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
-        }
-
+        // Drop target boundary visualizer during drag-and-drop
         Rectangle {
-          anchors.fill: parent
-          radius: 4
-          color: handleArea.pressed ? Theme.surfaceAlt : (handleHover.hovered ? Theme.surfaceHover : "transparent")
+          visible: Preferences.showDragDropBounds && root.isDraggingBlock && root.dropTargetIndex === delegateRoot.index && !delegateRoot.isBeingDragged
+          z: 20
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          height: 3
+          color: "#10b981"
+
+          Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            width: 8
+            height: 8
+            radius: 4
+            color: "#10b981"
+          }
         }
 
-        IconImage {
-          anchors.centerIn: parent
-          width: 16
-          height: 16
-          source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
-          color: Theme.textMuted
+        transform: Translate {
+          // Nested child drags follow the pointer in both axes so the lifted
+          // block glides horizontally between columns as well as vertically.
+          x: delegateRoot.isBeingDragged && delegateRoot.isColumnChild
+             ? (columnLayoutRenderer ? columnLayoutRenderer.childDraggingVisualX : 0)
+             : 0
+          y: delegateRoot.isBeingDragged
+             ? (delegateRoot.isColumnChild
+                ? (columnLayoutRenderer ? columnLayoutRenderer.childDraggingVisualY : 0)
+                : root.draggingVisualY)
+             : (delegateRoot.isColumnChild ? delegateRoot.nestedDisplacement
+                                           : delegateRoot.visualDisplacement)
+          Behavior on y {
+            enabled: !delegateRoot.isBeingDragged
+            NumberAnimation {
+              duration: 220
+              easing.type: Easing.OutBack
+              easing.overshoot: 1.15
+            }
+          }
         }
 
-        HoverHandler {
-          id: handleHover
+        // Gentle scale-lift and opacity when grabbing to reorder
+        scale: isBeingDragged ? 1.02 : 1.0
+        opacity: isBeingDragged ? 0.90 : 1.0
+
+        Behavior on scale {
+          NumberAnimation {
+            duration: 160
+            easing.type: Easing.OutCubic
+          }
         }
 
-        MouseArea {
-          id: handleArea
-          anchors.fill: parent
-          cursorShape: Qt.OpenHandCursor
-          preventStealing: true
+        Behavior on opacity {
+          NumberAnimation { duration: 140 }
+        }
 
-          property real startGlobalY: 0
+        function focusBlock(position) {
+          renderer.focusEditor(position)
+        }
+
+        function focusChildBlock(blockId, position, rangeStart, rangeEnd, xPosition) {
+          return renderer.focusChildBlock(blockId, position, rangeStart, rangeEnd,
+                                          xPosition)
+        }
+
+        function focusBlockAtX(xPosition) {
+          renderer.focusEditorAtX(xPosition)
+        }
+
+        function focusBlockAtRange(start, end) {
+          renderer.focusEditorRange(start, end)
+        }
+
+        function applyCommand(command) {
+          if (!command)
+            return
+          root.model.updateBlockText(delegateRoot.blockId, "")
+          if (root.model.changeBlockType(delegateRoot.blockId, command.type, command.level)) {
+            if (command.type === 7 /* Divider */) {
+              // Insert a new paragraph below the divider so typing can immediately continue
+              const newId = root.insertParagraphAfter(delegateRoot.blockId)
+              if (newId.length > 0)
+                root.requestFocusBlock(newId, 0)
+            } else {
+              root.requestFocusBlock(delegateRoot.blockId, 0)
+            }
+          }
+        }
+
+        function closeCommandMenu() {
+          renderer.commandMenuActive = false
+        }
+
+        function refreshBlock() {
+          renderer.refreshFromModel()
+        }
+
+        BlockRenderer {
+          id: renderer
+
+          anchors.top: parent.top
+          anchors.left: parent.left
+          anchors.right: parent.right
+
+          model: root.model
+          delegateComponent: blockDelegateComponent
+          blockId: delegateRoot.blockId
+          content: delegateRoot.content
+          blockType: delegateRoot.blockType
+          headingLevel: delegateRoot.headingLevel
+          numberIndex: delegateRoot.numberIndex
+          alignment: delegateRoot.alignment
+          isChecked: delegateRoot.checked
+          calloutType: delegateRoot.calloutType || "note"
+          codeLanguage: delegateRoot.codeLanguage || ""
+          imageSource: delegateRoot.imageSource || ""
+          imageWidthRatio: delegateRoot.imageWidthRatio !== undefined ? delegateRoot.imageWidthRatio : 1.0
+          blockMetadata: delegateRoot.metadata
+          isBlockHovered: delegateRoot.isHovered
+          hoverX: delegateRoot.hoverX
+          hoverY: delegateRoot.hoverY
+          showPlaceholder: delegateRoot.index === 0 && root.model.visibleCount() === 1
+          searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
+          searchNavigationActive: root.searchNavigationActive
+
+          onCaretMoved: function(position, cursorGlobalY, cursorHeight) {
+            root.caretBlockId = delegateRoot.blockId
+            root.caretPosition = position
+            root.ensureCursorVisible(cursorGlobalY, cursorHeight)
+          }
+
+          onSearchNavigated: function(direction) {
+            root.moveSearchMatch(direction)
+          }
+
+          onSearchDismissed: {
+            root.dismissSearchHighlights()
+          }
+
+          onSearchEditStarted: {
+            // Typing or pressing Enter ends the navigation session before the
+            // text change reaches the model.
+            root.dismissSearchHighlights()
+          }
+
+          onFocusRequested: function(position) {
+            root.requestFocusBlock(delegateRoot.blockId, position)
+          }
+
+          onFocusDelegateRequested: function(row, position) {
+            root.focusDelegateAt(row, position)
+          }
+
+          onTabRequested: function(direction) {
+            root.focusAdjacentEditable(delegateRoot.blockId, direction, -1)
+          }
+
+          onImageMenuRequested: function(blockId, globalX, globalY, globalBottom) {
+            const top = root.mapFromItem(null, globalX, globalY)
+            const bottom = root.mapFromItem(null, globalX, globalBottom)
+            root.activeImageBlockDelegate = delegateRoot
+            imageSourceMenu.openFor(blockId, top.x, top.y, bottom.y)
+          }
+
+          onMoveFocusRequested: function(direction, xPosition) {
+            // Inside a column, first try the next sibling block. Navigation is
+            // model-driven so the shared delegate does not depend on which
+            // ListView (main list or column list) instantiated it.
+            if (delegateRoot.isColumnChild) {
+              const siblings = root.model.blocksOfColumn(delegateRoot.columnId)
+              const next = siblings.indexOf(delegateRoot.blockId) + direction
+
+              if (next >= 0 && next < siblings.length) {
+                root.requestFocusBlock(siblings[next], -1, -1, -1, xPosition)
+                return
+              }
+            }
+
+            // Top-level blocks and column edges continue in document order,
+            // which crosses into the next column transparently.
+            root.focusAdjacentEditable(delegateRoot.blockId, direction,
+                                       xPosition)
+          }
+
+          onCommandMenuRequested: function(query, xPosition, yPosition, cursorHeight) {
+            // Subsequent text changes update the filtered commands, but do not
+            // re-run placement. This keeps an already-open menu above or below
+            // the cursor instead of flipping as its height changes.
+            if (root.activeCommandDelegate === delegateRoot
+                && renderer.commandMenuActive) {
+              commandMenu.openFor(query)
+              return
+            }
+
+            root.activeCommandDelegate = delegateRoot
+
+            documentView.positionViewAtIndex(
+              delegateRoot.index,
+              ListView.Contain
+            )
+
+            Qt.callLater(function() {
+              commandMenu.openFor(query)
+
+              // xPosition and yPosition are already in root coordinates of renderer
+              const menuPosition = renderer.mapToItem(
+                root,
+                xPosition,
+                yPosition
+              )
+
+              const gap = root.commandMenuGap
+              const actualCursorHeight = cursorHeight > 0 ? cursorHeight : 20
+              const availableBottom = root.height - root.bottomReservedSpace - 1
+              const belowY = menuPosition.y + actualCursorHeight + gap
+              const aboveY = menuPosition.y - gap - commandMenu.height
+
+              let flippedAbove = false
+              let menuY = belowY
+
+              // Default to below. Flip above when not enough space below to show the full height,
+              // and there is enough space above.
+              if (belowY + commandMenu.height > availableBottom && aboveY >= 0) {
+                menuY = aboveY
+                flippedAbove = true
+              }
+
+              // Constrain horizontally within visible editor bounds
+              commandMenu.x = Math.max(
+                8,
+                Math.min(root.width - commandMenu.width - 8, menuPosition.x)
+              )
+
+              root.commandMenuAbove = flippedAbove
+              root.commandMenuAnchorY = menuPosition.y
+              commandMenu.y = menuY
+              renderer.commandMenuActive = true
+            })
+          }
+
+          onCommandMenuDismissed: {
+            if (root.activeCommandDelegate === delegateRoot) {
+              if (commandMenu.mode === 1) {
+                commandMenu.cancelCount()
+              } else {
+                renderer.commandMenuActive = false
+                commandMenu.visible = false
+                root.activeCommandDelegate = null
+              }
+            }
+          }
+
+          onCommandMenuAccepted: {
+            if (root.activeCommandDelegate !== delegateRoot)
+              return
+
+            if (commandMenu.mode === 1) {
+              commandMenu.confirmCount()
+              return
+            }
+
+            const command = commandMenu.selectedCommand
+
+            if (command && command.type === 12) {
+              // Columns need a second step. Keep the delegate active so its
+              // keyboard handling still routes Return/ arrows to the picker.
+              commandMenu.visible = false
+              commandMenu.openCountPicker()
+              return
+            }
+
+            renderer.commandMenuActive = false
+            commandMenu.visible = false
+            root.activeCommandDelegate.applyCommand(command)
+            root.activeCommandDelegate = null
+          }
+
+          onCommandMenuNavigated: function(direction) {
+            if (root.activeCommandDelegate !== delegateRoot)
+              return
+
+            if (commandMenu.mode === 1)
+              commandMenu.moveCountSelection(direction)
+            else
+              commandMenu.moveSelection(direction)
+          }
+
+          onSelectionChanged: function(hasSelection, xPosition, yPosition, cursorHeight) {
+            if (!hasSelection) {
+              selectionTimer.stop()
+              root.pendingSelection = null
+              if (root.activeSelectionDelegate === delegateRoot && !selectionToolbar.hasActivePopup) {
+                selectionToolbar.showToolbar = false
+                root.activeSelectionDelegate = null
+              }
+              return
+            }
+
+            // If toolbar is currently visible, hide it while actively selecting/adjusting
+            if (root.activeSelectionDelegate !== delegateRoot) {
+              selectionToolbar.showToolbar = false
+            }
+
+            root.pendingSelection = {
+              delegate: delegateRoot,
+              renderer: renderer,
+              x: xPosition,
+              y: yPosition,
+              cursorHeight: cursorHeight
+            }
+
+            if (selectionToolbar.showToolbar && root.activeSelectionDelegate === delegateRoot) {
+              selectionTimer.stop()
+              selectionTimer.triggered()
+            } else {
+              selectionTimer.restart()
+            }
+          }
+
+          onEnterPressed: {
+            if (delegateRoot.blockType === 7 /* Divider */) {
+              const newId = root.insertParagraphAfter(delegateRoot.blockId)
+              if (newId.length > 0)
+                root.requestFocusBlock(newId, 0)
+              return
+            }
+
+            const currentText = renderer.editorText
+            const cursorPosition = renderer.cursorPosition
+          
+            // for a smoother markdown behaviour:
+            // Check if block is empty. For Callout (type 10), check if content is empty ignoring prefix.
+            const isCallout = delegateRoot.blockType === 10
+            const isCleanEmpty = isCallout
+                                 ? ((renderer.block && "cleanBody" in renderer.block) ? renderer.block.cleanBody.trim().length === 0 : (currentText.trim() === "" || currentText.indexOf("\n") < 0))
+                                 : (currentText.length === 0)
+
+            if ((delegateRoot.blockType === 2 || delegateRoot.blockType === 3 || delegateRoot.blockType === 4 || delegateRoot.blockType === 5 || delegateRoot.blockType === 10) && isCleanEmpty) {
+              if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
+                root.requestFocusBlock(delegateRoot.blockId, 0)
+              }
+              return
+            }
+
+            const newId = root.model.splitBlock(
+              delegateRoot.blockId,
+              cursorPosition,
+              currentText
+            )
+            if (newId.length === 0) return
+
+            // The new block's delegate may not exist yet; the focus intent is
+            // applied as soon as it is created.
+            root.requestFocusBlock(newId, 0)
+          }
+
+          onBackspacePressed: {
+            const currentText = renderer.editorText
+            const currentType = delegateRoot.blockType
+            // Resolve the caret target from the document, not from the current
+            // ListView. The previous block may be rendered by another column or
+            // may not have a delegate at all; itemAtIndex() would then return
+            // null and the empty block would simply disappear on backspace.
+            const previousId = root.previousEditableBlockId(delegateRoot.blockId)
+
+            if (currentType === 7 /* Divider */) {
+              if (root.model.removeBlock(delegateRoot.blockId)) {
+                if (previousId.length > 0)
+                  root.requestFocusBlock(previousId, -1)
+              }
+              return
+            }
+
+            // If this is a specialized block (Quote, List, Todo, Callout), pressing backspace
+            // at cursor position 0 should demote it to a Paragraph first instead of
+            // immediately merging into the previous block and deleting the current block!
+            if (currentType !== 0) {
+              if (root.model.changeBlockType(delegateRoot.blockId, 0, 0)) {
+                root.requestFocusBlock(delegateRoot.blockId, 0)
+              }
+              return
+            }
+
+            // Nothing to merge into or focus: keep the first editable block
+            // instead of deleting it and leaving the caret nowhere.
+            if (previousId.length === 0)
+              return
+
+            if (currentText.length === 0) {
+              // A column always keeps at least one editable paragraph.
+              if (delegateRoot.isColumnChild
+                  && root.model.blocksOfColumn(delegateRoot.columnId).length === 1) {
+                const newId = root.model.appendBlockToColumn(delegateRoot.columnId)
+                root.model.removeBlock(delegateRoot.blockId)
+                if (newId.length > 0)
+                  root.requestFocusBlock(newId, 0)
+                return
+              }
+
+              if (root.model.removeBlock(delegateRoot.blockId)) {
+                if (previousId.length > 0)
+                  root.requestFocusBlock(previousId, -1)
+              }
+              return
+            }
+
+            if (root.model.mergeWithPrevious(
+                  delegateRoot.blockId,
+                  currentText)) {
+              if (previousId.length > 0)
+                root.requestFocusBlock(previousId, -1)
+            }
+          }
+
+          onUndoRequested: {
+            root.undoFrom(delegateRoot.blockId, delegateRoot.index)
+          }
+
+          onRedoRequested: {
+            root.redoFrom(delegateRoot.blockId, delegateRoot.index)
+          }
+        }
+
+        Menu {
+          id: blockOptionsMenu
+
+          MenuItem {
+            text: "Duplicate"
+            icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_copy_20_regular.svg"
+            onTriggered: {
+              const newId = root.model.duplicateBlock(delegateRoot.blockId)
+              if (newId.length > 0)
+                root.requestFocusBlock(newId, 0)
+            }
+          }
+
+          MenuSeparator {}
+
+          MenuItem {
+            text: "Delete block"
+            icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_delete_20_regular.svg"
+            onTriggered: root.model.removeBlock(delegateRoot.blockId)
+          }
+        }
+
+        // Drag handle on the left margin
+        Item {
+          id: dragHandle
+          visible: !delegateRoot.isColumnChild
+          width: 18
+          height: 24
+          x: -20
+          y: Math.max(0, Math.round((renderer.firstLineHeight - height) / 2))
+          z: 20
+
+          // Purely mouse-hover driven: show only on the block the mouse is hovering over
+          property bool shouldShow: {
+            if (root.isDraggingBlock) return false
+            if (delegateRoot.isColumnChild && columnLayoutRenderer
+                && columnLayoutRenderer.childDraggingBlockId === delegateRoot.blockId)
+              return false
+            if (handleArea.pressed) return true
+            return delegateRoot.isHovered
+          }
 
           Timer {
-            id: holdTimer
+            id: showTimer
             interval: 200
             repeat: false
+            running: dragHandle.shouldShow && dragHandle.opacity === 0
             onTriggered: {
-              if (handleArea.pressed) {
+              if (dragHandle.shouldShow) {
+                dragHandle.opacity = 1.0
+              }
+            }
+          }
+
+          onShouldShowChanged: {
+            if (!shouldShow) {
+              showTimer.stop()
+              dragHandle.opacity = 0.0
+            }
+          }
+
+          opacity: 0.0
+          Behavior on opacity {
+            NumberAnimation { duration: 250; easing.type: Easing.InOutQuad }
+          }
+
+          Rectangle {
+            anchors.fill: parent
+            radius: 4
+            color: handleArea.pressed ? Theme.surfaceAlt : (handleHover.hovered ? Theme.surfaceHover : "transparent")
+          }
+
+          IconImage {
+            anchors.centerIn: parent
+            width: 16
+            height: 16
+            source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
+            color: Theme.textMuted
+          }
+
+          HoverHandler {
+            id: handleHover
+          }
+
+          MouseArea {
+            id: handleArea
+            anchors.fill: parent
+            cursorShape: Qt.OpenHandCursor
+            preventStealing: true
+
+            property real startGlobalX: 0
+            property real startGlobalY: 0
+            property bool wasDragging: false
+
+            Timer {
+              id: holdTimer
+              interval: 200
+              repeat: false
+              onTriggered: {
+                if (!handleArea.pressed)
+                  return
+
+                if (delegateRoot.isColumnChild) {
+                  if (root.beginNestedChildDrag(delegateRoot.blockId,
+                                                handleArea.startGlobalX,
+                                                handleArea.startGlobalY))
+                    handleArea.cursorShape = Qt.ClosedHandCursor
+                  return
+                }
+
                 root.draggingBlockId = delegateRoot.blockId
                 root.draggingSourceIndex = delegateRoot.index
                 root.dropTargetIndex = delegateRoot.index
@@ -1328,60 +1780,160 @@ Item {
                 handleArea.cursorShape = Qt.ClosedHandCursor
               }
             }
-          }
 
-          onPressed: function(mouse) {
-            startGlobalY = mapToItem(null, mouse.x, mouse.y).y
-            root.dragGlobalY = startGlobalY
-            holdTimer.restart()
-          }
+            onPressed: function(mouse) {
+              startGlobalX = mapToItem(null, mouse.x, mouse.y).x
+              startGlobalY = mapToItem(null, mouse.x, mouse.y).y
+              root.dragGlobalY = startGlobalY
+              wasDragging = false
+              holdTimer.restart()
+            }
 
-          onPositionChanged: function(mouse) {
-            const currentGlobalY = mapToItem(null, mouse.x, mouse.y).y
-            root.dragGlobalY = currentGlobalY
+            onPositionChanged: function(mouse) {
+              const currentGlobalY = mapToItem(null, mouse.x, mouse.y).y
+              root.dragGlobalY = currentGlobalY
 
-            if (!root.isDraggingBlock) return
+              if (delegateRoot.isColumnChild) {
+                if (root.nestedDragChildId.length > 0) {
+                  const global = mapToItem(null, mouse.x, mouse.y)
+                  root.updateNestedChildDrag(global.x, global.y)
+                }
+                return
+              }
 
-            root.draggingVisualY = currentGlobalY - startGlobalY
-            root.updateDragTarget()
-          }
+              if (!root.isDraggingBlock) return
 
-          onReleased: function(mouse) {
-            holdTimer.stop()
-            handleArea.cursorShape = Qt.OpenHandCursor
+              root.draggingVisualY = currentGlobalY - startGlobalY
+              root.updateDragTarget()
+            }
 
-            if (root.isDraggingBlock) {
-              const src = root.draggingSourceIndex
-              const dst = root.dropTargetIndex
-              const blockId = root.draggingBlockId
+            onReleased: function(mouse) {
+              holdTimer.stop()
+              handleArea.cursorShape = Qt.OpenHandCursor
+
+              if (delegateRoot.isColumnChild) {
+                if (root.nestedDragChildId.length > 0) {
+                  wasDragging = true
+                  root.endNestedChildDrag()
+                }
+                return
+              }
+
+              if (root.isDraggingBlock) {
+                wasDragging = true
+                const src = root.draggingSourceIndex
+                const dst = root.dropTargetIndex
+                const blockId = root.draggingBlockId
+
+                root.draggingBlockId = ""
+                root.draggingSourceIndex = -1
+                root.dropTargetIndex = -1
+                root.draggingVisualY = 0
+
+                if (src !== dst && src >= 0 && dst >= 0) {
+                  root.moveBlockToVisibleRow(blockId, dst)
+                }
+              }
+            }
+
+            onClicked: function(mouse) {
+              if (mouse.button === Qt.LeftButton && !wasDragging)
+                blockOptionsMenu.popup()
+            }
+
+            onCanceled: {
+              holdTimer.stop()
+              handleArea.cursorShape = Qt.OpenHandCursor
+
+              if (delegateRoot.isColumnChild) {
+                root.cancelNestedChildDrag()
+                return
+              }
 
               root.draggingBlockId = ""
               root.draggingSourceIndex = -1
               root.dropTargetIndex = -1
               root.draggingVisualY = 0
-
-              if (src !== dst && src >= 0 && dst >= 0) {
-                root.model.moveBlock(blockId, dst)
-              }
             }
-          }
-
-          onCanceled: {
-            holdTimer.stop()
-            handleArea.cursorShape = Qt.OpenHandCursor
-            root.draggingBlockId = ""
-            root.draggingSourceIndex = -1
-            root.dropTargetIndex = -1
-            root.draggingVisualY = 0
           }
         }
       }
     }
 
+    delegate: blockDelegateComponent
+
     // Fixed breathing room after the final block (top stays flush).
     footer: Item {
       width: documentView.width
       height: 200
+
+      MouseArea {
+        anchors.fill: parent
+        onClicked: {
+          const id = root.model.appendBlock(0, "")
+          if (id.length > 0)
+            root.requestFocusBlock(id, 0)
+        }
+      }
+    }
+  }
+
+  property var activeImageBlockDelegate: null
+
+  MouseArea {
+    visible: imageSourceMenu.isOpen
+    anchors.fill: parent
+    z: 29
+    onClicked: {
+      imageSourceMenu.close()
+      if (root.activeImageBlockDelegate
+          && root.activeImageBlockDelegate.rendererItem
+          && root.activeImageBlockDelegate.rendererItem.block
+          && "menuOpen" in root.activeImageBlockDelegate.rendererItem.block)
+        root.activeImageBlockDelegate.rendererItem.block.menuOpen = false
+      root.activeImageBlockDelegate = null
+    }
+  }
+
+  ImageSourceMenu {
+    id: imageSourceMenu
+    model: root.model
+    z: 30
+
+    onIsOpenChanged: {
+      if (!isOpen) {
+        if (root.activeImageBlockDelegate
+            && root.activeImageBlockDelegate.rendererItem
+            && root.activeImageBlockDelegate.rendererItem.block
+            && "menuOpen" in root.activeImageBlockDelegate.rendererItem.block)
+          root.activeImageBlockDelegate.rendererItem.block.menuOpen = false
+        root.activeImageBlockDelegate = null
+      }
+    }
+  }
+
+  Menu {
+    id: gutterOptionsMenu
+    objectName: "gutterOptionsMenu"
+    property string blockId: ""
+
+    MenuItem {
+      text: "Duplicate"
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_copy_20_regular.svg"
+      onTriggered: {
+        const id = gutterOptionsMenu.blockId
+        const newId = root.model.duplicateBlock(id)
+        if (newId.length > 0)
+          root.requestFocusBlock(newId, 0)
+      }
+    }
+
+    MenuSeparator {}
+
+    MenuItem {
+      text: "Delete block"
+      icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_delete_20_regular.svg"
+      onTriggered: root.model.removeBlock(gutterOptionsMenu.blockId)
     }
   }
 
@@ -1394,11 +1946,53 @@ Item {
     }
 
     onCommandSelected: function(command) {
-      if (root.activeCommandDelegate) {
-        root.activeCommandDelegate.applyCommand(command)
-        root.activeCommandDelegate.closeCommandMenu()
-        root.activeCommandDelegate = null
+      if (!root.activeCommandDelegate)
+        return
+
+      if (command && command.type === 12) {
+        visible = false
+        commandMenu.openCountPicker()
+        return
       }
+
+      root.activeCommandDelegate.applyCommand(command)
+      root.activeCommandDelegate.closeCommandMenu()
+      root.activeCommandDelegate = null
+      visible = false
+    }
+
+    onColumnCountConfirmed: function(count) {
+      const delegate = root.activeCommandDelegate
+
+      if (!delegate) {
+        visible = false
+        return
+      }
+
+      if (delegate.rendererItem)
+        delegate.rendererItem.commandMenuActive = false
+      root.activeCommandDelegate = null
+      visible = false
+      root.model.updateBlockText(delegate.blockId, "")
+
+      // A fresh layout should fill the editor: subtract the gaps and the add
+      // column strip that ColumnsBlock places after the last pane, then let
+      // the model split the remainder evenly. Individual panes stay resizable.
+      const columnSpacing = 8
+      const addStripWidth = 18
+      const available = documentView.width - (count - 1) * columnSpacing
+                        - addStripWidth
+      const newId = root.model.createColumnsLayout(
+        root.model.sourceRowOfVisibleRow(delegate.index), count, available)
+
+      if (newId.length > 0)
+        root.requestFocusBlock(newId, 0)
+    }
+
+    onPickerCancelled: {
+      if (root.activeCommandDelegate && root.activeCommandDelegate.rendererItem)
+        root.activeCommandDelegate.rendererItem.commandMenuActive = false
+      root.activeCommandDelegate = null
       visible = false
     }
   }

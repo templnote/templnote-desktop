@@ -529,12 +529,14 @@ Item {
                 height: 18
 
                 // Column Top Pill Handle (Notion style)
-                Rectangle {
+                IconImage {
                   id: colPill
                   anchors.centerIn: parent
-                  width: 32
-                  height: 5
-                  radius: 2.5
+                  width: 20
+                  height: 20
+                  sourceSize.width: 20
+                  sourceSize.height: 20
+                  source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg"
                   color: (colDragArea.containsMouse || root.hoveredColIndex === index
                           || (root.isDraggingCol && root.draggingColIndex === index))
                          ? Theme.accent
@@ -648,11 +650,13 @@ Item {
                   id: rowHandleHover
                 }
 
-                Rectangle {
+                IconImage {
                   anchors.centerIn: parent
-                  width: 5
-                  height: 32
-                  radius: 2.5
+                  width: 20
+                  height: 20
+                  sourceSize.width: 20
+                  sourceSize.height: 20
+                  source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
                   color: (rowHandleMouseArea.pressed || rowDelegate.isRowHovered
                           || (root.isDraggingRow && root.draggingRowIndex === index))
                          ? Theme.accent

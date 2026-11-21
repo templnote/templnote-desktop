@@ -22,6 +22,8 @@ Item {
   property real hoverY: -1
   property bool showPlaceholder: false
   property var model: null
+  // Shared block delegate used by column layouts for their child blocks.
+  property var delegateComponent: null
 
   readonly property var block: loader.item
   readonly property int cursorPosition: block ? block.cursorPosition : 0
@@ -35,6 +37,9 @@ Item {
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
+  signal tabRequested(int direction)
+  signal imageMenuRequested(string blockId, real globalX, real globalY,
+                            real globalBottom)
   signal caretMoved(int position, real cursorGlobalY, real cursorHeight)
   signal commandMenuRequested(string query, real xPosition, real yPosition, real cursorHeight)
   signal commandMenuDismissed()
@@ -116,6 +121,55 @@ Item {
       block.refreshFromModel()
   }
 
+  function focusChildBlock(blockId, position, rangeStart, rangeEnd, xPosition) {
+    if (block && typeof block.focusChildBlock === "function")
+      return block.focusChildBlock(blockId, position, rangeStart, rangeEnd,
+                                   xPosition)
+    return false
+  }
+
+  readonly property string hoveredChildBlockId: block && "hoveredChildBlockId" in block
+                                                ? block.hoveredChildBlockId : ""
+  readonly property bool childDragActive: block
+                                          && typeof block.childDragActive === "boolean"
+                                          ? block.childDragActive : false
+  readonly property string childDraggingBlockId: block && "childDraggingBlockId" in block
+                                                 ? block.childDraggingBlockId : ""
+  readonly property real childDraggingVisualX: block && "childDraggingVisualX" in block
+                                               ? block.childDraggingVisualX : 0
+  readonly property real childDraggingVisualY: block && "childDraggingVisualY" in block
+                                               ? block.childDraggingVisualY : 0
+  readonly property real childDraggingItemHeight: block && "childDraggingItemHeight" in block
+                                                  ? block.childDraggingItemHeight : 0
+  readonly property int childDragSourceRow: block && "childDragSourceRow" in block
+                                            ? block.childDragSourceRow : -1
+  readonly property int childDragDropRow: block && "childDragDropRow" in block
+                                          ? block.childDragDropRow : -1
+  readonly property int childDragSourceColumn: block && "childDragSourceColumn" in block
+                                               ? block.childDragSourceColumn : -1
+  readonly property int childDragDropColumn: block && "childDragDropColumn" in block
+                                             ? block.childDragDropColumn : -1
+
+  function beginChildDrag(blockId, globalX, globalY) {
+    return block && typeof block.beginChildDrag === "function"
+           ? block.beginChildDrag(blockId, globalX, globalY) : false
+  }
+
+  function updateChildDrag(globalX, globalY) {
+    if (block && typeof block.updateChildDrag === "function")
+      block.updateChildDrag(globalX, globalY)
+  }
+
+  function endChildDrag() {
+    if (block && typeof block.endChildDrag === "function")
+      block.endChildDrag()
+  }
+
+  function cancelChildDrag() {
+    if (block && typeof block.cancelChildDrag === "function")
+      block.cancelChildDrag()
+  }
+
   function componentForType(type) {
     switch (type) {
     case 1: // BlockType::Heading
@@ -138,6 +192,10 @@ Item {
       return calloutComponent
     case 11: // BlockType::Table
       return tableComponent
+    case 12: // BlockType::Columns
+      return columnsComponent
+    case 13: // BlockType::Column is only rendered inside ColumnsBlock
+      return paragraphComponent
     default: // BlockType::Paragraph, and future types until implemented
       return paragraphComponent
     }
@@ -200,6 +258,11 @@ Item {
     TableBlock {}
   }
 
+  Component {
+    id: columnsComponent
+    ColumnsBlock {}
+  }
+
   Loader {
     id: loader
     anchors.fill: parent
@@ -231,6 +294,8 @@ Item {
         item.hoverY = Qt.binding(function() { return root.hoverY })
       item.showPlaceholder = Qt.binding(function() { return root.showPlaceholder })
       item.model = Qt.binding(function() { return root.model })
+      if ("delegateComponent" in item)
+        item.delegateComponent = Qt.binding(function() { return root.delegateComponent })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
       item.searchNavigationActive = Qt.binding(function() { return root.searchNavigationActive })
 
@@ -241,6 +306,10 @@ Item {
       item.undoRequested.connect(root.undoRequested)
       item.redoRequested.connect(root.redoRequested)
       item.moveFocusRequested.connect(root.moveFocusRequested)
+      if ("tabRequested" in item)
+        item.tabRequested.connect(root.tabRequested)
+      if ("imageMenuRequested" in item)
+        item.imageMenuRequested.connect(root.imageMenuRequested)
       item.commandMenuRequested.connect(root.commandMenuRequested)
       item.commandMenuDismissed.connect(root.commandMenuDismissed)
       item.commandMenuAccepted.connect(root.commandMenuAccepted)

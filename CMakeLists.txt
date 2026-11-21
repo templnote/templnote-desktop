@@ -99,6 +99,7 @@ qt_add_qml_module(templnote
   qml/Editor.qml
   qml/BlockRenderer.qml
   qml/CommandMenu.qml
+  qml/ImageSourceMenu.qml
   qml/SearchBar.qml
   qml/SearchWindow.qml
   qml/ResultsList.qml
@@ -133,6 +134,7 @@ qt_add_qml_module(templnote
   qml/blocks/TodoBlock.qml
   qml/blocks/ImageBlock.qml
   qml/blocks/TableBlock.qml
+  qml/blocks/ColumnsBlock.qml
 
   qml/SearchService/SearchService.qml
   qml/SearchService/LocalSearchService.qml
@@ -172,6 +174,7 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_arrow_autofit_width_20_regular.svg
   assets/icons/ic_fluent_globe_search_20_regular.svg
   assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
+  assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg
   assets/icons/ic_fluent_mic_pulse_20_regular.svg
   assets/icons/ic_fluent_chevron_down_20_regular.svg
   assets/icons/ic_fluent_copy_20_regular.svg

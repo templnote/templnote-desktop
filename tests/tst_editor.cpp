@@ -218,6 +218,60 @@ private slots:
     m_window = nullptr;
   }
 
+  void backspaceOnEmptyBlockFocusesPreviousBlock() {
+    BlockModel *blockModel = model();
+    const QString firstId = blockModel->blockIdAt(0);
+    const QString secondId = blockModel->blockIdAt(1);
+    QVERIFY(blockModel->updateBlockText(secondId, ""));
+    QTest::qWait(150);
+
+    QQuickItem *editor = editorForBlock(secondId);
+    QVERIFY(editor);
+    editor->forceActiveFocus();
+    editor->setProperty("cursorPosition", 0);
+    QTest::qWait(50);
+
+    QTest::keyClick(m_window, Qt::Key_Backspace);
+    QTest::qWait(250);
+
+    QCOMPARE(blockModel->rowCount(), 1);
+    QCOMPARE(blockModel->blockIdAt(0), firstId);
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), firstId);
+  }
+
+  void backspaceAfterLayoutFocusesPreviousEditableBlock() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(1, 2);
+
+    const QString layoutId = blockModel->blockIdAt(1);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+    const QString lastChild = blockModel->blocksOfColumn(columns.last()).last();
+
+    // The block after a layout is preceded in the view by the Columns wrapper,
+    // which cannot host a caret. Backspace must skip it and focus the last
+    // editable block inside the layout instead of losing the caret.
+    const QString emptyId = blockModel->appendBlock(0, "");
+    QTest::qWait(250);
+
+    QQuickItem *editor = editorForBlock(emptyId);
+    QVERIFY(editor);
+    editor->forceActiveFocus();
+    editor->setProperty("cursorPosition", 0);
+    QTest::qWait(50);
+
+    QTest::keyClick(m_window, Qt::Key_Backspace);
+    QTest::qWait(300);
+
+    QCOMPARE(blockModel->indexOfBlock(emptyId), -1);
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), lastChild);
+  }
+
   void undoMovesFocusAcrossBlocks() {
     auto textEditors = editors();
     QCOMPARE(textEditors.size(), 2);
@@ -999,6 +1053,362 @@ private slots:
     QCOMPARE(blockModel->data(idx, BlockModel::ImageSourceRole).toString(), QString("file:///tmp/test.png"));
     QCOMPARE(blockModel->data(idx, BlockModel::ImageWidthRatioRole).toDouble(), 0.65);
     QCOMPARE(blockModel->data(idx, BlockModel::ContentRole).toString(), QString("My Caption"));
+  }
+
+  void columnLayoutRendersAndFocusesChild() {
+    BlockModel *blockModel = model();
+    const QString childId = blockModel->createColumnsLayout(0, 2);
+    QVERIFY(!childId.isEmpty());
+    QVERIFY(blockModel->updateBlockText(childId, ""));
+
+    QTest::qWait(300);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    // Two column children plus the original second top-level block.
+    QVERIFY2(editors().size() >= 3, "ColumnsBlock should render its child editors");
+
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, childId),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(300);
+    QVERIFY(m_window->activeFocusItem());
+
+    typeText(m_window, "abc");
+    QTest::qWait(100);
+    QCOMPARE(blockModel->document().findBlock(childId)->text, QString("abc"));
+  }
+
+  void nestedGutterPillVisibleOnHover() {
+    BlockModel *blockModel = model();
+    const QString firstChildId = blockModel->createColumnsLayout(0, 2);
+    QVERIFY(!firstChildId.isEmpty());
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    // The nested reorder handles are Repeater delegates, which are not
+    // reachable through findChild(); walk the visual tree instead.
+    QList<QQuickItem *> pills;
+    std::function<void(QQuickItem *)> findPills = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      for (QQuickItem *child : item->childItems())
+        findPills(child);
+    };
+    findPills(m_window->contentItem());
+    QCOMPARE(pills.size(), 2);
+    QVERIFY2(pills[0]->opacity() < 0.01,
+             "Nested gutter pill should start hidden");
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const QPoint source = centerOf(pills[0]);
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(50);
+    QTest::mouseMove(m_window, source);
+    QTest::qWait(250);
+
+    // Hover is routed through ColumnsBlock.hoveredChildBlockId and compared
+    // against the Repeater's modelData. modelData is a QML context property,
+    // so qualifying it as childHandle.modelData makes it undefined and the
+    // pill never appears.
+    QVERIFY2(pills[0]->opacity() > 0.9,
+             "Nested gutter pill should appear when its block is hovered");
+
+    // The same modelData is passed to beginChildDrag, so a cross-column drag
+    // from the pill must reparent the correct block.
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columnIds = blockModel->columnIdsOf(layoutId);
+    QCOMPARE(columnIds.size(), 2);
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    const QPoint target = centerOf(pills[1]) + QPoint(220, 0);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->columnIdOfBlock(firstChildId), columnIds.at(1));
+  }
+
+  void eachColumnHasIndependentResizeSlider() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> dividers;
+    QQuickItem *flickable = nullptr;
+    std::function<void(QQuickItem *)> findDividers = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      if (item->objectName() == "columnsFlickable")
+        flickable = item;
+      for (QQuickItem *child : item->childItems())
+        findDividers(child);
+    };
+    findDividers(m_window->contentItem());
+    QCOMPARE(dividers.size(), 2);
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+    QCOMPARE(columns.size(), 2);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const double left0 = blockModel->columnWidth(columns[0]);
+    const double right0 = blockModel->columnWidth(columns[1]);
+
+    // Drag the first pane's own slider: only it grows.
+    const QPoint first = centerOf(dividers[0]);
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, first);
+    QTest::mouseMove(m_window, first + QPoint(100, 0));
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier,
+                        first + QPoint(100, 0));
+    QTest::qWait(200);
+
+    QVERIFY2(blockModel->columnWidth(columns[0]) > left0 + 80,
+             "First pane should grow via its own slider");
+    QVERIFY2(qFuzzyCompare(blockModel->columnWidth(columns[1]), right0),
+             "Dragging one slider must not resize its neighbour");
+
+    // The last pane has its own slider too and can be resized independently.
+    // After growing the first pane the layout overflows, so scroll it into view.
+    QVERIFY(flickable);
+    flickable->setProperty("contentX",
+                           flickable->property("contentWidth").toDouble()
+                           - flickable->width());
+    QTest::qWait(100);
+
+    const double middle = blockModel->columnWidth(columns[1]);
+    const QPoint second = centerOf(dividers[1]);
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, second);
+    QTest::mouseMove(m_window, second + QPoint(100, 0));
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier,
+                        second + QPoint(100, 0));
+    QTest::qWait(200);
+
+    QVERIFY2(blockModel->columnWidth(columns[1]) > middle + 80,
+             "Last pane should grow via its own slider");
+    QVERIFY(blockModel->columnWidth(columns[0]) > left0 + 80);
+  }
+
+  void gutterHoverAndClick() {
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+
+    const QString secondId = model()->blockIdAt(1);
+    QVERIFY(!secondId.isEmpty());
+
+    // documentView starts around x=50; the handle sits in its 30px left margin.
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(50);
+    QTest::mouseMove(m_window, QPoint(36, 190));
+    QTest::qWait(150);
+    QCOMPARE(editorObject->property("gutterHoverBlockId").toString(), secondId);
+
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, QPoint(36, 190));
+    QTest::qWait(150);
+    QObject *menu = m_window->findChild<QObject *>("gutterOptionsMenu");
+    QVERIFY(menu);
+    QVERIFY(menu->property("visible").toBool());
+    QCOMPARE(menu->property("blockId").toString(), secondId);
+  }
+
+  void gutterDragReordersBlocks() {
+    const QString firstBefore = model()->blockIdAt(0);
+    const QString secondBefore = model()->blockIdAt(1);
+    QVERIFY(!firstBefore.isEmpty() && !secondBefore.isEmpty());
+
+    // Hold the second block's gutter handle, then drag it above the first.
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, QPoint(36, 190));
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, QPoint(36, 140));
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(36, 140));
+    QTest::qWait(200);
+
+    QCOMPARE(model()->blockIdAt(0), secondBefore);
+    QCOMPARE(model()->blockIdAt(1), firstBefore);
+  }
+
+  void clickingEmptyFooterCreatesBlock() {
+    const int before = model()->count();
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, QPoint(400, 300));
+    QTest::qWait(200);
+
+    QCOMPARE(model()->count(), before + 1);
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QCOMPARE(editorObject->property("caretBlockId").toString(),
+             model()->blockIdAt(before));
+  }
+
+  void clickingColumnTailCreatesBlock() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString column = blockModel->columnIdsOf(layoutId).first();
+    const int before = blockModel->blocksOfColumn(column).size();
+
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, QPoint(150, 180));
+    QTest::qWait(200);
+
+    const QStringList after = blockModel->blocksOfColumn(column);
+    QCOMPARE(after.size(), before + 1);
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), after.last());
+  }
+
+  void commandMenuCreatesColumnLayout() {
+    auto textEditors = editors();
+    QVERIFY(textEditors.size() >= 2);
+
+    // The command menu only opens for paragraph blocks, and only when the
+    // slash is the first character of the block.
+    QVERIFY(model()->updateBlockText(model()->blockIdAt(1), ""));
+    QTest::qWait(100);
+    textEditors = editors();
+
+    textEditors[1]->forceActiveFocus();
+    QTest::qWait(50);
+    typeText(m_window, "/col");
+    QTest::qWait(200);
+    QObject *menu = m_window->findChild<QObject *>("commandMenu");
+    QVERIFY(menu && menu->property("visible").toBool());
+
+    // Select "Columns" from the slash menu.
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(200);
+
+    // Confirm the second-step count picker (default 2 columns).
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(400);
+
+    QCOMPARE(model()->document().blockAt(1)->type, BlockType::Columns);
+
+    const QString layoutId = model()->blockIdAt(1);
+    const QStringList columns = model()->columnIdsOf(layoutId);
+    QCOMPARE(columns.size(), 2);
+
+    // A fresh layout fills the editor: the two panes split the available
+    // width (editor width minus the gap and the add-column strip) evenly.
+    QQuickItem *documentView = m_window->findChild<QQuickItem *>("documentView");
+    QVERIFY(documentView);
+    const double expected = documentView->width() - 8 - 18;
+    double total = 0.0;
+    for (const QString &id : columns)
+      total += model()->columnWidth(id);
+    QVERIFY2(qAbs(total - expected) < 1.0,
+             "New columns should share the editor's available width");
+    QVERIFY(qFuzzyCompare(model()->columnWidth(columns[0]),
+                          model()->columnWidth(columns[1])));
+  }
+
+  void arrowNavigationCrossesColumns() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+    QCOMPARE(columns.size(), 2);
+
+    const QString first = blockModel->blocksOfColumn(columns[0])[0];
+    const QString second = blockModel->appendBlockToColumn(columns[0]);
+    const QString inNextColumn = blockModel->blocksOfColumn(columns[1])[0];
+    blockModel->updateBlockText(first, "a");
+    blockModel->updateBlockText(second, "b");
+    blockModel->updateBlockText(inNextColumn, "c");
+    QTest::qWait(300);
+
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, first),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(200);
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), first);
+
+    QTest::keyClick(m_window, Qt::Key_Down);
+    QTest::qWait(150);
+    const QString afterDown = editorObject->property("caretBlockId").toString();
+    QCOMPARE(afterDown, second);
+
+    QTest::keyClick(m_window, Qt::Key_Down);
+    QTest::qWait(150);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), inNextColumn);
+  }
+
+  void tabNavigationCrossesColumns() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+
+    const QString first = blockModel->blocksOfColumn(columns[0])[0];
+    const QString inNextColumn = blockModel->blocksOfColumn(columns[1])[0];
+    QTest::qWait(300);
+
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, first),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(200);
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), first);
+
+    QTest::keyClick(m_window, Qt::Key_Tab);
+    QTest::qWait(150);
+    QCOMPARE(editorObject->property("caretBlockId").toString(), inNextColumn);
+  }
+
+  void columnCollapseRemovesLayoutFromEditor() {
+    BlockModel *blockModel = model();
+    const QString childId = blockModel->createColumnsLayout(0, 2);
+    QVERIFY(!childId.isEmpty());
+    QTest::qWait(200);
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+    QCOMPARE(columns.size(), 2);
+    QVERIFY(blockModel->removeColumn(columns.first()));
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->document().blockAt(0)->type, BlockType::Paragraph);
+    QCOMPARE(blockModel->visibleCount(), 4);
+    QVERIFY(editors().size() >= 4);
+  }
+
+  void columnLayoutUndoRestoresTopLevelBlocks() {
+    BlockModel *blockModel = model();
+    const int originalCount = blockModel->count();
+    const QString childId = blockModel->createColumnsLayout(0, 3);
+    QVERIFY(!childId.isEmpty());
+    QTest::qWait(200);
+
+    QVERIFY(blockModel->undo());
+    QCOMPARE(blockModel->count(), originalCount);
+    QCOMPARE(blockModel->document().blockAt(0)->type, BlockType::Heading);
   }
 
 };

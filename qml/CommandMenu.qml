@@ -3,6 +3,7 @@ import QtQuick.Controls
 
 Rectangle {
   id: root
+  objectName: "commandMenu"
   property string query: ""
   property int selectedIndex: 0
   readonly property var selectedCommand: filtered.count > 0 ? filtered.get(selectedIndex) : null
@@ -12,9 +13,23 @@ Rectangle {
   readonly property int itemRowSpacing: 1
   readonly property int headerHeight: 40
   readonly property int bottomPadding: 8
+  readonly property int pickerHeight: 132
+
+  // 0 = formatting list, 1 = column count stepper. Column layouts are only
+  // created here; there is deliberately no markdown/typed trigger.
+  property int mode: 0
+  property int columnCount: 2
+  readonly property int minColumns: 2
+  readonly property int maxColumns: 5
+
+  signal columnCountConfirmed(int count)
+  signal pickerCancelled()
 
   width: 240
   height: {
+    if (root.mode === 1)
+      return root.pickerHeight
+
     const visibleCount = Math.min(filtered.count, root.maxVisibleItems)
     const listHeight = visibleCount > 0
         ? (visibleCount * root.itemRowHeight) + ((visibleCount - 1) * root.itemRowSpacing)
@@ -32,11 +47,44 @@ Rectangle {
 
   function openFor(text) {
     root.query = text
+    root.mode = 0
     rebuild()
     root.selectedIndex = 0
     if (commandList)
       commandList.positionViewAtIndex(0, ListView.Beginning)
     root.visible = true
+  }
+
+  function openCountPicker() {
+    root.mode = 1
+    root.columnCount = Math.max(root.minColumns,
+                                Math.min(root.maxColumns,
+                                         Preferences.columnCount | 0))
+    root.visible = true
+  }
+
+  function moveCountSelection(direction) {
+    if (root.mode !== 1)
+      return
+    root.columnCount = Math.max(root.minColumns,
+                                Math.min(root.maxColumns,
+                                         root.columnCount + direction))
+  }
+
+  function confirmCount() {
+    if (root.mode !== 1)
+      return
+    root.visible = false
+    root.mode = 0
+    root.columnCountConfirmed(root.columnCount)
+  }
+
+  function cancelCount() {
+    if (root.mode !== 1)
+      return
+    root.visible = false
+    root.mode = 0
+    root.pickerCancelled()
   }
 
   function rebuild() {
@@ -55,7 +103,8 @@ Rectangle {
       {label: "Divider", detail: "Visual divider line", shortcut: "---", type: 7, level: 0},
       {label: "Image", detail: "Upload or embed with a link", shortcut: "/image", type: 8, level: 0},
       {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0},
-      {label: "Table", detail: "Add a flexible table", shortcut: "/table", type: 11, level: 0}
+      {label: "Table", detail: "Add a flexible table", shortcut: "/table", type: 11, level: 0},
+      {label: "Columns", detail: "Side-by-side columns", shortcut: "Layout", type: 12, level: 0}
     ]
     for (let i = 0; i < commands.length; ++i) {
       const command = commands[i]
@@ -63,11 +112,8 @@ Rectangle {
           command.detail.toLowerCase().indexOf(q) >= 0)
         filtered.append(command)
     }
-    const visibleCount = Math.min(filtered.count, root.maxVisibleItems)
-    const listHeight = visibleCount > 0
-        ? (visibleCount * root.itemRowHeight) + ((visibleCount - 1) * root.itemRowSpacing)
-        : 0
-    root.height = root.headerHeight + listHeight + root.bottomPadding
+    // Height is a binding on mode/filtered.count; assigning it here used to
+    // leave the picker at the one-row list height and overlap its controls.
   }
 
   function selectFirst() {
@@ -82,10 +128,17 @@ Rectangle {
     commandList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
   }
 
-  Text { x: 16; y: 12; text: "Insert formatting"; color: Theme.textMuted; font.bold: true }
+  Text {
+    x: 16; y: 12
+    text: "Insert formatting"
+    color: Theme.textMuted
+    font.bold: true
+    visible: root.mode === 0
+  }
 
   ListView {
     id: commandList
+    visible: root.mode === 0
     anchors {
       top: parent.top
       topMargin: root.headerHeight
@@ -160,6 +213,166 @@ Rectangle {
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.commandSelected(filtered.get(index))
+      }
+    }
+  }
+
+  // Second step: choose how many columns to create.
+  Item {
+    id: countPanel
+    anchors.fill: parent
+    visible: root.mode === 1
+
+    Text {
+      x: 16
+      y: 10
+      text: "Number of columns"
+      color: Theme.textMuted
+      font.bold: true
+      font.pixelSize: 12
+    }
+
+    Item {
+      anchors {
+        top: parent.top
+        topMargin: 38
+        horizontalCenter: parent.horizontalCenter
+      }
+      width: 180
+      height: 40
+
+      Rectangle {
+        anchors.fill: parent
+        radius: 8
+        color: Theme.surfaceHover
+        border.color: Theme.border
+        border.width: 1
+      }
+
+      Rectangle {
+        id: minusButton
+        anchors {
+          left: parent.left
+          leftMargin: 4
+          verticalCenter: parent.verticalCenter
+        }
+        width: 30
+        height: 30
+        radius: 6
+        color: minusMouse.containsMouse ? Theme.tint(Theme.accent, 0.16)
+                                        : "transparent"
+
+        Text {
+          anchors.centerIn: parent
+          text: "−"
+          font.pixelSize: 20
+          color: Theme.text
+        }
+
+        MouseArea {
+          id: minusMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.moveCountSelection(-1)
+        }
+      }
+
+      Text {
+        anchors.centerIn: parent
+        text: root.columnCount + " columns"
+        color: Theme.text
+        font.pixelSize: 14
+        font.bold: true
+      }
+
+      Rectangle {
+        id: plusButton
+        anchors {
+          right: parent.right
+          rightMargin: 4
+          verticalCenter: parent.verticalCenter
+        }
+        width: 30
+        height: 30
+        radius: 6
+        color: plusMouse.containsMouse ? Theme.tint(Theme.accent, 0.16)
+                                       : "transparent"
+
+        Text {
+          anchors.centerIn: parent
+          text: "+"
+          font.pixelSize: 18
+          color: Theme.text
+        }
+
+        MouseArea {
+          id: plusMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.moveCountSelection(1)
+        }
+      }
+    }
+
+    Row {
+      anchors {
+        bottom: parent.bottom
+        bottomMargin: 10
+        horizontalCenter: parent.horizontalCenter
+      }
+      spacing: 8
+
+      Rectangle {
+        width: 88
+        height: 28
+        radius: 6
+        color: backMouse.containsMouse ? Theme.surfaceHover : "transparent"
+        border.color: Theme.border
+        border.width: 1
+
+        Text {
+          anchors.centerIn: parent
+          text: "Back"
+          color: Theme.textMuted
+          font.pixelSize: 12
+        }
+
+        MouseArea {
+          id: backMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.cancelCount()
+        }
+      }
+
+      Rectangle {
+        width: 88
+        height: 28
+        radius: 6
+        color: insertMouse.containsMouse
+               ? Theme.tint(Theme.accent, 0.16)
+               : Theme.tint(Theme.accent, 0.08)
+        border.color: Theme.accent
+        border.width: 1
+
+        Text {
+          anchors.centerIn: parent
+          text: "Insert"
+          color: Theme.accent
+          font.pixelSize: 12
+          font.bold: true
+        }
+
+        MouseArea {
+          id: insertMouse
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.confirmCount()
+        }
       }
     }
   }

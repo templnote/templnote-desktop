@@ -166,13 +166,26 @@ Rectangle {
   }
 
   // Switching documents must not silently discard edits: save first and
-  // abort the switch if the save fails.
+  // abort the switch if the save fails. An untitled document has no file of
+  // its own, so its edits go into a fresh Untitled file instead.
+  function savePendingEdits() {
+    const model = root.documentModel
+
+    if (!model || !model.isModified)
+      return true
+
+    if (model.currentFilePath.length > 0)
+      return model.saveCurrentDocument()
+
+    const path = root.documentList.createUntitledPath()
+    return path.length > 0 && model.saveDocument(path)
+  }
+
   function openDocument(path) {
     if (!root.documentModel || !path || path.length === 0)
       return false
 
-    if (root.documentModel.isModified &&
-        !root.documentModel.saveCurrentDocument())
+    if (!root.savePendingEdits())
       return false
 
     return root.documentModel.loadDocument(path)
@@ -302,8 +315,7 @@ Rectangle {
 
     // Creating a document replaces the open one, so persist pending edits
     // first and abort if the save fails, matching openDocument().
-    if (root.documentModel.isModified &&
-        !root.documentModel.saveCurrentDocument())
+    if (!root.savePendingEdits())
       return
 
     const path = root.documentList.createUntitledPath()

@@ -17,12 +17,14 @@ enum class BlockType : qint8 {
   Image = 8,
   Toggle = 9,
   Callout = 10,
-  Table = 11
+  Table = 11,
+  Columns = 12,
+  Column = 13
 };
 
 constexpr bool isValidBlockType(int value) {
   return value >= static_cast<int>(BlockType::Paragraph) &&
-         value <= static_cast<int>(BlockType::Table);
+         value <= static_cast<int>(BlockType::Column);
 }
 
 // Block types are stored by name in .templnote files so that reordering or
@@ -53,6 +55,10 @@ inline QString blockTypeName(BlockType type) {
     return QStringLiteral("callout");
   case BlockType::Table:
     return QStringLiteral("table");
+  case BlockType::Columns:
+    return QStringLiteral("columns");
+  case BlockType::Column:
+    return QStringLiteral("column");
   }
 
   return QStringLiteral("paragraph");
@@ -86,6 +92,10 @@ inline BlockType blockTypeFromName(const QString &name, bool *ok = nullptr) {
     return BlockType::Callout;
   if (name == QLatin1String("table"))
     return BlockType::Table;
+  if (name == QLatin1String("columns"))
+    return BlockType::Columns;
+  if (name == QLatin1String("column"))
+    return BlockType::Column;
 
   if (ok)
     *ok = false;

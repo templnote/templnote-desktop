@@ -107,16 +107,17 @@ Item {
     // Model reactive bindings update properties automatically
   }
 
-  FileDialog {
-    id: fileDialog
-    title: "Select Image"
-    nameFilters: ["Image files (*.png *.jpg *.jpeg *.webp *.svg *.gif *.bmp)"]
-    onAccepted: {
-      if (selectedFile) {
-        var imported = root.model.importAttachment(selectedFile)
-        root.model.setBlockImageSource(root.blockId, imported)
-        root.menuOpen = false
-      }
+  signal imageMenuRequested(string blockId, real globalX, real globalY,
+                            real globalBottom)
+
+  function toggleSourceMenu() {
+    root.menuOpen = !root.menuOpen
+
+    if (root.menuOpen) {
+      const target = root.hasImage ? imageContainer : placeholderBox
+      const position = target.mapToItem(null, 0, 0)
+      root.imageMenuRequested(root.blockId, position.x, position.y,
+                              position.y + target.height)
     }
   }
 
@@ -133,8 +134,12 @@ Item {
     anchors.top: parent.top
     height: 44
     radius: 6
-    color: placeholderHover.hovered || root.activeFocus ? (Theme.isDark ? "#2a2d32" : "#f1f3f5") : (Theme.isDark ? "#1e2023" : "#f8f9fa")
-    border.color: root.activeFocus ? Theme.accent : (placeholderHover.hovered ? Theme.border : "transparent")
+    color: placeholderHover.hovered || root.activeFocus
+           ? (Theme.isDark ? "#2a2d32" : "#f1f3f5")
+           : (Theme.isDark ? "#1e2023" : "#f8f9fa")
+    border.color: root.activeFocus
+                  ? Theme.accent
+                  : (placeholderHover.hovered ? Theme.border : "transparent")
     border.width: 1
 
     HoverHandler {
@@ -142,9 +147,7 @@ Item {
     }
 
     TapHandler {
-      onTapped: {
-        root.menuOpen = !root.menuOpen
-      }
+      onTapped: root.toggleSourceMenu()
     }
 
     Keys.onPressed: function(event) {
@@ -156,7 +159,7 @@ Item {
         root.menuOpen = false
       } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
         event.accepted = true
-        root.menuOpen = !root.menuOpen
+        root.toggleSourceMenu()
       } else if (event.key === Qt.Key_Up) {
         event.accepted = true
         root.moveFocusRequested(-1, 0)
@@ -185,205 +188,6 @@ Item {
         font.pixelSize: 14
         color: Theme.textMuted
         anchors.verticalCenter: parent.verticalCenter
-      }
-    }
-  }
-
-  // ==========================================
-  // IMAGE POPUP MENU (Auto-flipping & tabs)
-  // ==========================================
-  Rectangle {
-    id: sourceMenu
-    visible: root.menuOpen
-    z: 100
-    width: 360
-    height: 140
-    radius: 8
-    color: Theme.surface
-    border.color: Theme.border
-    border.width: 1
-
-    property int activeTab: 0 // 0: Upload, 1: Link
-    property bool flipUp: false
-
-    function updateFlipping() {
-      // Calculate target global rect based on whichever anchor element is visible
-      var targetItem = root.hasImage ? imageContainer : placeholderBox
-      var globalPos = targetItem.mapToItem(null, 0, 0)
-      var windowHeight = root.Window.window ? root.Window.window.height : 600
-      var targetBottom = globalPos.y + targetItem.height
-      var spaceBelow = windowHeight - targetBottom
-      // If not enough room below for the menu (height + 10 margin), and more space above, flip up
-      flipUp = (spaceBelow < (sourceMenu.height + 10)) && (globalPos.y > (sourceMenu.height + 10))
-    }
-
-    onVisibleChanged: {
-      if (visible) {
-        updateFlipping()
-        if (activeTab === 1) linkTextInput.forceActiveFocus()
-      }
-    }
-
-    anchors.left: parent.left
-    anchors.leftMargin: root.hasImage ? Math.max(0, Math.min(imageContainer.x, parent.width - width)) : 0
-    anchors.top: !flipUp ? (root.hasImage ? imageContainer.bottom : placeholderBox.bottom) : undefined
-    anchors.bottom: flipUp ? (root.hasImage ? imageContainer.top : placeholderBox.top) : undefined
-    anchors.topMargin: !flipUp ? 6 : 0
-    anchors.bottomMargin: flipUp ? 6 : 0
-
-    Column {
-      anchors.fill: parent
-      anchors.margins: 10
-      spacing: 10
-
-      // Tab switcher
-      Row {
-        spacing: 12
-        Rectangle {
-          height: 28
-          width: 70
-          radius: 4
-          color: sourceMenu.activeTab === 0 ? (Theme.isDark ? "#333842" : "#e9ecef") : "transparent"
-          Text {
-            anchors.centerIn: parent
-            text: "Upload"
-            font.pixelSize: 13
-            font.weight: sourceMenu.activeTab === 0 ? Font.DemiBold : Font.Normal
-            color: sourceMenu.activeTab === 0 ? Theme.text : Theme.textMuted
-          }
-          TapHandler {
-            onTapped: sourceMenu.activeTab = 0
-          }
-        }
-
-        Rectangle {
-          height: 28
-          width: 60
-          radius: 4
-          color: sourceMenu.activeTab === 1 ? (Theme.isDark ? "#333842" : "#e9ecef") : "transparent"
-          Text {
-            anchors.centerIn: parent
-            text: "Link"
-            font.pixelSize: 13
-            font.weight: sourceMenu.activeTab === 1 ? Font.DemiBold : Font.Normal
-            color: sourceMenu.activeTab === 1 ? Theme.text : Theme.textMuted
-          }
-          TapHandler {
-            onTapped: {
-              sourceMenu.activeTab = 1
-              linkTextInput.forceActiveFocus()
-            }
-          }
-        }
-      }
-
-      // Tab 0: Upload
-      Item {
-        visible: sourceMenu.activeTab === 0
-        width: parent.width
-        height: 60
-
-        Rectangle {
-          anchors.centerIn: parent
-          width: parent.width
-          height: 36
-          radius: 6
-          color: uploadBtnHover.hovered ? (Theme.isDark ? "#3a3f4b" : "#e2e6ea") : (Theme.isDark ? "#2c313a" : "#f1f3f5")
-          border.color: Theme.border
-          border.width: 1
-
-          HoverHandler {
-            id: uploadBtnHover
-          }
-
-          TapHandler {
-            onTapped: fileDialog.open()
-          }
-
-          Text {
-            anchors.centerIn: parent
-            text: "Upload file"
-            font.pixelSize: 13
-            font.weight: Font.Medium
-            color: Theme.text
-          }
-        }
-      }
-
-      // Tab 1: Link
-      Item {
-        visible: sourceMenu.activeTab === 1
-        width: parent.width
-        height: 60
-
-        Row {
-          anchors.fill: parent
-          spacing: 8
-
-          Rectangle {
-            width: parent.width - 96
-            height: 36
-            radius: 6
-            color: Theme.isDark ? "#1e2227" : "#ffffff"
-            border.color: linkTextInput.activeFocus ? Theme.accent : Theme.border
-            border.width: 1
-
-            TextInput {
-              id: linkTextInput
-              anchors.fill: parent
-              anchors.leftMargin: 8
-              anchors.rightMargin: 8
-              verticalAlignment: TextInput.AlignVCenter
-              color: Theme.text
-              font.pixelSize: 13
-              selectByMouse: true
-
-              Text {
-                visible: !linkTextInput.text && !linkTextInput.activeFocus
-                text: "Paste an image link..."
-                color: Theme.textMuted
-                font.pixelSize: 13
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.left: parent.left
-              }
-
-              onAccepted: {
-                if (text.trim().length > 0) {
-                  root.model.setBlockImageSource(root.blockId, text.trim())
-                  root.menuOpen = false
-                }
-              }
-            }
-          }
-
-          Rectangle {
-            width: 88
-            height: 36
-            radius: 6
-            color: embedBtnHover.hovered ? (Theme.isDark ? "#2563eb" : "#1d4ed8") : Theme.accent
-
-            HoverHandler {
-              id: embedBtnHover
-            }
-
-            TapHandler {
-              onTapped: {
-                if (linkTextInput.text.trim().length > 0) {
-                  root.model.setBlockImageSource(root.blockId, linkTextInput.text.trim())
-                  root.menuOpen = false
-                }
-              }
-            }
-
-            Text {
-              anchors.centerIn: parent
-              text: "Embed image"
-              font.pixelSize: 12
-              font.weight: Font.Medium
-              color: "#ffffff"
-            }
-          }
-        }
       }
     }
   }
@@ -622,7 +426,7 @@ Item {
           color: replaceHover.hovered ? (Theme.isDark ? "#3a3f4b" : "#e9ecef") : "transparent"
           HoverHandler { id: replaceHover }
           TapHandler {
-            onTapped: root.menuOpen = !root.menuOpen
+            onTapped: root.toggleSourceMenu()
           }
           Text {
             anchors.centerIn: parent

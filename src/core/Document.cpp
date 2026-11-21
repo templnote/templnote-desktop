@@ -296,6 +296,14 @@ bool Document::mergeWithPrevious(const QString &id) {
   Block &previous = m_blocks[index - 1];
   const Block current = m_blocks[index];
 
+  // Never merge across a column boundary: the target would be a Column wrapper
+  // that cannot render text, and the child would disappear with it.
+  if (previous.type == BlockType::Column ||
+      previous.type == BlockType::Columns ||
+      previous.parentId != current.parentId) {
+    return false;
+  }
+
   previous.text += current.text;
 
   m_blocks.removeAt(index);

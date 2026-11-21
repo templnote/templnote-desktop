@@ -3,6 +3,7 @@
 #include "../tracking/MemoryTracker.h"
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -10,6 +11,8 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QTextBoundaryFinder>
+#include <algorithm>
+#include <functional>
 #include <utility>
 #include <qcontainerfwd.h>
 #include <qnamespace.h>
@@ -46,6 +49,39 @@ TextDiff diffText(const QString &before, const QString &after) {
           after.mid(prefix, after.size() - prefix - suffix)};
 }
 
+} // namespace
+
+// The editor shows only top-level blocks. Nested column children are rendered
+// by ColumnsBlock itself, so the ListView works against this proxy instead of
+// the raw document model.
+class VisibleBlocksProxy : public QSortFilterProxyModel {
+public:
+  explicit VisibleBlocksProxy(QObject *parent = nullptr)
+      : QSortFilterProxyModel(parent) {}
+
+  void setParentFilter(const QString &parentId) {
+    if (m_parentFilter == parentId)
+      return;
+
+    m_parentFilter = parentId;
+    invalidateFilter();
+  }
+
+protected:
+  bool filterAcceptsRow(int sourceRow,
+                        const QModelIndex &sourceParent) const override {
+    const QModelIndex index = sourceModel()->index(sourceRow, 0, sourceParent);
+    return index.isValid() &&
+           sourceModel()->data(index, Templnote::BlockModel::ParentIdRole)
+                   .toString() == m_parentFilter;
+  }
+
+private:
+  QString m_parentFilter;
+};
+
+namespace {
+
 bool containsWhitespace(const QString &text) {
   for (const QChar character : text) {
     if (character.isSpace())
@@ -77,6 +113,10 @@ bool endsWord(const QString &text, const TextDiff &diff) {
 } // namespace
 
 BlockModel::BlockModel(QObject *parent) : QAbstractListModel(parent) {
+  m_visibleModel = new VisibleBlocksProxy(this);
+  m_visibleModel->setParentFilter(QString());
+  m_visibleModel->setSourceModel(this);
+
   m_autosaveTimer.setSingleShot(true);
   m_autosaveTimer.setInterval(1500);
   connect(&m_autosaveTimer, &QTimer::timeout, this, &BlockModel::autosave);
@@ -193,7 +233,10 @@ void BlockModel::trimHistory() {
     m_undoStack.pop_front();
 }
 
-void BlockModel::invalidateNumberIndices() { m_numberIndicesDirty = true; }
+void BlockModel::invalidateStructureCaches() {
+  m_numberIndicesDirty = true;
+  m_columnChildren.clear();
+}
 
 void BlockModel::rebuildNumberIndices() const {
   const int rows = m_document.count();
@@ -327,7 +370,7 @@ QString BlockModel::appendBlock(int type, const QString &text) {
       m_document.count() > 0 ? m_document.blockAt(m_document.count() - 1)->id
                              : QString();
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   beginInsertRows({}, row, row);
 
@@ -354,10 +397,10 @@ QString BlockModel::appendBlock(int type, const QString &text) {
   return id;
 }
 
-bool BlockModel::insertBlock(int row, int type, const QString &text) {
-  if (!isValidBlockType(type) || row < 0 || row > m_document.count()) {
-    return false;
-  }
+QString BlockModel::insertBlockInternal(int row, int type, const QString &text,
+                                        const QString &parentId) {
+  if (!isValidBlockType(type) || row < 0 || row > m_document.count())
+    return {};
 
   QString focusBeforeId;
 
@@ -365,11 +408,12 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
     focusBeforeId = m_document.blockAt(qBound(0, row - 1,
                                               m_document.count() - 1))->id;
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   beginInsertRows({}, row, row);
 
-  const Block block = Block::create(static_cast<BlockType>(type), text);
+  Block block = Block::create(static_cast<BlockType>(type), text);
+  block.parentId = parentId;
   const QString id = block.id;
 
   const bool success = m_document.insertBlock(row, block);
@@ -377,7 +421,7 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
   endInsertRows();
 
   if (!success)
-    return false;
+    return {};
 
   PatchOp op;
   op.type = PatchOp::Type::Insert;
@@ -394,7 +438,28 @@ bool BlockModel::insertBlock(int row, int type, const QString &text) {
   markModified();
   emit countChanged();
 
-  return true;
+  return id;
+}
+
+bool BlockModel::insertBlock(int row, int type, const QString &text) {
+  return !insertBlockInternal(row, type, text, QString()).isEmpty();
+}
+
+QString BlockModel::insertBlockAfter(const QString &afterId, int type,
+                                     const QString &text) {
+  const int row = m_document.indexOf(afterId);
+
+  if (row < 0 || row + 1 > m_document.count())
+    return {};
+
+  const Block *after = m_document.blockAt(row);
+
+  if (!after)
+    return {};
+
+  // A block inserted after a column child must stay in that column, otherwise
+  // it becomes a top-level block rendered inside the column's row range.
+  return insertBlockInternal(row + 1, type, text, after->parentId);
 }
 
 bool BlockModel::removeBlock(const QString &id) {
@@ -403,17 +468,71 @@ bool BlockModel::removeBlock(const QString &id) {
   if (row < 0)
     return false;
 
-  const Block removed = *m_document.blockAt(row);
+  const Block *target = m_document.blockAt(row);
 
-  invalidateNumberIndices();
+  if (!target)
+    return false;
 
-  beginRemoveRows({}, row, row);
+  // Removing a layout or a column must remove its whole subtree. Otherwise the
+  // descendants survive with a dangling parentId and are never rendered again.
+  QStringList doomed{id};
 
-  const bool success = m_document.removeBlock(id);
+  if (target->type == BlockType::Columns) {
+    const QStringList columns = columnIdsOf(id);
 
-  endRemoveRows();
+    for (const QString &columnId : columns) {
+      doomed.append(columnId);
+      doomed.append(blocksOfColumn(columnId));
+    }
+  } else if (target->type == BlockType::Column) {
+    doomed.append(blocksOfColumn(id));
+  }
 
-  if (!success)
+  QVector<int> rows;
+  rows.reserve(doomed.size());
+
+  for (const QString &blockId : std::as_const(doomed)) {
+    const int blockRow = m_document.indexOf(blockId);
+
+    if (blockRow >= 0)
+      rows.append(blockRow);
+  }
+
+  // Remove from the bottom up so every recorded row stays valid for both the
+  // view signals and the undo patch.
+  std::sort(rows.begin(), rows.end(), std::greater<int>());
+
+  invalidateStructureCaches();
+
+  QVector<PatchOp> patch;
+  patch.reserve(rows.size());
+
+  for (const int blockRow : rows) {
+    const Block *block = m_document.blockAt(blockRow);
+
+    if (!block)
+      continue;
+
+    const QString blockId = block->id;
+    const Block removed = *block;
+
+    beginRemoveRows({}, blockRow, blockRow);
+
+    const bool success = m_document.removeBlock(blockId);
+
+    endRemoveRows();
+
+    if (!success)
+      continue;
+
+    PatchOp op;
+    op.type = PatchOp::Type::Remove;
+    op.from = blockRow;
+    op.block = removed;
+    patch.append(op);
+  }
+
+  if (patch.isEmpty())
     return false;
 
   QString focusAfterId;
@@ -423,22 +542,99 @@ bool BlockModel::removeBlock(const QString &id) {
     focusAfterId = m_document.blockAt(focusRow)->id;
   }
 
-  PatchOp op;
-  op.type = PatchOp::Type::Remove;
-  op.from = row;
-  op.block = removed;
-  saveHistory({op}, id, focusAfterId);
+  saveHistory(patch, id, focusAfterId);
 
-  if (success && row > 0)
+  if (row > 0 && row - 1 < m_document.count())
     emit dataChanged(index(row - 1), index(row - 1), {NextBlockTypeRole});
 
-  if (success)
-    emitNumberIndexChanged(row);
+  emitNumberIndexChanged(row);
 
   markModified();
   emit countChanged();
 
   return true;
+}
+
+QString BlockModel::duplicateBlock(const QString &id) {
+  const int row = m_document.indexOf(id);
+
+  if (row < 0)
+    return {};
+
+  const Block *source = m_document.blockAt(row);
+
+  if (!source)
+    return {};
+
+  const auto copyOf = [](const Block &original,
+                         const QString &parentId) -> Block {
+    Block copy = original;
+    copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    copy.parentId = parentId;
+    return copy;
+  };
+
+  // A container has to be copied with its whole subtree; copying only the
+  // layout row used to produce an empty layout that could not even be repaired
+  // because insertColumn() requires an existing column to anchor to.
+  QVector<Block> copies;
+
+  if (source->type == BlockType::Columns) {
+    const Block layoutCopy = copyOf(*source, source->parentId);
+    copies.append(layoutCopy);
+
+    for (const QString &columnId : columnIdsOf(id)) {
+      const Block *column = m_document.findBlock(columnId);
+
+      if (!column)
+        continue;
+
+      const Block columnCopy = copyOf(*column, layoutCopy.id);
+      copies.append(columnCopy);
+
+      for (const QString &childId : blocksOfColumn(columnId)) {
+        const Block *child = m_document.findBlock(childId);
+
+        if (child)
+          copies.append(copyOf(*child, columnCopy.id));
+      }
+    }
+  } else if (source->type == BlockType::Column) {
+    const Block columnCopy = copyOf(*source, source->parentId);
+    copies.append(columnCopy);
+
+    for (const QString &childId : blocksOfColumn(id)) {
+      const Block *child = m_document.findBlock(childId);
+
+      if (child)
+        copies.append(copyOf(*child, columnCopy.id));
+    }
+  } else {
+    copies.append(copyOf(*source, source->parentId));
+  }
+
+  if (copies.isEmpty())
+    return {};
+
+  QVector<PatchOp> patch;
+  patch.reserve(copies.size());
+
+  int insertRow = row + 1;
+
+  for (const Block &copy : std::as_const(copies)) {
+    PatchOp op;
+    op.type = PatchOp::Type::Insert;
+    op.to = insertRow++;
+    op.block = copy;
+    patch.append(op);
+  }
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+  saveHistory(patch, id, copies.first().id);
+  markModified();
+
+  return copies.first().id;
 }
 
 bool BlockModel::updateBlockText(const QString &id, const QString &text) {
@@ -485,7 +681,7 @@ QString BlockModel::splitBlock(const QString &id, int position,
     return {};
   }
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   beginInsertRows({}, row + 1, row + 1);
 
@@ -528,7 +724,22 @@ bool BlockModel::mergeWithPrevious(const QString &id,
   if (row <= 0)
     return false;
 
-  const Block beforePrevious = *m_document.blockAt(row - 1);
+  const Block *previous = m_document.blockAt(row - 1);
+  const Block *current = m_document.blockAt(row);
+
+  if (!previous || !current)
+    return false;
+
+  // Merging across a column boundary used to write the child's text onto the
+  // Column wrapper and delete the child. Keep the parent boundary a hard
+  // barrier; the same applies to a layout row.
+  if (previous->type == BlockType::Column ||
+      previous->type == BlockType::Columns ||
+      previous->parentId != current->parentId) {
+    return false;
+  }
+
+  const Block beforePrevious = *previous;
 
   if (!editorText.isNull() &&
       !m_document.updateBlockText(id, editorText)) {
@@ -537,7 +748,7 @@ bool BlockModel::mergeWithPrevious(const QString &id,
 
   const Block removed = *m_document.blockAt(row);
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   beginRemoveRows({}, row, row);
 
@@ -589,7 +800,7 @@ bool BlockModel::changeBlockType(const QString &id, int type,
 
   const Block beforeBlock = *m_document.blockAt(row);
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   if (!m_document.updateBlockType(id, static_cast<BlockType>(type),
                                   headingLevel)) {
@@ -852,6 +1063,57 @@ QString BlockModel::importAttachment(const QUrl &fileUrl) {
   return QUrl::fromLocalFile(localPath).toString();
 }
 
+void BlockModel::cleanupOrphanedAttachments() {
+  const QString directoryPath = AppPaths::attachmentsDirectory();
+
+  if (directoryPath.isEmpty())
+    return;
+
+  const QDir directory(directoryPath);
+  const QStringList files =
+      directory.entryList(QDir::Files | QDir::NoSymLinks, QDir::Name);
+
+  if (files.isEmpty())
+    return;
+
+  // Attachment names are UUIDs, so a substring search over the saved document
+  // files and the open document is enough to tell whether one is still used.
+  QByteArray corpus;
+
+  auto collectFromDirectory = [&corpus](const QString &root) {
+    if (root.isEmpty())
+      return;
+
+    QDirIterator it(root, QStringList{QStringLiteral("*.templnote")},
+                    QDir::Files, QDirIterator::Subdirectories);
+
+    while (it.hasNext()) {
+      QFile file(it.next());
+
+      if (file.open(QIODevice::ReadOnly))
+        corpus.append(file.readAll());
+    }
+  };
+
+  collectFromDirectory(AppPaths::documentsDirectory());
+
+  // Documents may live outside the documents folder as well.
+  if (!m_currentFilePath.isEmpty())
+    collectFromDirectory(QFileInfo(m_currentFilePath).absolutePath());
+
+  // Serialize the open document as well: attachment URLs live in block
+  // metadata (imageSource), not only in the block text.
+  corpus.append(
+      QJsonDocument(m_document.toJson()).toJson(QJsonDocument::Compact));
+
+  for (const QString &name : files) {
+    const QString path = directory.filePath(name);
+
+    if (!corpus.contains(name.toUtf8()))
+      QFile::remove(path);
+  }
+}
+
 bool BlockModel::moveBlock(const QString &id, int destination) {
   const int source = m_document.indexOf(id);
 
@@ -864,7 +1126,7 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
 
   const Block moved = *m_document.blockAt(source);
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   if (!beginMoveRows({}, source, source, {},
                      destination > source ? destination + 1 : destination)) {
@@ -889,8 +1151,12 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
     if (first <= last)
       emit dataChanged(index(first), index(last), {NextBlockTypeRole});
 
-    if (first < m_document.count())
+    if (first < m_document.count()) {
       emitNumberIndexChanged(first);
+
+      if (destination != first)
+        emitNumberIndexChanged(destination);
+    }
 
     markModified();
   }
@@ -907,6 +1173,11 @@ int BlockModel::indexOfBlock(const QString &id) const {
 QString BlockModel::blockIdAt(int row) const {
   const Block *block = m_document.blockAt(row);
   return block ? block->id : QString();
+}
+
+int BlockModel::blockTypeAtRow(int row) const {
+  const Block *block = m_document.blockAt(row);
+  return block ? static_cast<int>(block->type) : -1;
 }
 
 bool BlockModel::autosaveEnabled() const { return m_autosaveEnabled; }
@@ -965,11 +1236,17 @@ void BlockModel::syncModifiedState() {
 void BlockModel::markModified() { syncModifiedState(); }
 
 void BlockModel::emitNumberIndexChanged(int firstRow) {
+  // Numbering resets at the first non-numbered block, so a change can only
+  // affect the run that starts at (or contains) firstRow. Stop at that
+  // boundary instead of rescanning the rest of the document and emitting one
+  // signal per numbered block in the whole file.
   for (int row = qMax(0, firstRow); row < m_document.count(); ++row) {
     const Block *block = m_document.blockAt(row);
 
-    if (block && block->type == BlockType::NumberedList)
-      emit dataChanged(index(row), index(row), {NumberIndexRole});
+    if (!block || block->type != BlockType::NumberedList)
+      break;
+
+    emit dataChanged(index(row), index(row), {NumberIndexRole});
   }
 }
 
@@ -1061,7 +1338,7 @@ bool BlockModel::resetDocument(Document document) {
   m_undoStack.clear();
   m_redoStack.clear();
   closeTextGroup();
-  invalidateNumberIndices();
+  invalidateStructureCaches();
   m_lastHistoryBlockId.clear();
   m_lastHistoryCursorPosition = -1;
 
@@ -1162,6 +1439,10 @@ bool BlockModel::saveDocument(const QString &path) {
   m_lastError.clear();
   emit lastErrorChanged();
 
+  // The file now contains the current references, so imported files that no
+  // document points at can be reclaimed from the cache.
+  cleanupOrphanedAttachments();
+
   return true;
 }
 
@@ -1238,8 +1519,20 @@ bool BlockModel::loadDocument(const QString &path) {
 bool BlockModel::createDocument(const QString &path) {
   // Creating a document replaces the open one, so never discard unsaved edits
   // if the caller has not persisted them yet.
-  if (m_modified && !saveCurrentDocument())
-    return false;
+  if (m_modified) {
+    if (!m_currentFilePath.isEmpty()) {
+      if (!saveCurrentDocument())
+        return false;
+    } else {
+      // A modified document that has never been saved has no path of its own.
+      // Keep its edits in a fresh Untitled file instead of refusing to create
+      // the new document or silently throwing the content away.
+      const QString untitledPath = AppPaths::uniqueDocumentPath();
+
+      if (untitledPath.isEmpty() || !saveDocument(untitledPath))
+        return false;
+    }
+  }
 
   Document document;
   document.appendBlock(Block::create(BlockType::Paragraph));
@@ -1270,6 +1563,8 @@ bool BlockModel::closeDocument() {
   setCurrentFilePath({});
   emit fullWidthChanged();
 
+  cleanupOrphanedAttachments();
+
   return true;
 }
 
@@ -1296,6 +1591,753 @@ bool BlockModel::hasFullWidthSet() const {
 }
 
 int BlockModel::contentRevision() const { return m_contentRevision; }
+
+// ---------------------------------------------------------------------------
+// Column layouts
+// ---------------------------------------------------------------------------
+
+namespace {
+// Columns use pixel widths like table columns. When their combined width is
+// larger than the editor, ColumnsBlock scrolls horizontally instead of
+// squeezing them.
+constexpr double kMinColumnWidth = 80.0;
+// Used for new layouts and to migrate older documents that stored a ratio.
+constexpr double kReferenceSheetWidth = 800.0;
+constexpr int kMaxColumns = 5;
+} // namespace
+
+QAbstractItemModel *BlockModel::visibleModel() const { return m_visibleModel; }
+
+int BlockModel::visibleCount() const { return m_visibleModel->rowCount(); }
+
+int BlockModel::sourceRowOfBlock(const QString &blockId) const {
+  return m_document.indexOf(blockId);
+}
+
+int BlockModel::sourceRowOfVisibleRow(int row) const {
+  const QModelIndex proxyIndex = m_visibleModel->index(row, 0);
+
+  if (!proxyIndex.isValid())
+    return -1;
+
+  return m_visibleModel->mapToSource(proxyIndex).row();
+}
+
+QAbstractItemModel *BlockModel::blocksModelForColumn(const QString &columnId) {
+  if (const auto existing = m_columnModels.constFind(columnId);
+      existing != m_columnModels.constEnd())
+    return existing.value();
+
+  auto *proxy = new VisibleBlocksProxy(this);
+  proxy->setParentFilter(columnId);
+  proxy->setSourceModel(this);
+  m_columnModels.insert(columnId, proxy);
+  return proxy;
+}
+
+QString BlockModel::topLevelAncestorId(const QString &blockId) const {
+  QString current = blockId;
+  QSet<QString> seen;
+
+  while (!current.isEmpty() && !seen.contains(current)) {
+    seen.insert(current);
+    const Block *block = m_document.findBlock(current);
+
+    if (!block)
+      return {};
+
+    if (block->parentId.isEmpty())
+      return current;
+
+    current = block->parentId;
+  }
+
+  return {};
+}
+
+int BlockModel::visibleRowOf(const QString &blockId) const {
+  const QString topId = topLevelAncestorId(blockId);
+
+  if (topId.isEmpty())
+    return -1;
+
+  const int sourceRow = m_document.indexOf(topId);
+
+  if (sourceRow < 0)
+    return -1;
+
+  return m_visibleModel->mapFromSource(index(sourceRow, 0)).row();
+}
+
+QString BlockModel::blockIdAtVisibleRow(int row) const {
+  const QModelIndex proxyIndex = m_visibleModel->index(row, 0);
+
+  if (!proxyIndex.isValid())
+    return {};
+
+  const QModelIndex source = m_visibleModel->mapToSource(proxyIndex);
+  const Block *block = m_document.blockAt(source.row());
+
+  return block ? block->id : QString();
+}
+
+int BlockModel::layoutRowOf(const QString &blockId) const {
+  QString current = blockId;
+  QSet<QString> seen;
+
+  while (!current.isEmpty() && !seen.contains(current)) {
+    seen.insert(current);
+    const int row = m_document.indexOf(current);
+
+    if (row < 0)
+      return -1;
+
+    const Block *block = m_document.blockAt(row);
+
+    if (!block)
+      return -1;
+
+    if (block->type == BlockType::Columns)
+      return row;
+
+    current = block->parentId;
+  }
+
+  return -1;
+}
+
+QStringList BlockModel::columnIdsOf(const QString &containerId) const {
+  QStringList ids;
+  const Block *layout = m_document.findBlock(containerId);
+
+  if (!layout || layout->type != BlockType::Columns)
+    return ids;
+
+  // Find columns by parentId rather than by row adjacency. Moving a layout or
+  // any of its descendants used to break the contiguity assumption and made
+  // the whole layout appear empty.
+  for (int row = 0; row < m_document.count(); ++row) {
+    const Block *block = m_document.blockAt(row);
+
+    if (block && block->parentId == containerId &&
+        block->type == BlockType::Column) {
+      ids.append(block->id);
+    }
+  }
+
+  return ids;
+}
+
+QStringList BlockModel::blocksOfColumn(const QString &columnId) const {
+  if (const auto cached = m_columnChildren.constFind(columnId);
+      cached != m_columnChildren.constEnd())
+    return cached.value();
+
+  QStringList ids;
+
+  for (int row = 0; row < m_document.count(); ++row) {
+    const Block *block = m_document.blockAt(row);
+
+    if (block && block->parentId == columnId &&
+        block->type != BlockType::Column)
+      ids.append(block->id);
+  }
+
+  m_columnChildren.insert(columnId, ids);
+  return ids;
+}
+
+QString BlockModel::parentBlockId(const QString &blockId) const {
+  const Block *block = m_document.findBlock(blockId);
+  return block ? block->parentId : QString();
+}
+
+QString BlockModel::columnIdOfBlock(const QString &blockId) const {
+  const Block *block = m_document.findBlock(blockId);
+
+  if (!block)
+    return {};
+
+  if (block->type == BlockType::Column)
+    return block->id;
+
+  const Block *parent = m_document.findBlock(block->parentId);
+
+  return (parent && parent->type == BlockType::Column) ? parent->id : QString();
+}
+
+QVector<BlockModel::PatchOp>
+BlockModel::widthPatch(const QVector<QString> &columnIds,
+                       const QVector<double> &widths) const {
+  QVector<PatchOp> patch;
+
+  for (int i = 0; i < columnIds.size(); ++i) {
+    const Block *current = m_document.findBlock(columnIds[i]);
+
+    if (!current)
+      continue;
+
+    Block wanted = *current;
+    QVariantMap metadata = current->metadata;
+    metadata.insert(QStringLiteral("width"), widths.value(i));
+    wanted.metadata = metadata;
+
+    PatchOp op;
+    op.type = PatchOp::Type::Update;
+    op.beforeBlock = *current;
+    op.block = wanted;
+    patch.append(op);
+  }
+
+  return patch;
+}
+
+bool BlockModel::reparentChildren(const QString &fromColumnId,
+                                  const QString &toColumnId,
+                                  QVector<PatchOp> &patch) const {
+  for (const QString &id : blocksOfColumn(fromColumnId)) {
+    const Block *current = m_document.findBlock(id);
+
+    if (!current)
+      continue;
+
+    Block wanted = *current;
+    wanted.parentId = toColumnId;
+
+    PatchOp op;
+    op.type = PatchOp::Type::Update;
+    op.beforeBlock = *current;
+    op.block = wanted;
+    patch.append(op);
+  }
+
+  return true;
+}
+
+QString BlockModel::createColumnsLayout(int row, int count,
+                                        double availableWidth) {
+  if (count < 2 || count > kMaxColumns || row < 0 || row >= m_document.count())
+    return {};
+
+  const Block *source = m_document.blockAt(row);
+
+  if (!source || !source->parentId.isEmpty() ||
+      source->type == BlockType::Columns || source->type == BlockType::Column)
+    return {};
+
+  const Block original = *source;
+  const QString layoutId = original.id;
+
+  Block layout = original;
+  layout.type = BlockType::Columns;
+  layout.text.clear();
+  layout.headingLevel = 0;
+  // Columns do not support alignment or the inline formatting toolbar.
+  layout.metadata = QVariantMap();
+
+  QVector<Block> columns;
+  QVector<Block> children;
+  // Split the editor's available width evenly so a fresh layout fills it,
+  // falling back to the fixed sheet width for callers without that info.
+  const double width = availableWidth > 0.0
+                       ? qMax(kMinColumnWidth, availableWidth / count)
+                       : kReferenceSheetWidth / count;
+
+  for (int i = 0; i < count; ++i) {
+    Block column = Block::create(BlockType::Column);
+    column.parentId = layoutId;
+    column.metadata.insert(QStringLiteral("width"), width);
+    columns.append(column);
+
+    Block child = Block::create(BlockType::Paragraph,
+                                i == 0 ? original.text : QString());
+    child.parentId = column.id;
+    children.append(child);
+  }
+
+  QVector<PatchOp> patch;
+
+  PatchOp convert;
+  convert.type = PatchOp::Type::Update;
+  convert.beforeBlock = original;
+  convert.block = layout;
+  patch.append(convert);
+
+  for (int i = 0; i < count; ++i) {
+    PatchOp columnOp;
+    columnOp.type = PatchOp::Type::Insert;
+    columnOp.to = row + 1 + i * 2;
+    columnOp.block = columns[i];
+    patch.append(columnOp);
+
+    PatchOp childOp;
+    childOp.type = PatchOp::Type::Insert;
+    childOp.to = row + 2 + i * 2;
+    childOp.block = children[i];
+    patch.append(childOp);
+  }
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+
+  emit dataChanged(index(row), index(row),
+                   {BlockTypeRole, HeadingLevelRole, ContentRole, MetadataRole,
+                    Qt::DisplayRole});
+  saveHistory(patch, original.id, children.first().id);
+  markModified();
+
+  return children.first().id;
+}
+
+bool BlockModel::insertColumn(const QString &containerId,
+                              const QString &afterColumnId) {
+  const int layoutRow = m_document.indexOf(containerId);
+
+  if (layoutRow < 0)
+    return false;
+
+  const Block *layout = m_document.blockAt(layoutRow);
+
+  if (!layout || layout->type != BlockType::Columns)
+    return false;
+
+  const QStringList ids = columnIdsOf(containerId);
+  const int afterIndex = ids.indexOf(afterColumnId);
+
+  if (ids.size() >= kMaxColumns)
+    return false;
+
+  // An empty afterColumnId means "prepend before the first column".
+  if (!afterColumnId.isEmpty() && afterIndex < 0)
+    return false;
+
+  // A layout with no columns can exist in documents written by older
+  // versions; allow adding the first column so it can be repaired.
+  if (ids.isEmpty() && !afterColumnId.isEmpty())
+    return false;
+
+  const int oldCount = ids.size();
+
+  // A new column starts at the average width of its neighbours; existing
+  // columns keep their widths, so the layout can grow past the editor width.
+  double totalWidth = 0.0;
+
+  for (const QString &id : ids)
+    totalWidth += columnWidth(id);
+
+  const double newWidth =
+      oldCount > 0 ? totalWidth / oldCount : kReferenceSheetWidth;
+
+  Block column = Block::create(BlockType::Column);
+  column.parentId = containerId;
+  column.metadata.insert(QStringLiteral("width"), newWidth);
+
+  Block child = Block::create(BlockType::Paragraph);
+  child.parentId = column.id;
+
+  // Place the new column after the whole subtree of afterColumnId. Column
+  // subtrees are contiguous because nested layouts are not allowed.
+  int insertAt;
+
+  if (afterColumnId.isEmpty()) {
+    insertAt = ids.isEmpty() ? layoutRow + 1
+                             : m_document.indexOf(ids.first());
+  } else {
+    const int anchorRow = m_document.indexOf(afterColumnId);
+    insertAt = anchorRow + 1;
+
+    for (int row = anchorRow + 1; row < m_document.count(); ++row) {
+      const Block *block = m_document.blockAt(row);
+
+      if (!block || block->parentId.isEmpty())
+        break;
+
+      if (block->parentId == afterColumnId)
+        insertAt = row + 1;
+      else if (block->type == BlockType::Column)
+        break;
+    }
+  }
+
+  QVector<PatchOp> patch;
+
+  PatchOp columnOp;
+  columnOp.type = PatchOp::Type::Insert;
+  columnOp.to = insertAt;
+  columnOp.block = column;
+  patch.append(columnOp);
+
+  PatchOp childOp;
+  childOp.type = PatchOp::Type::Insert;
+  childOp.to = insertAt + 1;
+  childOp.block = child;
+  patch.append(childOp);
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+  saveHistory(patch, afterColumnId, child.id);
+  markModified();
+
+  return true;
+}
+
+bool BlockModel::moveColumn(const QString &columnId, int direction) {
+  const Block *column = m_document.findBlock(columnId);
+
+  if (!column || column->type != BlockType::Column)
+    return false;
+
+  const QStringList ids = columnIdsOf(column->parentId);
+  const int index = ids.indexOf(columnId);
+
+  if (index < 0)
+    return false;
+
+  const int target = index + (direction < 0 ? -1 : 1);
+
+  if (target < 0 || target >= ids.size())
+    return false;
+
+  const int from = m_document.indexOf(columnId);
+  const int destination = m_document.indexOf(ids[target]);
+
+  PatchOp op;
+  op.type = PatchOp::Type::Move;
+  op.block = *column;
+  op.from = from;
+  op.to = destination;
+
+  applyPatch({op}, false);
+  saveHistory({op}, columnId, columnId);
+  markModified();
+
+  return true;
+}
+
+bool BlockModel::moveColumnToIndex(const QString &columnId, int targetIndex) {
+  const Block *column = m_document.findBlock(columnId);
+
+  if (!column || column->type != BlockType::Column)
+    return false;
+
+  const QStringList ids = columnIdsOf(column->parentId);
+  const int index = ids.indexOf(columnId);
+
+  if (index < 0 || ids.size() < 2)
+    return false;
+
+  const int target = qBound(0, targetIndex, ids.size() - 1);
+
+  if (target == index)
+    return true;
+
+  const int from = m_document.indexOf(columnId);
+  const int destination = m_document.indexOf(ids[target]);
+
+  PatchOp op;
+  op.type = PatchOp::Type::Move;
+  op.block = *column;
+  op.from = from;
+  op.to = destination;
+
+  applyPatch({op}, false);
+  saveHistory({op}, columnId, columnId);
+  markModified();
+
+  return true;
+}
+
+bool BlockModel::equalizeColumns(const QString &containerId) {
+  const QStringList ids = columnIdsOf(containerId);
+
+  if (ids.size() < 2)
+    return false;
+
+  double totalWidth = 0.0;
+
+  for (const QString &id : ids)
+    totalWidth += columnWidth(id);
+
+  QVector<QString> columnIds;
+  QVector<double> widths;
+  const double evenWidth = totalWidth / ids.size();
+
+  for (const QString &id : ids) {
+    columnIds.append(id);
+    widths.append(evenWidth);
+  }
+
+  const QVector<PatchOp> patch = widthPatch(columnIds, widths);
+  applyPatch(patch, false);
+  saveHistory(patch, containerId, containerId);
+  markModified();
+
+  return true;
+}
+
+bool BlockModel::removeColumn(const QString &columnId) {
+  const int layoutRow = layoutRowOf(columnId);
+
+  if (layoutRow < 0)
+    return false;
+
+  const Block *layoutBlock = m_document.blockAt(layoutRow);
+  const QString layoutId = layoutBlock->id;
+  const QStringList ids = columnIdsOf(layoutId);
+  const int index = ids.indexOf(columnId);
+
+  if (index < 0 || ids.size() < 2)
+    return false;
+
+  const QString neighborId = ids[index == 0 ? 1 : index - 1];
+  const bool collapse = ids.size() == 2;
+
+  QVector<PatchOp> patch;
+  const QStringList mergedChildren = blocksOfColumn(columnId);
+  reparentChildren(columnId, neighborId, patch);
+
+  if (collapse) {
+    // Promote the merged children to top level, turn the layout into the
+    // paragraph it replaced, and drop both column wrappers.
+    QStringList allChildren = blocksOfColumn(neighborId);
+    allChildren.append(mergedChildren);
+
+    for (const QString &id : allChildren) {
+      const Block *current = m_document.findBlock(id);
+
+      if (!current)
+        continue;
+
+      Block wanted = *current;
+      wanted.parentId.clear();
+
+      PatchOp op;
+      op.type = PatchOp::Type::Update;
+      op.beforeBlock = *current;
+      op.block = wanted;
+      patch.append(op);
+    }
+
+    Block wantedLayout = *layoutBlock;
+    wantedLayout.type = BlockType::Paragraph;
+    wantedLayout.text.clear();
+    wantedLayout.headingLevel = 0;
+    wantedLayout.metadata.clear();
+
+    PatchOp convert;
+    convert.type = PatchOp::Type::Update;
+    convert.beforeBlock = *layoutBlock;
+    convert.block = wantedLayout;
+    patch.append(convert);
+
+    for (const QString &id : ids) {
+      const Block *column = m_document.findBlock(id);
+
+      if (!column)
+        continue;
+
+      PatchOp remove;
+      remove.type = PatchOp::Type::Remove;
+      remove.from = m_document.indexOf(id);
+      remove.block = *column;
+      patch.append(remove);
+    }
+  } else {
+    PatchOp remove;
+    remove.type = PatchOp::Type::Remove;
+    remove.from = m_document.indexOf(columnId);
+    remove.block = *m_document.findBlock(columnId);
+    patch.append(remove);
+  }
+
+  const QString focusAfter =
+      collapse ? layoutId : blocksOfColumn(neighborId).value(0, neighborId);
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+  saveHistory(patch, columnId, focusAfter);
+  markModified();
+
+  return true;
+}
+
+bool BlockModel::moveBlockToColumn(const QString &blockId,
+                                   const QString &targetColumnId, int row) {
+  const Block *block = m_document.findBlock(blockId);
+  const Block *target = m_document.findBlock(targetColumnId);
+
+  if (!block || !target || target->type != BlockType::Column)
+    return false;
+
+  if (block->type == BlockType::Columns || block->type == BlockType::Column)
+    return false;
+
+  const QString sourceColumnId = columnIdOfBlock(blockId);
+
+  if (sourceColumnId.isEmpty())
+    return false;
+
+  QStringList targetChildren = blocksOfColumn(targetColumnId);
+  targetChildren.removeAll(blockId);
+
+  const int slot = qBound(0, row, targetChildren.size());
+  const int from = m_document.indexOf(blockId);
+  int destination;
+
+  if (targetChildren.isEmpty()) {
+    destination = m_document.indexOf(targetColumnId) + 1;
+  } else if (slot == targetChildren.size()) {
+    destination = m_document.indexOf(targetChildren.last()) + 1;
+  } else {
+    destination = m_document.indexOf(targetChildren[slot]);
+  }
+
+  if (from < destination)
+    --destination;
+
+  if (destination < 0 || destination >= m_document.count())
+    return false;
+
+  QVector<PatchOp> patch;
+
+  PatchOp parentOp;
+  parentOp.type = PatchOp::Type::Update;
+  parentOp.beforeBlock = *block;
+  Block wanted = *block;
+  wanted.parentId = targetColumnId;
+  parentOp.block = wanted;
+  patch.append(parentOp);
+
+  PatchOp moveOp;
+  moveOp.type = PatchOp::Type::Move;
+  moveOp.block = wanted;
+  moveOp.from = from;
+  moveOp.to = destination;
+  patch.append(moveOp);
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+  saveHistory(patch, blockId, blockId);
+  markModified();
+
+  return true;
+}
+
+double BlockModel::columnWidth(const QString &columnId) const {
+  const Block *column = m_document.findBlock(columnId);
+
+  if (!column)
+    return 0.0;
+
+  // Older layouts stored a ratio; migrate them to the standard sheet width.
+  if (column->metadata.contains(QStringLiteral("width")))
+    return column->metadata.value(QStringLiteral("width")).toDouble();
+
+  return column->metadata.value(QStringLiteral("ratio"), 0.0).toDouble()
+         * kReferenceSheetWidth;
+}
+
+QString BlockModel::appendBlockToColumn(const QString &columnId, int type,
+                                        const QString &text) {
+  const Block *column = m_document.findBlock(columnId);
+
+  if (!column || column->type != BlockType::Column || !isValidBlockType(type))
+    return {};
+
+  const QStringList children = blocksOfColumn(columnId);
+  int row = m_document.indexOf(columnId) + 1;
+
+  if (!children.isEmpty())
+    row = m_document.indexOf(children.last()) + 1;
+
+  Block block = Block::create(static_cast<BlockType>(type), text);
+  block.parentId = columnId;
+
+  PatchOp op;
+  op.type = PatchOp::Type::Insert;
+  op.to = row;
+  op.block = block;
+
+  invalidateStructureCaches();
+  applyPatch({op}, false);
+  saveHistory({op}, columnId, block.id);
+  markModified();
+
+  return block.id;
+}
+
+bool BlockModel::setColumnWidth(const QString &columnId, double width) {
+  const Block *column = m_document.findBlock(columnId);
+
+  if (!column || column->type != BlockType::Column)
+    return false;
+
+  Block wanted = *column;
+  QVariantMap metadata = column->metadata;
+  metadata.insert(QStringLiteral("width"), qMax(kMinColumnWidth, width));
+  metadata.remove(QStringLiteral("ratio"));
+  wanted.metadata = metadata;
+
+  const QVector<PatchOp> patch = widthPatch({columnId},
+                                            {metadata.value(QStringLiteral("width")).toDouble()});
+  applyPatch(patch, false);
+
+  if (!m_columnResizeActive)
+    saveHistory(patch, columnId, columnId);
+
+  markModified();
+  return true;
+}
+
+bool BlockModel::beginColumnResize(const QString &containerId) {
+  const QStringList ids = columnIdsOf(containerId);
+
+  if (ids.size() < 2)
+    return false;
+
+  m_columnResizeBefore.clear();
+
+  for (const QString &id : ids) {
+    const Block *column = m_document.findBlock(id);
+
+    if (column)
+      m_columnResizeBefore.insert(id, *column);
+  }
+
+  m_columnResizeActive = true;
+  return true;
+}
+
+bool BlockModel::endColumnResize() {
+  if (!m_columnResizeActive)
+    return false;
+
+  m_columnResizeActive = false;
+
+  QVector<PatchOp> patch;
+
+  for (auto it = m_columnResizeBefore.constBegin();
+       it != m_columnResizeBefore.constEnd(); ++it) {
+    const Block *current = m_document.findBlock(it.key());
+
+    if (!current || current->metadata == it.value().metadata)
+      continue;
+
+    PatchOp op;
+    op.type = PatchOp::Type::Update;
+    op.beforeBlock = it.value();
+    op.block = *current;
+    patch.append(op);
+  }
+
+  m_columnResizeBefore.clear();
+
+  if (patch.isEmpty())
+    return true;
+
+  saveHistory(patch, patch.first().block.id, patch.first().block.id);
+  return true;
+}
 
 bool BlockModel::renameDocument(const QString &newBaseName) {
   if (m_currentFilePath.isEmpty())
@@ -1423,7 +2465,7 @@ void BlockModel::applyHistoryEntry(const HistoryEntry &entry, bool undo) {
 void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
   bool structureChanged = false;
 
-  invalidateNumberIndices();
+  invalidateStructureCaches();
 
   if (undo) {
     for (int i = patch.size() - 1; i >= 0; --i)
@@ -1437,6 +2479,7 @@ void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
     // Only rows next to a structural operation can have a different
     // nextBlockType; notifying every row made all delegates re-evaluate.
     QSet<int> affectedRows;
+    QSet<int> numberStarts;
 
     for (const PatchOp &op : patch) {
       for (int offset = -2; offset <= 2; ++offset) {
@@ -1448,12 +2491,21 @@ void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
         if (toRow >= 0 && toRow < m_document.count())
           affectedRows.insert(toRow);
       }
+
+      // Numbering only changes from the touched row to the end of that
+      // numbered run. Emitting from row 0 used to rescan the whole document
+      // after every insert/remove/move.
+      if (op.from >= 0)
+        numberStarts.insert(op.from);
+      if (op.to >= 0)
+        numberStarts.insert(op.to);
     }
 
     for (int row : std::as_const(affectedRows))
       emit dataChanged(index(row), index(row), {NextBlockTypeRole});
 
-    emitNumberIndexChanged(0);
+    for (int row : std::as_const(numberStarts))
+      emitNumberIndexChanged(row);
 
     emit countChanged();
   }
@@ -1580,6 +2632,8 @@ bool BlockModel::undo() {
   m_redoStack.push_back(entry);
 
   applyHistoryEntry(entry, true);
+  ++m_contentRevision;
+  emit contentRevisionChanged();
 
   m_currentStateId = entry.stateBeforeId;
   syncModifiedState();
@@ -1598,6 +2652,8 @@ bool BlockModel::redo() {
   m_undoStack.push_back(entry);
 
   applyHistoryEntry(entry, false);
+  ++m_contentRevision;
+  emit contentRevisionChanged();
 
   m_currentStateId = entry.stateAfterId;
   syncModifiedState();

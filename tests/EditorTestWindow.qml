@@ -24,4 +24,9 @@ ApplicationWindow {
     anchors.fill: parent
     model: blockModel
   }
+
+  function focusBlock(blockId, position) {
+    editor.requestFocusBlock(blockId, position)
+  }
+
 }

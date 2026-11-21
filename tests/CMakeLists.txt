@@ -114,6 +114,7 @@ foreach(qml_file
     PaperSheet.qml
     BlockRenderer.qml
     CommandMenu.qml
+    ImageSourceMenu.qml
     SelectionToolbar.qml
     SearchWindow.qml
     ResultsList.qml
@@ -133,12 +134,24 @@ foreach(qml_file
     blocks/TodoBlock.qml
     blocks/ImageBlock.qml
     blocks/TableBlock.qml
+    blocks/ColumnsBlock.qml
 )
     set_source_files_properties(
         "${TEST_QML_DIR}/${qml_file}" PROPERTIES
         QT_RESOURCE_ALIAS "qml/${qml_file}"
     )
 endforeach()
+
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg"
+    PROPERTIES QT_RESOURCE_ALIAS
+    "assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg"
+)
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
+    PROPERTIES QT_RESOURCE_ALIAS
+    "assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
+)
 
 qt_add_executable(tst_editor
     tst_editor.cpp
@@ -157,6 +170,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/PaperSheet.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
     ${TEST_QML_DIR}/CommandMenu.qml
+    ${TEST_QML_DIR}/ImageSourceMenu.qml
     ${TEST_QML_DIR}/SelectionToolbar.qml
     ${TEST_QML_DIR}/blocks/TextBlock.qml
     ${TEST_QML_DIR}/blocks/ParagraphBlock.qml
@@ -170,8 +184,11 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/TodoBlock.qml
     ${TEST_QML_DIR}/blocks/ImageBlock.qml
     ${TEST_QML_DIR}/blocks/TableBlock.qml
+    ${TEST_QML_DIR}/blocks/ColumnsBlock.qml
 
     RESOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg
+    ${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
     ${TEST_QML_DIR}/shaders/paper.frag.qsb
     ${TEST_QML_DIR}/shaders/edgefade.frag.qsb
 )
