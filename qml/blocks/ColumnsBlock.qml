@@ -421,6 +421,47 @@ Item {
     }
   }
 
+  // Horizontal auto-scroll while resizing a column past the editor edge. It
+  // reuses the cached pointer X so scrolling continues even when the pointer
+  // is held still at the edge, and keeps the pane under it via updateColumnResize.
+  Timer {
+    id: columnResizeAutoScrollTimer
+    interval: 16
+    repeat: true
+    running: root.isResizingColumn
+             && columnsFlickable.contentWidth > columnsFlickable.width
+    onTriggered: {
+      if (!root.isResizingColumn)
+        return
+
+      const viewX = columnsFlickable.mapFromItem(
+        null, root.columnResizeGlobalX, 0).x
+      const edge = 40
+      const maxContentX = columnsFlickable.contentWidth - columnsFlickable.width
+      const contentX = columnsFlickable.contentX
+      let nextX = contentX
+
+      if (viewX < edge) {
+        const factor = Math.max(0, Math.min(1, (edge - viewX) / edge))
+        const step = (factor * 12) + 2
+        nextX = Math.max(0, contentX - step)
+      } else if (viewX > columnsFlickable.width - edge) {
+        const factor = Math.max(0, Math.min(1,
+          (viewX - (columnsFlickable.width - edge)) / edge))
+        const step = (factor * 12) + 2
+        nextX = Math.min(maxContentX, contentX + step)
+      } else {
+        return
+      }
+
+      if (Math.abs(nextX - contentX) < 0.01)
+        return
+
+      columnsFlickable.contentX = nextX
+      root.updateColumnResize(root.columnResizeGlobalX)
+    }
+  }
+
   function applyPendingChildFocus() {
     const intent = root.pendingChildFocus
 
@@ -598,6 +639,23 @@ Item {
     root.childDragGlobalY = 0
   }
 
+  function updateColumnResize(globalX) {
+    if (!root.isResizingColumn || !root.model
+        || root.columnResizeColumnId.length === 0)
+      return
+
+    root.columnResizeGlobalX = globalX
+
+    // The divider is anchored to the pane's right edge inside the scrollable
+    // content. When the Flickable scrolls, the content moves under the pointer,
+    // so add the contentX delta to keep the divider on the cursor and let the
+    // pane grow past the visible width.
+    const delta = (globalX - root.columnResizeStartX)
+                  + (columnsFlickable.contentX - root.columnResizeStartContentX)
+    root.model.setColumnWidth(root.columnResizeColumnId,
+                              root.columnResizeStartWidth + delta)
+  }
+
   readonly property real columnSpacing: 8
   // No outer indent: column content starts at the normal writing edge. The
   // only gutter kept is the one inside each pane for its reorder handle.
@@ -609,6 +667,11 @@ Item {
   // to that column, mirroring the editor footer behaviour.
   readonly property real trailingSpace: 40
   property bool isResizingColumn: false
+  property string columnResizeColumnId: ""
+  property real columnResizeStartX: 0
+  property real columnResizeStartWidth: 0
+  property real columnResizeStartContentX: 0
+  property real columnResizeGlobalX: 0
 
   // QML bindings that call a model method are not automatically re-evaluated
   // when the model changes. Touching this revision makes column widths live.
@@ -1001,12 +1064,14 @@ Item {
               id: resizeMouse
               anchors.fill: parent
               cursorShape: Qt.SplitHCursor
-              property real startX: 0
-              property real startWidth: 0
 
               onPressed: function(mouse) {
-                startX = mapToItem(null, mouse.x, mouse.y).x
-                startWidth = pane.paneWidth
+                const globalX = mapToItem(null, mouse.x, mouse.y).x
+                root.columnResizeStartX = globalX
+                root.columnResizeGlobalX = globalX
+                root.columnResizeStartWidth = pane.paneWidth
+                root.columnResizeStartContentX = columnsFlickable.contentX
+                root.columnResizeColumnId = pane.columnId
                 root.isResizingColumn = true
                 if (root.model)
                   root.model.beginColumnResize(root.blockId)
@@ -1014,20 +1079,21 @@ Item {
 
               onPositionChanged: function(mouse) {
                 if (!pressed || !root.model) return
-                const delta = mapToItem(null, mouse.x, mouse.y).x - startX
                 // Each pane has its own slider; only this pane's width changes,
                 // so neighbours keep the size the user gave them.
-                root.model.setColumnWidth(pane.columnId, startWidth + delta)
+                root.updateColumnResize(mapToItem(null, mouse.x, mouse.y).x)
               }
 
               onReleased: {
                 root.isResizingColumn = false
+                root.columnResizeColumnId = ""
                 if (root.model)
                   root.model.endColumnResize()
               }
 
               onCanceled: {
                 root.isResizingColumn = false
+                root.columnResizeColumnId = ""
                 if (root.model)
                   root.model.endColumnResize()
               }

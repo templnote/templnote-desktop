@@ -1208,6 +1208,58 @@ private slots:
     QVERIFY(blockModel->columnWidth(columns[0]) > left0 + 80);
   }
 
+  void columnResizeAutoScrollsAtEdge() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> dividers;
+    QQuickItem *flickable = nullptr;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      if (item->objectName() == "columnsFlickable")
+        flickable = item;
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QVERIFY(flickable);
+    QVERIFY2(!dividers.isEmpty(), "Every pane should have a resize slider");
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+    QCOMPARE(columns.size(), 2);
+
+    const double initial = blockModel->columnWidth(columns.first());
+    const QQuickItem *divider = dividers.first();
+    const QPoint start = divider->mapToScene(
+      QPointF(divider->width() / 2, divider->height() / 2)).toPoint();
+
+    // Hold the slider just inside the right edge of the Flickable viewport.
+    const int viewportRight = flickable->mapToScene(
+      QPointF(flickable->width(), 0)).toPoint().x();
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(m_window, QPoint(viewportRight - 10, start.y()));
+    QTest::qWait(500);
+
+    const double contentX = flickable->property("contentX").toDouble();
+    const double widthAfter = blockModel->columnWidth(columns.first());
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier,
+                        QPoint(viewportRight - 10, start.y()));
+    QTest::qWait(200);
+
+    QVERIFY2(contentX > 5.0,
+             "Holding the slider at the edge should auto-scroll horizontally");
+    QVERIFY2(widthAfter > initial + 100.0,
+             "The pane should keep growing while the layout scrolls");
+  }
+
   void gutterHoverAndClick() {
     QObject *editorObject = m_window->findChild<QObject *>("editor");
     QVERIFY(editorObject);
