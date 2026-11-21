@@ -78,7 +78,7 @@ Item {
         || !root.model || root.columnIds.length === 0)
       return ""
 
-    const contentX = root.hoverX - 30
+    const contentX = root.hoverX - 30 - root.gutter
                      + (columnsFlickable ? columnsFlickable.contentX : 0)
     const columnIndex = root.columnIndexAtContentX(contentX)
     const columnId = root.columnIds[columnIndex]
@@ -110,7 +110,7 @@ Item {
     if (!root.isBlockHovered || root.hoverX < 0)
       return -1
 
-    const x = root.hoverX - 30
+    const x = root.hoverX - 30 - root.gutter
               + (columnsFlickable ? columnsFlickable.contentX : 0)
     let acc = 0
 
@@ -132,7 +132,7 @@ Item {
     if (!root.isBlockHovered || root.hoverX < 0)
       return -1
 
-    const x = root.hoverX - 30
+    const x = root.hoverX - 30 - root.gutter
               + (columnsFlickable ? columnsFlickable.contentX : 0)
     let acc = 0
 
@@ -154,6 +154,11 @@ Item {
   property bool isDraggingColumn: false
   property int draggingColumnIndex: -1
   property int dropColumnIndex: -1
+  property real columnDragStartX: 0
+  property real columnDragStartY: 0
+  property real columnDragVisualX: 0
+  property real columnDragVisualY: 0
+  property var columnDropTarget: null
 
   // Drag state for blocks inside columns. Dragging can cross column boundaries;
   // the model's moveBlockToColumn() performs the final reparent.
@@ -639,6 +644,63 @@ Item {
     root.childDragGlobalY = 0
   }
 
+  // Set by the editor so column drags can resolve a target anywhere in the
+  // document, not just among this layout's panes.
+  property var columnDropResolver: null
+  // Editor API for handing a whole-layout drag off to the top-level drag code.
+  property var editorApi: null
+
+  // Returns the column id under a global point, or "" if the point is outside
+  // every pane. Used by the editor to route drops onto a specific column.
+  function columnAtPoint(globalX, globalY) {
+    if (!root.model)
+      return ""
+
+    for (let i = 0; i < root.columnIds.length; ++i) {
+      const pane = columnRepeater.itemAt(i)
+
+      if (!pane)
+        continue
+
+      const pos = pane.mapFromItem(null, globalX, globalY)
+
+      if (pos.x >= 0 && pos.x <= pane.width
+          && pos.y >= 0 && pos.y <= pane.height)
+        return root.columnIds[i]
+    }
+
+    return ""
+  }
+
+  // Row within a column at a global point, for dropping editor blocks into it.
+  function childRowAtPoint(globalX, globalY) {
+    const columnId = root.columnAtPoint(globalX, globalY)
+
+    if (columnId.length === 0)
+      return -1
+
+    const pane = columnRepeater.itemAt(root.columnIds.indexOf(columnId))
+
+    if (!pane || !pane.blockList)
+      return 0
+
+    const ids = root.model.blocksOfColumn(columnId)
+    const listTop = pane.blockList.mapToItem(null, 0, 0).y
+    let acc = 0
+
+    for (let i = 0; i < ids.length; ++i) {
+      const delegate = pane.blockList.itemAtIndex(i)
+      const height = delegate ? delegate.height : 24
+
+      if (globalY < listTop + acc + height / 2)
+        return i
+
+      acc += height
+    }
+
+    return ids.length
+  }
+
   function updateColumnResize(globalX) {
     if (!root.isResizingColumn || !root.model
         || root.columnResizeColumnId.length === 0)
@@ -656,10 +718,12 @@ Item {
                               root.columnResizeStartWidth + delta)
   }
 
-  readonly property real columnSpacing: 8
-  // No outer indent: column content starts at the normal writing edge. The
-  // only gutter kept is the one inside each pane for its reorder handle.
-  readonly property real gutter: 0
+  readonly property real columnSpacing: 4
+  // The Flickable starts one gutter-width left of the writing edge so the
+  // first column's handle sits in the editor margin (where the editor owns
+  // its gestures) while its text still starts exactly at the writing edge.
+  readonly property real paneGutter: 20
+  readonly property real gutter: -paneGutter
   readonly property real addStripWidth: 18
   // Enough room for the 14px pill hot area without overlapping text.
   readonly property real headerHeight: 16
@@ -694,7 +758,7 @@ Item {
       if (pane)
         tallest = Math.max(tallest, pane.totalHeight)
     }
-    return tallest + 4
+    return tallest
   }
 
   Flickable {
@@ -705,9 +769,8 @@ Item {
       leftMargin: root.gutter
       right: parent.right
       top: parent.top
-      topMargin: 2
     }
-    height: root.implicitHeight - 4
+    height: root.implicitHeight
     contentWidth: root.totalColumnsWidth
     contentHeight: height
     clip: true
@@ -792,8 +855,15 @@ Item {
             width: 36
             height: 14
             z: 5
+            transform: Translate {
+              x: root.isDraggingColumn && root.draggingColumnIndex === pane.index
+                 ? root.columnDragVisualX : 0
+              y: root.isDraggingColumn && root.draggingColumnIndex === pane.index
+                 ? root.columnDragVisualY : 0
+            }
             IconImage {
               id: columnPill
+              objectName: "columnDragPill"
               anchors.centerIn: parent
               width: 20
               height: 20
@@ -833,6 +903,12 @@ Item {
 
                 // Press starts a column drag immediately, like TableBlock.
                 if (mouse.button === Qt.LeftButton) {
+                  const global = mapToItem(null, mouse.x, mouse.y)
+                  root.columnDragStartX = global.x
+                  root.columnDragStartY = global.y
+                  root.columnDragVisualX = 0
+                  root.columnDragVisualY = 0
+                  root.columnDropTarget = null
                   root.isDraggingColumn = true
                   root.draggingColumnIndex = pane.index
                   root.dropColumnIndex = pane.index
@@ -844,8 +920,17 @@ Item {
                 if (!root.isDraggingColumn || pressedButton !== Qt.LeftButton)
                   return
 
-                const globalX = mapToItem(null, mouse.x, mouse.y).x
-                const relativeX = globalX - columnsContent.mapToItem(null, 0, 0).x
+                const global = mapToItem(null, mouse.x, mouse.y)
+                root.columnDragVisualX = global.x - root.columnDragStartX
+                root.columnDragVisualY = global.y - root.columnDragStartY
+
+                if (Math.abs(root.columnDragVisualX)
+                    + Math.abs(root.columnDragVisualY) > 4)
+                  movedWhilePressed = true
+
+                // The local midpoint index keeps the in-layout insertion line
+                // and is a fallback when no editor resolver is available.
+                const relativeX = global.x - columnsContent.mapToItem(null, 0, 0).x
                 let running = 0
                 let target = 0
 
@@ -856,10 +941,21 @@ Item {
                     target = i
                   running += width + root.columnSpacing
                 }
-
-                if (target !== pane.index)
-                  movedWhilePressed = true
                 root.dropColumnIndex = target
+
+                if (root.columnDropResolver) {
+                  root.columnDropTarget =
+                    root.columnDropResolver(global.x, global.y)
+
+                  if (root.columnDropTarget
+                      && root.columnDropTarget.kind === "column") {
+                    const index = root.columnIds.indexOf(
+                      root.columnDropTarget.columnId)
+                    root.dropColumnIndex = index >= 0 ? index : -1
+                  } else {
+                    root.dropColumnIndex = -1
+                  }
+                }
               }
 
               onReleased: function(mouse) {
@@ -873,16 +969,45 @@ Item {
                 }
 
                 if (root.isDraggingColumn) {
-                  const source = root.draggingColumnIndex
-                  const target = root.dropColumnIndex
+                  const sourceIndex = root.draggingColumnIndex
+                  const sourceId = sourceIndex >= 0
+                                   ? root.columnIds[sourceIndex] : ""
+                  const target = root.columnDropTarget
+                  const localTarget = root.dropColumnIndex
+
                   root.isDraggingColumn = false
                   root.draggingColumnIndex = -1
                   root.dropColumnIndex = -1
+                  root.columnDropTarget = null
+                  root.columnDragVisualX = 0
+                  root.columnDragVisualY = 0
 
-                  if (source >= 0 && target >= 0 && source !== target && root.model)
-                    root.model.moveColumnToIndex(root.columnIds[source], target)
-                  else if (!movedWhilePressed) {
-                    // A click without movement opens the column menu.
+                  if (sourceId.length > 0 && root.model) {
+                    if (target && target.kind === "column") {
+                      const targetLayout =
+                        root.model.parentBlockId(target.columnId)
+
+                      if (targetLayout === root.blockId) {
+                        const index = root.columnIds.indexOf(target.columnId)
+
+                        if (index >= 0 && index !== sourceIndex)
+                          root.model.moveColumnToIndex(sourceId, index)
+                      } else {
+                        const ids = root.model.columnIdsOf(targetLayout)
+                        root.model.moveColumnToLayout(
+                          sourceId, targetLayout, ids.indexOf(target.columnId))
+                      }
+                    } else if (target && target.kind === "editor") {
+                      root.model.extractColumnToEditor(sourceId,
+                                                       target.visibleRow)
+                    } else if (localTarget >= 0 && localTarget !== sourceIndex) {
+                      root.model.moveColumnToIndex(sourceId, localTarget)
+                    } else if (!movedWhilePressed) {
+                      // A click without movement opens the column menu.
+                      columnOptionsMenu.targetIndex = pane.index
+                      columnOptionsMenu.popup()
+                    }
+                  } else if (!movedWhilePressed) {
                     columnOptionsMenu.targetIndex = pane.index
                     columnOptionsMenu.popup()
                   }
@@ -896,6 +1021,9 @@ Item {
                 root.isDraggingColumn = false
                 root.draggingColumnIndex = -1
                 root.dropColumnIndex = -1
+                root.columnDropTarget = null
+                root.columnDragVisualX = 0
+                root.columnDragVisualY = 0
                 pressedButton = Qt.NoButton
               }
             }
@@ -975,6 +1103,15 @@ Item {
                 cursorShape: Qt.PointingHandCursor
                 preventStealing: true
 
+                // The first child of the leftmost column owns the layout's
+                // gutter: Ctrl/Shift + drag moves the whole layout, while a
+                // plain drag still moves that child block.
+                readonly property bool ownsLayoutGutter: pane.index === 0
+                                                          && pane.childIds.length > 0
+                                                          && modelData === pane.childIds[0]
+                property bool layoutDragModifier: false
+                property bool layoutDragStarted: false
+
                 Timer {
                   id: holdTimer
                   interval: 200
@@ -993,12 +1130,33 @@ Item {
                   }
                 }
 
-                onPressed: holdTimer.restart()
+                onPressed: function(mouse) {
+                  layoutDragModifier = !!root.editorApi && ownsLayoutGutter
+                                       && (mouse.modifiers
+                                           & (Qt.ControlModifier | Qt.ShiftModifier))
+                                       !== 0
+                  layoutDragStarted = false
+
+                  if (!layoutDragModifier)
+                    holdTimer.restart()
+                }
 
                 onPositionChanged: function(mouse) {
+                  const global = handleArea.mapToItem(null, mouse.x, mouse.y)
+
+                  if (layoutDragModifier && pressed) {
+                    if (!layoutDragStarted) {
+                      if (root.editorApi.beginLayoutDrag(root.blockId,
+                                                          global.x, global.y))
+                        layoutDragStarted = true
+                    } else {
+                      root.editorApi.updateLayoutDrag(global.x, global.y)
+                    }
+                    return
+                  }
+
                   if (!root.childDragActive)
                     return
-                  const global = handleArea.mapToItem(null, mouse.x, mouse.y)
                   root.updateChildDrag(global.x, global.y)
                 }
 
@@ -1006,6 +1164,14 @@ Item {
                   holdTimer.stop()
                   handleArea.cursorShape = Qt.PointingHandCursor
                   childHandle.z = 8
+
+                  if (layoutDragModifier) {
+                    if (layoutDragStarted)
+                      root.editorApi.endLayoutDrag()
+                    layoutDragModifier = false
+                    layoutDragStarted = false
+                    return
+                  }
 
                   if (root.childDragActive) {
                     root.endChildDrag()
@@ -1019,6 +1185,15 @@ Item {
                   holdTimer.stop()
                   handleArea.cursorShape = Qt.PointingHandCursor
                   childHandle.z = 8
+
+                  if (layoutDragModifier) {
+                    if (layoutDragStarted)
+                      root.editorApi.cancelLayoutDrag()
+                    layoutDragModifier = false
+                    layoutDragStarted = false
+                    return
+                  }
+
                   root.cancelChildDrag()
                 }
               }
@@ -1104,7 +1279,7 @@ Item {
             id: blockList
             anchors {
               left: parent.left
-              leftMargin: 36
+              leftMargin: root.paneGutter
               right: parent.right
               top: parent.top
               topMargin: root.headerHeight
@@ -1128,7 +1303,7 @@ Item {
                      && root.dropChildRow >= 0
             anchors {
               left: parent.left
-              leftMargin: 36
+              leftMargin: root.paneGutter
               right: parent.right
             }
             height: 2
@@ -1154,7 +1329,7 @@ Item {
           MouseArea {
             anchors {
               left: parent.left
-              leftMargin: 36
+              leftMargin: root.paneGutter
               right: parent.right
               top: parent.top
               topMargin: root.headerHeight

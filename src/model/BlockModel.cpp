@@ -2161,6 +2161,232 @@ bool BlockModel::removeColumn(const QString &columnId) {
   return true;
 }
 
+bool BlockModel::extractColumnToEditor(const QString &columnId,
+                                       int beforeVisibleRow) {
+  const Block *column = m_document.findBlock(columnId);
+
+  if (!column || column->type != BlockType::Column)
+    return false;
+
+  const QString layoutId = column->parentId;
+  const int layoutRow = m_document.indexOf(layoutId);
+
+  if (layoutRow < 0)
+    return false;
+
+  const Block *layout = m_document.blockAt(layoutRow);
+
+  if (!layout || layout->type != BlockType::Columns)
+    return false;
+
+  const QStringList ids = columnIdsOf(layoutId);
+
+  if (!ids.contains(columnId))
+    return false;
+
+  const QStringList children = blocksOfColumn(columnId);
+  const bool collapse = ids.size() == 1;
+
+  // Resolve the drop row in document space. A negative / out-of-range visible
+  // row means "append at the end of the editor".
+  int insertAt = m_document.count();
+
+  if (beforeVisibleRow >= 0 && beforeVisibleRow < visibleCount()) {
+    insertAt = sourceRowOfVisibleRow(beforeVisibleRow);
+
+    if (insertAt < 0)
+      return false;
+  }
+
+  // Simulate the final row order. The column wrapper stays in the simulation
+  // so Move targets are computed against the same row set the patch sees.
+  QStringList live;
+  for (const Block &block : m_document.blocks())
+    live.append(block.id);
+
+  QStringList desired = live;
+  for (const QString &id : children)
+    desired.removeAll(id);
+
+  // insertAt was measured before the children were removed; compensate for
+  // the ones that were sitting above the drop row.
+  int removedBefore = 0;
+  for (const QString &id : children) {
+    const int row = m_document.indexOf(id);
+
+    if (row >= 0 && row < insertAt)
+      ++removedBefore;
+  }
+
+  const int target = qBound(0, insertAt - removedBefore, desired.size());
+
+  for (int i = 0; i < children.size(); ++i)
+    desired.insert(target + i, children[i]);
+
+  // Walk the target order backwards so rows already placed stay stable.
+  QVector<PatchOp> moves;
+
+  for (int i = desired.size() - 1; i >= 0; --i) {
+    const QString &id = desired[i];
+
+    if (live[i] == id)
+      continue;
+
+    const int current = live.indexOf(id);
+
+    if (current < 0)
+      continue;
+
+    PatchOp op;
+    op.type = PatchOp::Type::Move;
+    op.from = current;
+    op.to = i;
+    op.block = *m_document.findBlock(id);
+    moves.append(op);
+    live.move(current, i);
+  }
+
+  QVector<PatchOp> patch;
+
+  // The extracted children are now ordinary top-level blocks.
+  for (const QString &id : children) {
+    const Block *current = m_document.findBlock(id);
+
+    if (!current)
+      continue;
+
+    Block wanted = *current;
+    wanted.parentId.clear();
+
+    PatchOp op;
+    op.type = PatchOp::Type::Update;
+    op.beforeBlock = *current;
+    op.block = wanted;
+    patch.append(op);
+  }
+
+  patch.append(moves);
+
+  PatchOp remove;
+  remove.type = PatchOp::Type::Remove;
+  // Recorded for undo: the wrapper's row after the moves have been applied.
+  remove.from = live.indexOf(columnId);
+  remove.block = *column;
+  patch.append(remove);
+
+  if (collapse) {
+    Block wantedLayout = *layout;
+    wantedLayout.type = BlockType::Paragraph;
+    wantedLayout.text.clear();
+    wantedLayout.headingLevel = 0;
+    wantedLayout.metadata.clear();
+
+    PatchOp convert;
+    convert.type = PatchOp::Type::Update;
+    convert.beforeBlock = *layout;
+    convert.block = wantedLayout;
+    patch.append(convert);
+  }
+
+  const QString focusAfter = children.value(0, layoutId);
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+  saveHistory(patch, columnId, focusAfter);
+  markModified();
+
+  return true;
+}
+
+bool BlockModel::moveColumnToLayout(const QString &columnId,
+                                    const QString &targetLayoutId,
+                                    int targetIndex) {
+  const Block *column = m_document.findBlock(columnId);
+  const Block *targetLayout = m_document.findBlock(targetLayoutId);
+
+  if (!column || column->type != BlockType::Column || !targetLayout ||
+      targetLayout->type != BlockType::Columns)
+    return false;
+
+  const QString sourceLayoutId = column->parentId;
+  const Block *sourceLayout = m_document.findBlock(sourceLayoutId);
+
+  if (!sourceLayout || sourceLayout->type != BlockType::Columns)
+    return false;
+
+  const QStringList targetIds = columnIdsOf(targetLayoutId);
+
+  if (sourceLayoutId == targetLayoutId) {
+    const int current = targetIds.indexOf(columnId);
+    const int index = qBound(0, targetIndex, targetIds.size() - 1);
+
+    if (current < 0 || current == index)
+      return false;
+
+    return moveColumnToIndex(columnId, index);
+  }
+
+  if (targetIds.size() >= kMaxColumns)
+    return false;
+
+  const int index = qBound(0, targetIndex, targetIds.size());
+
+  // Place the wrapper after the subtree of the column currently before it,
+  // mirroring insertColumn's contiguous-subtree scan.
+  int destination;
+
+  if (index == 0 || targetIds.isEmpty()) {
+    destination = m_document.indexOf(targetLayoutId) + 1;
+  } else {
+    const QString anchorId = targetIds[index - 1];
+    destination = m_document.indexOf(anchorId) + 1;
+
+    for (int row = destination; row < m_document.count(); ++row) {
+      const Block *block = m_document.blockAt(row);
+
+      if (!block || block->parentId.isEmpty() ||
+          block->type == BlockType::Column)
+        break;
+
+      if (block->parentId == anchorId)
+        destination = row + 1;
+    }
+  }
+
+  const int from = m_document.indexOf(columnId);
+
+  if (destination > from)
+    --destination;
+
+  if (destination < 0 || destination >= m_document.count())
+    return false;
+
+  Block wanted = *column;
+  wanted.parentId = targetLayoutId;
+
+  QVector<PatchOp> patch;
+
+  PatchOp parentOp;
+  parentOp.type = PatchOp::Type::Update;
+  parentOp.beforeBlock = *column;
+  parentOp.block = wanted;
+  patch.append(parentOp);
+
+  PatchOp moveOp;
+  moveOp.type = PatchOp::Type::Move;
+  moveOp.from = from;
+  moveOp.to = destination;
+  moveOp.block = wanted;
+  patch.append(moveOp);
+
+  invalidateStructureCaches();
+  applyPatch(patch, false);
+  saveHistory(patch, columnId, columnId);
+  markModified();
+
+  return true;
+}
+
 bool BlockModel::moveBlockToColumn(const QString &blockId,
                                    const QString &targetColumnId, int row) {
   const Block *block = m_document.findBlock(blockId);
@@ -2172,11 +2398,9 @@ bool BlockModel::moveBlockToColumn(const QString &blockId,
   if (block->type == BlockType::Columns || block->type == BlockType::Column)
     return false;
 
-  const QString sourceColumnId = columnIdOfBlock(blockId);
-
-  if (sourceColumnId.isEmpty())
-    return false;
-
+  // A top-level block may be dropped into a column as well. The source column
+  // is only used to describe in-column moves; it is not a requirement, since
+  // dragging editor blocks into columns is a supported gesture.
   QStringList targetChildren = blocksOfColumn(targetColumnId);
   targetChildren.removeAll(blockId);
 

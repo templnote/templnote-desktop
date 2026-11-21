@@ -122,6 +122,15 @@ public:
   Q_INVOKABLE bool insertColumn(const QString &containerId,
                                 const QString &afterColumnId);
   Q_INVOKABLE bool removeColumn(const QString &columnId);
+  // Drag a column out to the editor. Its children become top-level blocks in
+  // document order; if it was the layout's last column, the layout collapses
+  // back to the paragraph it replaced. beforeVisibleRow < 0 appends at the end.
+  Q_INVOKABLE bool extractColumnToEditor(const QString &columnId,
+                                         int beforeVisibleRow = -1);
+  // Move a column into another layout at the given column index.
+  Q_INVOKABLE bool moveColumnToLayout(const QString &columnId,
+                                      const QString &targetLayoutId,
+                                      int targetIndex);
   Q_INVOKABLE bool moveBlockToColumn(const QString &blockId,
                                      const QString &targetColumnId, int row);
   Q_INVOKABLE bool setColumnWidth(const QString &columnId, double width);

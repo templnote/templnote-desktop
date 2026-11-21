@@ -1208,6 +1208,84 @@ private slots:
     QVERIFY(blockModel->columnWidth(columns[0]) > left0 + 80);
   }
 
+  void firstColumnTextAlignsWithEditor() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QQuickItem *childEditor = editors().first();
+    QVERIFY(childEditor);
+
+    // Find the editor of the top-level block after the layout, using the same
+    // criteria as editors() (BlockRenderer also exposes cursorPosition).
+    const QString following = blockModel->blockIdAtVisibleRow(1);
+    QQuickItem *topDelegate = nullptr;
+    for (QQuickItem *delegate : listDelegates()) {
+      if (delegate->property("blockId").toString() == following) {
+        topDelegate = delegate;
+        break;
+      }
+    }
+    QVERIFY(topDelegate);
+
+    QQuickItem *topEditor = nullptr;
+    std::function<void(QQuickItem *)> findEditor = [&](QQuickItem *item) {
+      if (topEditor || !item)
+        return;
+      const QMetaObject *mo = item->metaObject();
+      if (mo->indexOfProperty("cursorPosition") >= 0
+          && mo->indexOfProperty("length") >= 0
+          && mo->indexOfProperty("wrapMode") >= 0
+          && mo->indexOfProperty("background") >= 0)
+        topEditor = item;
+      for (QQuickItem *c : item->childItems())
+        findEditor(c);
+    };
+    findEditor(topDelegate);
+    QVERIFY(topEditor);
+
+    const qreal childX = childEditor->mapToScene(QPointF(0, 0)).x();
+    const qreal topX = topEditor->mapToScene(QPointF(0, 0)).x();
+    QVERIFY2(qAbs(childX - topX) < 1.0,
+             "The leftmost column's text should start at the editor writing edge");
+  }
+
+  void columnDropResolutionFindsPanesAndEditorRows() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+
+    auto resolve = [&](const QPointF &point) {
+      QVariant result;
+      QMetaObject::invokeMethod(editorObject, "resolveColumnDrop",
+                                Q_RETURN_ARG(QVariant, result),
+                                Q_ARG(QVariant, point.x()),
+                                Q_ARG(QVariant, point.y()));
+      return result.toMap();
+    };
+
+    // A point inside the first column's block resolves to that column.
+    QQuickItem *child = editors().first();
+    QVERIFY(child);
+    const QPointF inside = child->mapToScene(
+      QPointF(child->width() / 2, child->height() / 2));
+    const QVariantMap onPane = resolve(inside);
+    QCOMPARE(onPane.value("kind").toString(), QString("column"));
+    QCOMPARE(onPane.value("columnId").toString(),
+             blockModel->columnIdsOf(blockModel->blockIdAt(0)).first());
+
+    // A point outside the layout's bounds resolves to an editor row.
+    const QVariantMap onEditor = resolve(QPointF(400, 400));
+    QCOMPARE(onEditor.value("kind").toString(), QString("editor"));
+  }
+
   void columnResizeAutoScrollsAtEdge() {
     BlockModel *blockModel = model();
     blockModel->createColumnsLayout(0, 2);
@@ -1258,6 +1336,168 @@ private slots:
              "Holding the slider at the edge should auto-scroll horizontally");
     QVERIFY2(widthAfter > initial + 100.0,
              "The pane should keep growing while the layout scrolls");
+  }
+
+  void columnDragOutOfLayoutCreatesTopLevelBlocks() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columns = blockModel->columnIdsOf(layoutId);
+    const QString child = blockModel->blocksOfColumn(columns.first())[0];
+    const QString following = blockModel->blockIdAtVisibleRow(1);
+
+    QQuickItem *pill = nullptr;
+    std::function<void(QQuickItem *)> findPill = [&](QQuickItem *item) {
+      if (pill || !item)
+        return;
+      if (item->objectName() == "columnDragPill" && item->isVisible())
+        pill = item;
+      for (QQuickItem *childItem : item->childItems())
+        findPill(childItem);
+    };
+    findPill(m_window->contentItem());
+    QVERIFY(pill);
+
+    QQuickItem *targetDelegate = nullptr;
+    for (QQuickItem *delegate : listDelegates()) {
+      if (delegate->property("blockId").toString() == following) {
+        targetDelegate = delegate;
+        break;
+      }
+    }
+    QVERIFY(targetDelegate);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const QPoint start = centerOf(pill);
+    const QPoint target = centerOf(targetDelegate);
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(100);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(250);
+
+    QVERIFY2(blockModel->columnIdOfBlock(child).isEmpty(),
+             "Extracted column children should become top-level blocks");
+    QVERIFY(!blockModel->document().findBlock(columns.first()));
+    QCOMPARE(blockModel->columnIdsOf(layoutId).size(), 1);
+  }
+
+  void columnGutterModifierMovesWholeLayout() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString following = blockModel->blockIdAtVisibleRow(1);
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+
+    QQuickItem *pill = nullptr;
+    std::function<void(QQuickItem *)> findPill = [&](QQuickItem *item) {
+      if (pill || !item)
+        return;
+      if (item->objectName() == "nestedChildPill" && item->isVisible())
+        pill = item;
+      for (QQuickItem *childItem : item->childItems())
+        findPill(childItem);
+    };
+    findPill(m_window->contentItem());
+    QVERIFY(pill);
+
+    QQuickItem *targetDelegate = nullptr;
+    for (QQuickItem *delegate : listDelegates()) {
+      if (delegate->property("blockId").toString() == following) {
+        targetDelegate = delegate;
+        break;
+      }
+    }
+    QVERIFY(targetDelegate);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const QPoint start = centerOf(pill);
+    // Drop below the following block so the midpoint rule targets row 1.
+    const QPoint target = QPoint(centerOf(targetDelegate).x(), 350);
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::ControlModifier, start);
+    QTest::qWait(50);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(100);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::ControlModifier, target);
+    QTest::qWait(250);
+
+    QVERIFY2(blockModel->blockIdAt(0) != layoutId,
+             "Ctrl+drag on a column gutter should move the whole layout");
+    QCOMPARE(blockModel->blockIdAtVisibleRow(1), layoutId);
+
+    // The layout is intact: both columns and their children survived.
+    QCOMPARE(blockModel->columnIdsOf(layoutId).size(), 2);
+  }
+
+  void topLevelBlockDropsIntoColumn() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    const QString column = blockModel->columnIdsOf(blockModel->blockIdAt(0)).first();
+    const QString following = blockModel->blockIdAtVisibleRow(1);
+
+    QQuickItem *childEditor = editors().first();
+    QVERIFY(childEditor);
+    const QPoint target = childEditor->mapToScene(
+      QPointF(childEditor->width() / 2, childEditor->height() / 2)).toPoint();
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVariant resolved;
+    QVERIFY(QMetaObject::invokeMethod(editorObject, "resolveBlockDropIntoColumn",
+                                      Q_RETURN_ARG(QVariant, resolved),
+                                      Q_ARG(QVariant, target.x()),
+                                      Q_ARG(QVariant, target.y())));
+    QCOMPARE(resolved.toMap().value("columnId").toString(), column);
+
+    QQuickItem *documentView = nullptr;
+    QQuickItem *targetDelegate = nullptr;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "documentView")
+        documentView = item;
+      if (item->property("blockId").toString() == following
+          && item->metaObject()->indexOfProperty("index") >= 0)
+        targetDelegate = item;
+      for (QQuickItem *childItem : item->childItems())
+        find(childItem);
+    };
+    find(m_window->contentItem());
+    QVERIFY(documentView && targetDelegate);
+
+    const int marginX = documentView->mapToScene(QPointF(0, 0)).x() - 3;
+    const int startY = targetDelegate->mapToScene(
+      QPointF(targetDelegate->width() / 2,
+              targetDelegate->height() / 2)).y();
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(marginX, startY));
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(100);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(250);
+
+    QCOMPARE(blockModel->columnIdOfBlock(following), column);
   }
 
   void gutterHoverAndClick() {

@@ -160,6 +160,18 @@ Item {
       block.updateChildDrag(globalX, globalY)
   }
 
+  // Column drag/drop hit-testing, forwarded to ColumnsBlock only.
+  property var columnDropResolver: null
+  property var editorApi: null
+  function columnAtPoint(globalX, globalY) {
+    return block && typeof block.columnAtPoint === "function"
+           ? block.columnAtPoint(globalX, globalY) : ""
+  }
+  function childRowAtPoint(globalX, globalY) {
+    return block && typeof block.childRowAtPoint === "function"
+           ? block.childRowAtPoint(globalX, globalY) : -1
+  }
+
   function endChildDrag() {
     if (block && typeof block.endChildDrag === "function")
       block.endChildDrag()
@@ -298,6 +310,10 @@ Item {
         item.delegateComponent = Qt.binding(function() { return root.delegateComponent })
       item.searchHighlights = Qt.binding(function() { return root.searchHighlights })
       item.searchNavigationActive = Qt.binding(function() { return root.searchNavigationActive })
+      if ("columnDropResolver" in item)
+        item.columnDropResolver = Qt.binding(function() { return root.columnDropResolver })
+      if ("editorApi" in item)
+        item.editorApi = Qt.binding(function() { return root.editorApi })
 
       item.enterPressed.connect(root.enterPressed)
       item.backspacePressed.connect(root.backspacePressed)

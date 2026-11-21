@@ -1259,6 +1259,103 @@ private slots:
     QCOMPARE(model.columnIdOfBlock(child), columns.first());
   }
 
+  void extractColumnToEditorPromotesChildren() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 3);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString middle = model.blocksOfColumn(columns[1])[0];
+    model.updateBlockText(middle, QStringLiteral("extracted"));
+
+    // Drop the middle column before the editor block following the layout.
+    QVERIFY(model.extractColumnToEditor(columns[1], 1));
+
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 2);
+    QVERIFY(!model.columnIdsOf(layoutId).contains(columns[1]));
+    QVERIFY(!model.document().findBlock(columns[1]));
+    QVERIFY(model.columnIdOfBlock(middle).isEmpty());
+    QCOMPARE(model.document().findBlock(middle)->text,
+             QStringLiteral("extracted"));
+    QCOMPARE(model.blockIdAtVisibleRow(1), middle);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 3);
+    QCOMPARE(model.columnIdOfBlock(middle), columns[1]);
+  }
+
+  void extractLastColumnCollapsesLayout() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    // Leave a single-column layout by moving one column to a second layout.
+    const int otherRow = model.count() - 1;
+    const QString otherLayout = model.blockIdAt(otherRow);
+    model.createColumnsLayout(otherRow, 2);
+    const QStringList columns = model.columnIdsOf(layoutId);
+    QVERIFY(model.moveColumnToLayout(columns.last(), otherLayout, 0));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 1);
+
+    const QString child = model.blocksOfColumn(columns.first())[0];
+    model.updateBlockText(child, QStringLiteral("freed"));
+
+    QVERIFY(model.extractColumnToEditor(columns.first(), 1));
+
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Paragraph);
+    QCOMPARE(model.document().blockAt(0)->id, layoutId);
+    QVERIFY(model.columnIdsOf(layoutId).isEmpty());
+    QVERIFY(model.columnIdOfBlock(child).isEmpty());
+    QCOMPARE(model.document().findBlock(child)->text,
+             QStringLiteral("freed"));
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.document().blockAt(0)->type, BlockType::Columns);
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 1);
+    QCOMPARE(model.columnIdOfBlock(child), columns.first());
+  }
+
+  void moveColumnToDifferentLayout() {
+    BlockModel model;
+    const QString firstLayout = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const int otherRow = model.count() - 1;
+    const QString secondLayout = model.blockIdAt(otherRow);
+    model.createColumnsLayout(otherRow, 2);
+
+    const QString moved = model.columnIdsOf(firstLayout).last();
+    const QStringList firstBefore = model.columnIdsOf(firstLayout);
+
+    QVERIFY(model.moveColumnToLayout(moved, secondLayout, 0));
+    QCOMPARE(model.document().findBlock(moved)->parentId, secondLayout);
+    QCOMPARE(model.columnIdsOf(firstLayout),
+             QStringList{firstBefore.first()});
+    QCOMPARE(model.columnIdsOf(secondLayout).size(), 3);
+    QCOMPARE(model.columnIdsOf(secondLayout).first(), moved);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdsOf(firstLayout), firstBefore);
+    QCOMPARE(model.columnIdsOf(secondLayout).size(), 2);
+  }
+
+  void moveTopLevelBlockIntoColumn() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const QString topLevel = model.blockIdAt(model.count() - 1);
+    QVERIFY(model.columnIdOfBlock(topLevel).isEmpty());
+
+    QVERIFY(model.moveBlockToColumn(topLevel, columns.last(), 0));
+    QCOMPARE(model.columnIdOfBlock(topLevel), columns.last());
+    QCOMPARE(model.blocksOfColumn(columns.last()).first(), topLevel);
+
+    QVERIFY(model.undo());
+    QVERIFY(model.columnIdOfBlock(topLevel).isEmpty());
+  }
+
   void columnActions() {
     BlockModel model;
     const QString layoutId = model.blockIdAt(0);

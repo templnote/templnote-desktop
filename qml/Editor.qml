@@ -63,6 +63,8 @@ Item {
   property real draggingItemHeight: 0
   property real dragGlobalY: 0
   property bool isDraggingBlock: draggingBlockId.length > 0
+  // Set while a top-level block is dragged over a column pane.
+  property var blockDropIntoColumn: null
 
   Timer {
     id: dragAutoScrollTimer
@@ -538,6 +540,129 @@ Item {
     root.nestedDragChildId = ""
   }
 
+  // Whole-layout drag, started from a column's gutter with Ctrl/Shift held.
+  // It reuses the normal top-level block drag machinery.
+  property real layoutDragStartY: 0
+
+  function beginLayoutDrag(layoutId, globalX, globalY) {
+    if (!root.model || layoutId.length === 0)
+      return false
+
+    const row = root.model.visibleRowOf(layoutId)
+
+    if (row < 0)
+      return false
+
+    const delegate = documentView.itemAtIndex(row)
+    root.draggingBlockId = layoutId
+    root.draggingSourceIndex = row
+    root.dropTargetIndex = row
+    root.draggingVisualY = 0
+    root.draggingItemHeight = delegate ? delegate.height : 0
+    root.layoutDragStartY = globalY
+    root.dragGlobalY = globalY
+    root.updateDragTarget()
+    return true
+  }
+
+  function updateLayoutDrag(globalX, globalY) {
+    if (!root.isDraggingBlock)
+      return
+
+    root.dragGlobalY = globalY
+    root.draggingVisualY = globalY - root.layoutDragStartY
+    root.updateDragTarget()
+  }
+
+  function endLayoutDrag() {
+    if (!root.isDraggingBlock)
+      return
+
+    const blockId = root.draggingBlockId
+    const source = root.draggingSourceIndex
+    const target = root.dropTargetIndex
+
+    root.draggingBlockId = ""
+    root.draggingSourceIndex = -1
+    root.dropTargetIndex = -1
+    root.draggingVisualY = 0
+
+    if (source !== target && source >= 0 && target >= 0)
+      root.moveBlockToVisibleRow(blockId, target)
+  }
+
+  function cancelLayoutDrag() {
+    root.draggingBlockId = ""
+    root.draggingSourceIndex = -1
+    root.dropTargetIndex = -1
+    root.draggingVisualY = 0
+  }
+
+  // Resolve which block renderer sits under a global point. Column layouts
+  // occupy one visible row but span the whole writing width, so hit-testing
+  // starts from the editor row and then asks that renderer about its panes.
+  function rendererAtGlobalPoint(globalX, globalY) {
+    if (!root.model)
+      return null
+
+    const viewPos = documentView.mapFromItem(null, globalX, globalY)
+
+    if (viewPos.y < 0 || viewPos.y > documentView.height)
+      return null
+
+    const contentY = viewPos.y + documentView.contentY
+    const row = documentView.indexAt(0, contentY)
+
+    if (row < 0 || row >= root.model.visibleCount())
+      return null
+
+    const delegate = documentView.itemAtIndex(row)
+    return delegate ? delegate.rendererItem : null
+  }
+
+  // Target for a dragged column: another column pane, or a position among the
+  // editor's top-level blocks.
+  function resolveColumnDrop(globalX, globalY) {
+    if (!root.model)
+      return { kind: "none" }
+
+    const viewPos = documentView.mapFromItem(null, globalX, globalY)
+    const rendererItem = rendererAtGlobalPoint(globalX, globalY)
+
+    if (rendererItem && typeof rendererItem.columnAtPoint === "function") {
+      const columnId = rendererItem.columnAtPoint(globalX, globalY)
+
+      if (columnId.length > 0)
+        return { kind: "column", columnId: columnId }
+    }
+
+    if (viewPos.y < 0 || viewPos.y > documentView.height)
+      return { kind: "none" }
+
+    const contentY = viewPos.y + documentView.contentY
+    const row = documentView.indexAt(0, contentY)
+
+    if (row < 0 || row >= root.model.visibleCount())
+      return { kind: "editor", visibleRow: root.model.visibleCount() }
+
+    return { kind: "editor", visibleRow: row }
+  }
+
+  // Target for a normal editor block being dropped into a column.
+  function resolveBlockDropIntoColumn(globalX, globalY) {
+    const rendererItem = rendererAtGlobalPoint(globalX, globalY)
+
+    if (!rendererItem || typeof rendererItem.columnAtPoint !== "function")
+      return null
+
+    const columnId = rendererItem.columnAtPoint(globalX, globalY)
+
+    if (columnId.length === 0)
+      return null
+
+    return { columnId: columnId, row: rendererItem.childRowAtPoint(globalX, globalY) }
+  }
+
   function focusDelegateAt(row, position) {
     if (row < 0 || row >= root.model.visibleCount())
       return
@@ -758,7 +883,35 @@ Item {
   // hit-test bounds, so the editor margin owns this gesture too.
   property string gutterPressBlockId: ""
   property real gutterPressGlobalY: 0
+  property real gutterPressGlobalX: 0
   property bool gutterWasDragging: false
+  property bool gutterPressIsColumns: false
+  property bool gutterChildDragStarted: false
+  property real gutterHoverGlobalX: -1
+  property real gutterHoverGlobalY: -1
+
+  // A Columns row has no gutter of its own in the editor margin: its
+  // leftmost column's handle sits there instead.
+  function isColumnsRow(row) {
+    if (!root.model || row < 0 || row >= root.model.visibleCount())
+      return false
+
+    const delegate = documentView.itemAtIndex(row)
+    return !!delegate && delegate.blockType === 12
+  }
+
+  function firstChildOfLayout(layoutId) {
+    if (!root.model || layoutId.length === 0)
+      return ""
+
+    const columns = root.model.columnIdsOf(layoutId)
+
+    if (columns.length === 0)
+      return ""
+
+    const children = root.model.blocksOfColumn(columns[0])
+    return children.length > 0 ? children[0] : ""
+  }
 
   Timer {
     id: gutterHoldTimer
@@ -768,6 +921,19 @@ Item {
     onTriggered: {
       if (!leftMarginClickArea.pressed || root.gutterPressBlockId.length === 0)
         return
+
+      if (root.gutterPressIsColumns) {
+        const childId = root.firstChildOfLayout(root.gutterPressBlockId)
+
+        if (childId.length > 0
+            && root.beginNestedChildDrag(childId,
+                                         root.gutterPressGlobalX,
+                                         root.gutterPressGlobalY)) {
+          root.gutterChildDragStarted = true
+          root.gutterWasDragging = true
+        }
+        return
+      }
 
       const row = root.model.visibleRowOf(root.gutterPressBlockId)
 
@@ -797,6 +963,9 @@ Item {
 
     acceptedButtons: Qt.LeftButton
     hoverEnabled: true
+    // Keep receiving motion after a gutter drag leaves the narrow margin,
+    // but behave normally for plain clicks.
+    preventStealing: root.gutterChildDragStarted || root.isDraggingBlock
 
     function rowAt(y) {
       if (!root.model)
@@ -820,23 +989,58 @@ Item {
     // The handle sits outside the ListView's hit-test bounds, so the editor
     // margin owns its hover state, menu and drag gesture instead of the delegate.
     onPositionChanged: function(mouse) {
-      root.gutterHoverBlockId = blockIdAt(mouse.y)
+      const hoverRow = rowAt(mouse.y)
+      const global = mapToItem(null, mouse.x, mouse.y)
+      root.gutterHoverGlobalX = global.x
+      root.gutterHoverGlobalY = global.y
+      root.gutterHoverBlockId = hoverRow >= 0
+                                 ? root.model.blockIdAtVisibleRow(hoverRow) : ""
+
+      if (root.gutterChildDragStarted) {
+        root.updateNestedChildDrag(global.x, global.y)
+        return
+      }
 
       if (root.isDraggingBlock) {
-        root.dragGlobalY = mapToItem(null, mouse.x, mouse.y).y
+        root.dragGlobalY = global.y
         root.draggingVisualY = root.dragGlobalY - root.gutterPressGlobalY
         root.updateDragTarget()
+        root.blockDropIntoColumn =
+          root.resolveBlockDropIntoColumn(global.x, global.y)
       }
     }
 
     onPressed: function(mouse) {
       root.gutterWasDragging = false
+      root.gutterPressIsColumns = false
 
       if (mouse.x < leftMarginClickArea.width - 24)
         return
 
+      const global = mapToItem(null, mouse.x, mouse.y)
+      const hoverRow = rowAt(mouse.y)
+
+      if (isColumnsRow(hoverRow)) {
+        const layoutId = root.model.blockIdAtVisibleRow(hoverRow)
+
+        // Ctrl/Shift on the leftmost column's gutter moves the whole layout.
+        if ((mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)) !== 0) {
+          root.beginLayoutDrag(layoutId, global.x, global.y)
+          root.gutterWasDragging = true
+          return
+        }
+
+        // A plain press-and-hold drags the first child of that column.
+        root.gutterPressBlockId = layoutId
+        root.gutterPressIsColumns = true
+        root.gutterPressGlobalX = global.x
+        root.gutterPressGlobalY = global.y
+        gutterHoldTimer.restart()
+        return
+      }
+
       root.gutterPressBlockId = blockIdAt(mouse.y)
-      root.gutterPressGlobalY = mapToItem(null, mouse.x, mouse.y).y
+      root.gutterPressGlobalY = global.y
 
       if (root.gutterPressBlockId.length > 0)
         gutterHoldTimer.restart()
@@ -845,26 +1049,53 @@ Item {
     onReleased: function(mouse) {
       gutterHoldTimer.stop()
 
+      if (root.gutterChildDragStarted) {
+        root.endNestedChildDrag()
+        root.gutterChildDragStarted = false
+        root.gutterPressIsColumns = false
+        root.gutterPressBlockId = ""
+        return
+      }
+
       if (root.isDraggingBlock) {
         const src = root.draggingSourceIndex
         const dst = root.dropTargetIndex
         const id = root.draggingBlockId
+        const columnTarget = root.blockDropIntoColumn
 
         root.draggingBlockId = ""
         root.draggingSourceIndex = -1
         root.dropTargetIndex = -1
         root.draggingVisualY = 0
+        root.blockDropIntoColumn = null
 
-        if (src !== dst && src >= 0 && dst >= 0)
+        if (columnTarget && root.model)
+          root.model.moveBlockToColumn(id, columnTarget.columnId,
+                                       columnTarget.row)
+        else if (src !== dst && src >= 0 && dst >= 0)
           root.moveBlockToVisibleRow(id, dst)
       }
 
       root.gutterPressBlockId = ""
+      root.gutterPressIsColumns = false
     }
 
     onExited: {
       root.gutterHoverBlockId = ""
+      root.gutterHoverGlobalX = -1
+      root.gutterHoverGlobalY = -1
+      // Do not cancel a drag here: a gutter drag immediately leaves this
+      // narrow strip and continues over the document.
       gutterHoldTimer.stop()
+    }
+
+    onCanceled: {
+      if (root.gutterChildDragStarted) {
+        root.cancelNestedChildDrag()
+        root.gutterChildDragStarted = false
+      }
+      root.gutterPressBlockId = ""
+      root.gutterPressIsColumns = false
     }
 
     onClicked: function(mouse) {
@@ -875,7 +1106,8 @@ Item {
         root.focusDelegateAt(row, 0)
 
       // The right part of the margin is where the gutter handle is drawn.
-      if (blockId.length > 0
+      // Columns rows have no gutter; their leftmost column owns it instead.
+      if (blockId.length > 0 && !isColumnsRow(row)
           && mouse.x >= leftMarginClickArea.width - 24
           && !root.gutterWasDragging) {
         gutterOptionsMenu.blockId = blockId
@@ -1055,8 +1287,26 @@ Item {
                                           || (delegateRoot.isColumnChild
                                               && columnLayoutRenderer
                                               && columnLayoutRenderer.hoveredChildBlockId === delegateRoot.blockId)
-        readonly property real hoverX: blockHoverArea.containsMouse ? blockHoverArea.mouseX : -1
-        readonly property real hoverY: blockHoverArea.containsMouse ? blockHoverArea.mouseY : -1
+        // Both hover areas share the same origin (30px left of the writing
+        // edge), so fall back to the gutter area. The leftmost column's handle
+        // lives in the editor margin, where the margin MouseArea is the only
+        // hover handler; forward its coordinates through gutterHoverBlockId.
+        readonly property real hoverX: {
+          if (blockHoverArea.containsMouse) return blockHoverArea.mouseX
+          if (gutterHoverArea.containsMouse) return gutterHoverArea.mouseX
+          if (root.gutterHoverBlockId === delegateRoot.blockId
+              && root.gutterHoverGlobalX >= 0)
+            return delegateRoot.mapFromItem(null, root.gutterHoverGlobalX, 0).x + 30
+          return -1
+        }
+        readonly property real hoverY: {
+          if (blockHoverArea.containsMouse) return blockHoverArea.mouseY
+          if (gutterHoverArea.containsMouse) return gutterHoverArea.mouseY
+          if (root.gutterHoverBlockId === delegateRoot.blockId
+              && root.gutterHoverGlobalY >= 0)
+            return delegateRoot.mapFromItem(null, 0, root.gutterHoverGlobalY).y
+          return -1
+        }
 
         // Applies a focus intent set before this delegate existed (or while it
         // was recycled for another block).
@@ -1362,6 +1612,10 @@ Item {
           showPlaceholder: delegateRoot.index === 0 && root.model.visibleCount() === 1
           searchHighlights: root.searchHighlightsByBlock[delegateRoot.blockId] || []
           searchNavigationActive: root.searchNavigationActive
+          columnDropResolver: function(globalX, globalY) {
+            return root.resolveColumnDrop(globalX, globalY)
+          }
+          editorApi: root
 
           onCaretMoved: function(position, cursorGlobalY, cursorHeight) {
             root.caretBlockId = delegateRoot.blockId
@@ -1686,7 +1940,7 @@ Item {
         // Drag handle on the left margin
         Item {
           id: dragHandle
-          visible: !delegateRoot.isColumnChild
+          visible: !delegateRoot.isColumnChild && delegateRoot.blockType !== 12
           width: 18
           height: 24
           x: -20
@@ -1803,8 +2057,11 @@ Item {
 
               if (!root.isDraggingBlock) return
 
+              const global = mapToItem(null, mouse.x, mouse.y)
               root.draggingVisualY = currentGlobalY - startGlobalY
               root.updateDragTarget()
+              root.blockDropIntoColumn =
+                root.resolveBlockDropIntoColumn(global.x, global.y)
             }
 
             onReleased: function(mouse) {
@@ -1824,15 +2081,19 @@ Item {
                 const src = root.draggingSourceIndex
                 const dst = root.dropTargetIndex
                 const blockId = root.draggingBlockId
+                const columnTarget = root.blockDropIntoColumn
 
                 root.draggingBlockId = ""
                 root.draggingSourceIndex = -1
                 root.dropTargetIndex = -1
                 root.draggingVisualY = 0
+                root.blockDropIntoColumn = null
 
-                if (src !== dst && src >= 0 && dst >= 0) {
+                if (columnTarget && root.model)
+                  root.model.moveBlockToColumn(blockId, columnTarget.columnId,
+                                               columnTarget.row)
+                else if (src !== dst && src >= 0 && dst >= 0)
                   root.moveBlockToVisibleRow(blockId, dst)
-                }
               }
             }
 
@@ -1854,6 +2115,7 @@ Item {
               root.draggingSourceIndex = -1
               root.dropTargetIndex = -1
               root.draggingVisualY = 0
+              root.blockDropIntoColumn = null
             }
           }
         }
