@@ -19,6 +19,8 @@ Item {
   property var editor: null
   property var resultsModel: null
   property var searchIndex: null
+  // Set by the host window so document jumps reuse the unsaved-edits prompt.
+  property var confirmUnsavedChanges: null
 
   property var previousFocus: null
   property int currentIndex: -1
@@ -28,6 +30,26 @@ Item {
   property alias query: searchField.text
 
   signal closed()
+
+  ModalFocusGuard { id: searchFocusGuard }
+
+  Component.onCompleted: searchFocusGuard.setTargets([searchField])
+
+  // Escape must work no matter which part of the panel was clicked last.
+  Shortcut {
+    sequence: "Escape"
+    enabled: root.visible
+    onActivated: root.close(true)
+  }
+
+  Keys.onTabPressed: function(event) {
+    event.accepted = true
+    searchFocusGuard.cycle(1)
+  }
+  Keys.onBacktabPressed: function(event) {
+    event.accepted = true
+    searchFocusGuard.cycle(-1)
+  }
 
   LocalSearchService {
     id: localSearch
@@ -183,38 +205,29 @@ Item {
 
     const switching = root.blockModel.currentFilePath !== path
 
-    // Keep unsaved edits when jumping to another document from search. An
-    // untitled document has no file of its own, so save it under a new
-    // Untitled name instead of refusing the navigation.
-    if (switching && root.blockModel.isModified) {
-      let saved = false
+    const proceed = function() {
+      root.close(false)
 
-      if (root.blockModel.currentFilePath.length > 0)
-        saved = root.blockModel.saveCurrentDocument()
-      else if (root.documentList) {
-        const path = root.documentList.createUntitledPath()
-        saved = path.length > 0 && root.blockModel.saveDocument(path)
+      if (switching) {
+        if (!root.blockModel.loadDocument(path))
+          return
+
+        if (root.documentList)
+          root.documentList.currentFilePath = path
       }
 
-      if (!saved)
-        return
+      Qt.callLater(function() {
+        if (root.editor)
+          root.editor.focusFirstBlock()
+      })
     }
 
-    root.close(false)
-
-    if (switching) {
-      if (!root.blockModel.loadDocument(path))
-        return
-
-      if (root.documentList)
-        root.documentList.currentFilePath = path
-    }
-
-    Qt.callLater(function() {
-      if (root.editor) {
-        root.editor.focusFirstBlock()
-      }
-    })
+    // Unsaved edits are never saved silently just because a search result was
+    // activated; the window decides through the shared confirmation prompt.
+    if (switching && typeof root.confirmUnsavedChanges === "function")
+      root.confirmUnsavedChanges(proceed)
+    else
+      proceed()
   }
 
   // Keyboard navigation only visits actual results. Document headers are a
@@ -270,46 +283,56 @@ Item {
     const searchQuery = root.query
     const targetPath = result.documentPath
     const targetBlockId = result.blockId
+    const switching = !root.blockModel || targetPath.length === 0
+                      ? false
+                      : root.blockModel.currentFilePath !== targetPath
 
-    root.close(false)
+    const proceed = function() {
+      root.close(false)
 
-    if (!root.blockModel || targetPath.length === 0)
-      return
-
-    if (root.blockModel.currentFilePath !== targetPath) {
-      if (!root.blockModel.loadDocument(targetPath))
+      if (!root.blockModel || targetPath.length === 0)
         return
 
-      if (root.documentList)
-        root.documentList.currentFilePath = targetPath
+      if (switching) {
+        if (!root.blockModel.loadDocument(targetPath))
+          return
+
+        if (root.documentList)
+          root.documentList.currentFilePath = targetPath
+      }
+
+      Qt.callLater(function() {
+        // Recompute from the loaded model rather than trusting possibly stale
+        // index ranges. All query terms are highlighted, matching the preview.
+        const matches = localSearch.searchTerms(root.blockModel, searchQuery)
+        let active = -1
+
+        for (let i = 0; i < matches.length; ++i) {
+          if (matches[i].blockId === targetBlockId) {
+            active = i
+            break
+          }
+        }
+
+        if (active < 0 && matches.length > 0)
+          active = 0
+
+        if (root.editor) {
+          root.editor.setSearchMatches(matches, active)
+
+          if (root.editor.setSearchNavigationActive)
+            root.editor.setSearchNavigationActive(active >= 0)
+
+          if (active >= 0)
+            root.editor.focusSearchMatch(matches[active])
+        }
+      })
     }
 
-    Qt.callLater(function() {
-      // Recompute from the loaded model rather than trusting possibly stale
-      // index ranges. All query terms are highlighted, matching the preview.
-      const matches = localSearch.searchTerms(root.blockModel, searchQuery)
-      let active = -1
-
-      for (let i = 0; i < matches.length; ++i) {
-        if (matches[i].blockId === targetBlockId) {
-          active = i
-          break
-        }
-      }
-
-      if (active < 0 && matches.length > 0)
-        active = 0
-
-      if (root.editor) {
-        root.editor.setSearchMatches(matches, active)
-
-        if (root.editor.setSearchNavigationActive)
-          root.editor.setSearchNavigationActive(active >= 0)
-
-        if (active >= 0)
-          root.editor.focusSearchMatch(matches[active])
-      }
-    })
+    if (switching && typeof root.confirmUnsavedChanges === "function")
+      root.confirmUnsavedChanges(proceed)
+    else
+      proceed()
   }
 
   // Dimmed backdrop. Clicking it dismisses the search window.

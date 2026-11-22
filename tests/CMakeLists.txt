@@ -117,6 +117,7 @@ foreach(qml_file
     ImageSourceMenu.qml
     SelectionToolbar.qml
     SearchWindow.qml
+    ModalFocusGuard.qml
     ResultsList.qml
     ResultPreview.qml
     SearchService/SearchService.qml
@@ -234,6 +235,7 @@ qt_add_qml_module(tst_searchwindow
     LocalSearchServiceTest.qml
     ${TEST_QML_DIR}/Theme.qml
     ${TEST_QML_DIR}/SearchWindow.qml
+    ${TEST_QML_DIR}/ModalFocusGuard.qml
     ${TEST_QML_DIR}/ResultsList.qml
     ${TEST_QML_DIR}/ResultPreview.qml
     ${TEST_QML_DIR}/SearchService/SearchService.qml

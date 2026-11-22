@@ -532,6 +532,8 @@ bool BlockModel::removeBlock(const QString &id) {
     patch.append(op);
   }
 
+  pruneColumnModels();
+
   if (patch.isEmpty())
     return false;
 
@@ -1339,6 +1341,13 @@ bool BlockModel::resetDocument(Document document) {
   m_redoStack.clear();
   closeTextGroup();
   invalidateStructureCaches();
+
+  // Column proxies belong to the old document; the reset makes every view
+  // rebind, so it is safe to release them here.
+  for (auto *proxy : m_columnModels)
+    proxy->deleteLater();
+  m_columnModels.clear();
+
   m_lastHistoryBlockId.clear();
   m_lastHistoryCursorPosition = -1;
 
@@ -1707,12 +1716,12 @@ int BlockModel::layoutRowOf(const QString &blockId) const {
 }
 
 QStringList BlockModel::columnIdsOf(const QString &containerId) const {
-  QStringList ids;
   const Block *layout = m_document.findBlock(containerId);
 
   if (!layout || layout->type != BlockType::Columns)
-    return ids;
+    return {};
 
+  QStringList ids;
   // Find columns by parentId rather than by row adjacency. Moving a layout or
   // any of its descendants used to break the contiguity assumption and made
   // the whole layout appear empty.
@@ -1729,9 +1738,11 @@ QStringList BlockModel::columnIdsOf(const QString &containerId) const {
 }
 
 QStringList BlockModel::blocksOfColumn(const QString &columnId) const {
-  if (const auto cached = m_columnChildren.constFind(columnId);
-      cached != m_columnChildren.constEnd())
-    return cached.value();
+  // QML can call back into the model while a dataChanged signal is being
+  // delivered, so never hold a QHash iterator across the lookup: a nested
+  // insert may rehash and invalidate it.
+  if (m_columnChildren.contains(columnId))
+    return m_columnChildren.value(columnId);
 
   QStringList ids;
 
@@ -1764,6 +1775,91 @@ QString BlockModel::columnIdOfBlock(const QString &blockId) const {
   const Block *parent = m_document.findBlock(block->parentId);
 
   return (parent && parent->type == BlockType::Column) ? parent->id : QString();
+}
+
+QStringList BlockModel::columnSubtreeIds(const QString &columnId) const {
+  QStringList ids{columnId};
+  ids.append(blocksOfColumn(columnId));
+
+  std::sort(ids.begin(), ids.end(), [this](const QString &a, const QString &b) {
+    return m_document.indexOf(a) < m_document.indexOf(b);
+  });
+
+  return ids;
+}
+
+int BlockModel::subtreeEndRow(const QString &columnId) const {
+  int end = m_document.indexOf(columnId);
+  for (const QString &id : blocksOfColumn(columnId))
+    end = qMax(end, m_document.indexOf(id));
+  return end + 1;
+}
+
+QVector<BlockModel::PatchOp>
+BlockModel::reorderPatch(const QStringList &desired) const {
+  QStringList live;
+  live.reserve(m_document.count());
+  for (const Block &block : m_document.blocks())
+    live.append(block.id);
+
+  QVector<PatchOp> moves;
+
+  // Walk backwards so rows already placed stay stable.
+  for (int i = desired.size() - 1; i >= 0; --i) {
+    const QString &id = desired[i];
+
+    if (live[i] == id)
+      continue;
+
+    const int current = live.indexOf(id);
+    if (current < 0)
+      continue;
+
+    PatchOp op;
+    op.type = PatchOp::Type::Move;
+    op.from = current;
+    op.to = i;
+    op.block = *m_document.findBlock(id);
+    moves.append(op);
+    live.move(current, i);
+  }
+
+  return moves;
+}
+
+QVector<BlockModel::PatchOp>
+BlockModel::moveSubtreePatch(const QStringList &subtree, int insertRow) const {
+  QSet<QString> moving;
+  for (const QString &id : subtree)
+    moving.insert(id);
+
+  QStringList desired;
+  desired.reserve(m_document.count());
+
+  for (const Block &block : m_document.blocks()) {
+    if (!moving.contains(block.id))
+      desired.append(block.id);
+  }
+
+  const int at = qBound(0, insertRow, desired.size());
+  for (int i = 0; i < subtree.size(); ++i)
+    desired.insert(at + i, subtree[i]);
+
+  return reorderPatch(desired);
+}
+
+void BlockModel::pruneColumnModels() {
+  for (auto it = m_columnModels.begin(); it != m_columnModels.end();) {
+    const Block *block = m_document.findBlock(it.key());
+
+    if (!block || block->type != BlockType::Column) {
+      // Defer so QML delegates holding the model can release it first.
+      it.value()->deleteLater();
+      it = m_columnModels.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 QVector<BlockModel::PatchOp>
@@ -1998,20 +2094,7 @@ bool BlockModel::moveColumn(const QString &columnId, int direction) {
   if (target < 0 || target >= ids.size())
     return false;
 
-  const int from = m_document.indexOf(columnId);
-  const int destination = m_document.indexOf(ids[target]);
-
-  PatchOp op;
-  op.type = PatchOp::Type::Move;
-  op.block = *column;
-  op.from = from;
-  op.to = destination;
-
-  applyPatch({op}, false);
-  saveHistory({op}, columnId, columnId);
-  markModified();
-
-  return true;
+  return moveColumnToIndex(columnId, target);
 }
 
 bool BlockModel::moveColumnToIndex(const QString &columnId, int targetIndex) {
@@ -2031,17 +2114,36 @@ bool BlockModel::moveColumnToIndex(const QString &columnId, int targetIndex) {
   if (target == index)
     return true;
 
-  const int from = m_document.indexOf(columnId);
-  const int destination = m_document.indexOf(ids[target]);
+  // `target` is the final index after this column is removed, so the anchor is
+  // the column currently sitting at that position in the reduced list.
+  QStringList remaining = ids;
+  remaining.removeAll(columnId);
 
-  PatchOp op;
-  op.type = PatchOp::Type::Move;
-  op.block = *column;
-  op.from = from;
-  op.to = destination;
+  int insertRow;
 
-  applyPatch({op}, false);
-  saveHistory({op}, columnId, columnId);
+  if (target >= remaining.size())
+    insertRow = subtreeEndRow(remaining.last());
+  else
+    insertRow = m_document.indexOf(remaining[target]);
+
+  // insertRow was measured in the original document; removing the subtree
+  // shifts everything below it up by its own size.
+  const QStringList subtree = columnSubtreeIds(columnId);
+  int removedBefore = 0;
+
+  for (const QString &id : subtree) {
+    if (m_document.indexOf(id) < insertRow)
+      ++removedBefore;
+  }
+
+  const QVector<PatchOp> patch =
+      moveSubtreePatch(subtree, insertRow - removedBefore);
+
+  if (patch.isEmpty())
+    return true;
+
+  applyPatch(patch, false);
+  saveHistory(patch, columnId, columnId);
   markModified();
 
   return true;
@@ -2318,66 +2420,48 @@ bool BlockModel::moveColumnToLayout(const QString &columnId,
 
   if (sourceLayoutId == targetLayoutId) {
     const int current = targetIds.indexOf(columnId);
-    const int index = qBound(0, targetIndex, targetIds.size() - 1);
+    // targetIndex is an insertion slot here, while moveColumnToIndex takes a
+    // final index (the source is removed before the insert).
+    const int slot = qBound(0, targetIndex, targetIds.size());
+    const int finalIndex = slot > current ? slot - 1 : slot;
 
-    if (current < 0 || current == index)
+    if (current < 0 || finalIndex == current)
       return false;
 
-    return moveColumnToIndex(columnId, index);
+    return moveColumnToIndex(columnId, finalIndex);
   }
 
   if (targetIds.size() >= kMaxColumns)
     return false;
 
-  const int index = qBound(0, targetIndex, targetIds.size());
+  const int slot = qBound(0, targetIndex, targetIds.size());
+  const QStringList subtree = columnSubtreeIds(columnId);
 
-  // Place the wrapper after the subtree of the column currently before it,
-  // mirroring insertColumn's contiguous-subtree scan.
-  int destination;
+  // Insert after the subtree of the column before the requested slot.
+  int insertRow;
 
-  if (index == 0 || targetIds.isEmpty()) {
-    destination = m_document.indexOf(targetLayoutId) + 1;
-  } else {
-    const QString anchorId = targetIds[index - 1];
-    destination = m_document.indexOf(anchorId) + 1;
+  if (slot == 0 || targetIds.isEmpty())
+    insertRow = m_document.indexOf(targetLayoutId) + 1;
+  else
+    insertRow = subtreeEndRow(targetIds[slot - 1]);
 
-    for (int row = destination; row < m_document.count(); ++row) {
-      const Block *block = m_document.blockAt(row);
+  int removedBefore = 0;
 
-      if (!block || block->parentId.isEmpty() ||
-          block->type == BlockType::Column)
-        break;
-
-      if (block->parentId == anchorId)
-        destination = row + 1;
-    }
+  for (const QString &id : subtree) {
+    if (m_document.indexOf(id) < insertRow)
+      ++removedBefore;
   }
-
-  const int from = m_document.indexOf(columnId);
-
-  if (destination > from)
-    --destination;
-
-  if (destination < 0 || destination >= m_document.count())
-    return false;
 
   Block wanted = *column;
   wanted.parentId = targetLayoutId;
-
-  QVector<PatchOp> patch;
 
   PatchOp parentOp;
   parentOp.type = PatchOp::Type::Update;
   parentOp.beforeBlock = *column;
   parentOp.block = wanted;
-  patch.append(parentOp);
 
-  PatchOp moveOp;
-  moveOp.type = PatchOp::Type::Move;
-  moveOp.from = from;
-  moveOp.to = destination;
-  moveOp.block = wanted;
-  patch.append(moveOp);
+  QVector<PatchOp> patch{parentOp};
+  patch.append(moveSubtreePatch(subtree, insertRow - removedBefore));
 
   invalidateStructureCaches();
   applyPatch(patch, false);
@@ -2516,7 +2600,9 @@ bool BlockModel::setColumnWidth(const QString &columnId, double width) {
 bool BlockModel::beginColumnResize(const QString &containerId) {
   const QStringList ids = columnIdsOf(containerId);
 
-  if (ids.size() < 2)
+  // Columns resize independently now, so a single-column layout is a valid
+  // resize target too; refusing it made every mouse move a separate undo step.
+  if (ids.isEmpty())
     return false;
 
   m_columnResizeBefore.clear();
@@ -2733,6 +2819,8 @@ void BlockModel::applyPatch(const QVector<PatchOp> &patch, bool undo) {
 
     emit countChanged();
   }
+
+  pruneColumnModels();
 }
 
 bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
@@ -2809,6 +2897,10 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
     const bool textChanged = current->text != wanted.text;
     const bool typeChanged = current->type != wanted.type ||
                              current->headingLevel != wanted.headingLevel;
+    // `current` points into the document, so compare before setBlock()
+    // replaces it.
+    const bool widthsChanged = current->type == BlockType::Column &&
+                               current->metadata != wanted.metadata;
 
     QVector<int> roles;
 
@@ -2825,6 +2917,9 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
 
     m_document.setBlock(row, wanted);
     emit dataChanged(index(row), index(row), roles);
+
+    if (widthsChanged)
+      emit columnWidthsChanged();
 
     // Neighbour-dependent roles also change when a block type changes: the
     // previous block's "next type" and the numbering of following rows.

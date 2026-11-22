@@ -9,6 +9,10 @@ ApplicationWindow {
   width: 1100
   height: 760
   minimumWidth: 900
+  // The editor reserves fixed top/bottom bands and every overlay is sized from
+  // the window height, so a shorter window would collapse the writing area and
+  // give the dialogs negative dimensions.
+  minimumHeight: 600
 
   visible: true
   title: hasDocument
@@ -24,6 +28,14 @@ ApplicationWindow {
   // window go through on the second pass.
   property bool allowClose: false
 
+  // True while any full-window surface covers the editor. Used to keep
+  // application shortcuts from firing behind a modal.
+  readonly property bool modalOpen: settingsWindow.visible
+                                    || searchWindow.visible
+                                    || shortcutsSheet.visible
+                                    || deleteConfirmationModal.visible
+                                    || saveConfirmationModal.visible
+
   onHasDocumentChanged: {
     if (!hasDocument && searchBar.visible)
       searchBar.close(false)
@@ -34,7 +46,66 @@ ApplicationWindow {
       return
 
     close.accepted = false
+    requestClose()
+  }
+
+  // Single policy for unsaved edits. Every operation that would replace or
+  // discard the current document routes through here, so switching files from
+  // the explorer or global search behaves the same as closing the window.
+  // `action` runs after a successful save, after an explicit discard, or
+  // immediately when there is nothing to save.
+  function confirmUnsavedChanges(action) {
+    if (typeof action !== "function")
+      return
+
+    if (!blockModel.isModified) {
+      action()
+      return
+    }
+
+    if (saveConfirmationModal.visible)
+      return
+
+    saveConfirmationModal.resolveAction = action
     saveConfirmationModal.open()
+  }
+
+  function saveCurrentDocument() {
+    if (blockModel.currentFilePath.length > 0)
+      return blockModel.saveCurrentDocument()
+
+    const path = documentList.createUntitledPath()
+    return path.length > 0 && blockModel.saveDocument(path)
+  }
+
+  function finishSaveAction() {
+    const action = saveConfirmationModal.resolveAction
+    saveConfirmationModal.close()
+
+    if (typeof action === "function")
+      action()
+  }
+
+  function requestClose() {
+    confirmUnsavedChanges(function() {
+      window.allowClose = true
+      window.close()
+    })
+  }
+
+  function saveAndClose() {
+    if (saveCurrentDocument()) {
+      finishSaveAction()
+      return
+    }
+
+    saveConfirmationModal.errorText = blockModel.lastError.length > 0
+                                     ? blockModel.lastError
+                                     : "Could not save the document."
+  }
+
+  function discardAndClose() {
+    finishSaveAction()
   }
 
   function openHome() {
@@ -51,53 +122,23 @@ ApplicationWindow {
     if (!hasDocument)
       return
 
-    // Unsaved edits are not thrown away silently; reuse the save prompt and
-    // return to the home surface once the user decides.
-    if (blockModel.isModified) {
-      saveConfirmationModal.open("home")
-      return
-    }
-
-    openHome()
+    confirmUnsavedChanges(openHome)
   }
 
-  // Runs the action chosen when the save prompt was opened: going Home or
-  // closing the whole window.
-  function finishSaveAction() {
-    const intent = saveConfirmationModal.intent
-    saveConfirmationModal.close()
-
-    if (intent === "home") {
-      openHome()
+  function requestOpenDocument(path) {
+    if (!path || path.length === 0)
       return
-    }
 
-    window.allowClose = true
-    window.close()
+    confirmUnsavedChanges(function() {
+      if (blockModel.loadDocument(path))
+        documentList.currentFilePath = path
+    })
   }
 
-  function saveAndClose() {
-    let saved = false
-
-    if (blockModel.currentFilePath.length > 0)
-      saved = blockModel.saveCurrentDocument()
-    else {
-      const path = documentList.createUntitledPath()
-      saved = path.length > 0 && blockModel.saveDocument(path)
-    }
-
-    if (saved) {
-      finishSaveAction()
-      return
-    }
-
-    saveConfirmationModal.errorText = blockModel.lastError.length > 0
-                                     ? blockModel.lastError
-                                     : "Could not save the document."
-  }
-
-  function discardAndClose() {
-    finishSaveAction()
+  function requestNewDocument() {
+    confirmUnsavedChanges(function() {
+      fileExplorer.createDocumentNow()
+    })
   }
 
   BlockModel {
@@ -165,6 +206,7 @@ ApplicationWindow {
     // each can expand to multiple key combination so better to bind with an array, so don't get astonished
     sequences: [StandardKey.Save]
     context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen
     onActivated: {
       // Nothing to save while the home surface is showing.
       if (blockModel.currentFilePath.length === 0)
@@ -178,6 +220,7 @@ ApplicationWindow {
   Shortcut {
     sequences: [StandardKey.Undo]
     context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen
     onActivated: {
       editor.undo()
     }
@@ -185,16 +228,16 @@ ApplicationWindow {
   Shortcut {
     sequences: [StandardKey.Redo]
     context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen
     onActivated: {
       editor.redo()
     }
   }
 
   Shortcut {
-    // from this no more changing is required until now
     sequence: "Ctrl+/"
     context: Qt.ApplicationShortcut
-    enabled: !searchWindow.visible && window.hasDocument
+    enabled: !window.modalOpen && window.hasDocument
     onActivated: searchBar.open()
   }
 
@@ -203,6 +246,7 @@ ApplicationWindow {
     // spellings of the same physical shortcut.
     sequences: ["Ctrl+Shift+/", "Ctrl+Shift+?"]
     context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen
     onActivated: {
       if (searchBar.visible)
         searchBar.close(false)
@@ -243,6 +287,14 @@ ApplicationWindow {
 
     onDeleteRequested: function(path, name, isFolder) {
       deleteConfirmationModal.open(path, name, isFolder)
+    }
+
+    onOpenDocumentRequested: function(path) {
+      window.requestOpenDocument(path)
+    }
+
+    onCreateDocumentRequested: function() {
+      window.requestNewDocument()
     }
 
     onNewDocumentCreated: {
@@ -421,6 +473,7 @@ ApplicationWindow {
   Shortcut {
     sequence: "F1"
     context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen || shortcutsSheet.visible
     onActivated: shortcutsSheet.toggle()
   }
 
@@ -432,6 +485,12 @@ ApplicationWindow {
     editor: editor
     resultsModel: searchResults
     searchIndex: searchIndex
+
+    // Documents opened from search share the same unsaved-edits policy as
+    // the explorer and window close.
+    confirmUnsavedChanges: function(action) {
+      window.confirmUnsavedChanges(action)
+    }
   }
 
   // Centered floating modal window for delete confirmation with backdrop overlay.
@@ -446,12 +505,28 @@ ApplicationWindow {
     property string targetName: ""
     property bool targetIsFolder: false
 
+    ModalFocusGuard { id: deleteFocusGuard }
+
+    Keys.onTabPressed: function(event) {
+      event.accepted = true
+      deleteFocusGuard.cycle(1)
+    }
+    Keys.onBacktabPressed: function(event) {
+      event.accepted = true
+      deleteFocusGuard.cycle(-1)
+    }
+
     function open(path, name, isFolder) {
       targetPath = path
       targetName = name
       targetIsFolder = isFolder
       visible = true
-      forceActiveFocus()
+
+      // Focus the non-destructive action first and keep Tab inside the dialog.
+      Qt.callLater(function() {
+        deleteFocusGuard.setTargets([cancelModalBtn, confirmModalBtn])
+        cancelModalBtn.forceActiveFocus()
+      })
     }
 
     function close() {
@@ -638,20 +713,34 @@ ApplicationWindow {
     focus: true
 
     property string errorText: ""
-    // What to do after the user resolves the prompt: "home" or "close".
-    property string intent: "close"
+    // Callback run after Save or Don't Save; cleared on cancel/dismiss.
+    property var resolveAction: null
 
-    function open(requestedIntent) {
+    ModalFocusGuard { id: saveFocusGuard }
+
+    Keys.onTabPressed: function(event) {
+      event.accepted = true
+      saveFocusGuard.cycle(1)
+    }
+    Keys.onBacktabPressed: function(event) {
+      event.accepted = true
+      saveFocusGuard.cycle(-1)
+    }
+
+    function open() {
       errorText = ""
-      intent = requestedIntent === undefined ? "close" : requestedIntent
       visible = true
-      forceActiveFocus()
+
+      Qt.callLater(function() {
+        saveFocusGuard.setTargets([closeCancelButton, closeDiscardButton, closeSaveButton])
+        closeCancelButton.forceActiveFocus()
+      })
     }
 
     function close() {
       visible = false
       errorText = ""
-      intent = "close"
+      resolveAction = null
     }
 
     Shortcut {
@@ -705,7 +794,7 @@ ApplicationWindow {
 
         Text {
           width: parent.width
-          text: "Your document has unsaved changes. Save it before closing?"
+          text: "Your document has unsaved changes. Save them before continuing?"
           color: Theme.textMuted
           font.pixelSize: 13
           wrapMode: Text.WordWrap

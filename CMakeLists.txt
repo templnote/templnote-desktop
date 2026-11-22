@@ -111,6 +111,7 @@ qt_add_qml_module(templnote
   qml/OptionsMenu.qml
   qml/SettingsWindow.qml
   qml/ShortcutsSheet.qml
+  qml/ModalFocusGuard.qml
 
   qml/settings/AppearanceSettings.qml
   qml/settings/GeneralSettings.qml

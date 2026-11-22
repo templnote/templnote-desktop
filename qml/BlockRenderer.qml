@@ -26,6 +26,11 @@ Item {
   property var delegateComponent: null
 
   readonly property var block: loader.item
+  // ColumnsBlock derives its hover cursor from the forwarded hover point;
+  // other renderers keep the default arrow.
+  readonly property int hoverCursorShape: block && "hoverCursorShape" in block
+                                          ? block.hoverCursorShape
+                                          : Qt.ArrowCursor
   readonly property int cursorPosition: block ? block.cursorPosition : 0
   readonly property string editorText: block ? block.editorText : ""
   readonly property bool isFocused: block ? block.isFocused : false
@@ -57,7 +62,7 @@ Item {
   signal searchNavigated(int direction)
   signal searchDismissed()
   signal searchEditStarted()
-  signal focusDelegateRequested(int row, int position)
+  signal focusDelegateRequested(string blockId, int position)
 
   property int pendingFocus: -1
 
@@ -135,6 +140,8 @@ Item {
                                           ? block.childDragActive : false
   readonly property string childDraggingBlockId: block && "childDraggingBlockId" in block
                                                  ? block.childDraggingBlockId : ""
+  readonly property string childDragColumnId: block && "childDragColumnId" in block
+                                              ? block.childDragColumnId : ""
   readonly property real childDraggingVisualX: block && "childDraggingVisualX" in block
                                                ? block.childDraggingVisualX : 0
   readonly property real childDraggingVisualY: block && "childDraggingVisualY" in block
@@ -171,6 +178,14 @@ Item {
     return block && typeof block.childRowAtPoint === "function"
            ? block.childRowAtPoint(globalX, globalY) : -1
   }
+  function insertionSlotAtPoint(globalX, globalY) {
+    return block && typeof block.insertionSlotAtPoint === "function"
+           ? block.insertionSlotAtPoint(globalX, globalY) : -1
+  }
+  function childIdAtGutterPoint(globalX, globalY) {
+    return block && typeof block.childIdAtGutterPoint === "function"
+           ? block.childIdAtGutterPoint(globalX, globalY) : ""
+  }
 
   function endChildDrag() {
     if (block && typeof block.endChildDrag === "function")
@@ -178,8 +193,26 @@ Item {
   }
 
   function cancelChildDrag() {
-    if (block && typeof block.cancelChildDrag === "function")
-      block.cancelChildDrag()
+    if (!block || !("childDragActive" in block))
+      return
+
+    // ColumnsBlock keeps its cleanup inline; reset the public drag state from
+    // here so a cancel started in the editor margin is honoured too.
+    block.childDragActive = false
+    block.dragChildId = ""
+    block.dropColumnId = ""
+    block.dropChildRow = -1
+    block.dropChildColumnIndex = -1
+    block.childDragSourceRow = -1
+    block.childDragSourceColumn = -1
+    block.childDraggingVisualX = 0
+    block.childDraggingVisualY = 0
+    block.childDraggingItemHeight = 0
+    block.childDragStartX = 0
+    block.childDragStartY = 0
+    block.childDragStartContentX = 0
+    block.childDragGlobalX = 0
+    block.childDragGlobalY = 0
   }
 
   function componentForType(type) {

@@ -192,7 +192,7 @@ Rectangle {
           verticalCenter: parent.verticalCenter
         }
         text: model.label
-        color: commandRow.selected ? Theme.text : Theme.text
+        color: Theme.text
         font.pixelSize: 13
       }
 

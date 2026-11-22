@@ -1611,6 +1611,70 @@ private slots:
     QCOMPARE(model.visibleCount(), 2);
   }
 
+  void movingColumnKeepsItsChildrenContiguous() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 3);
+
+    const QStringList original = model.columnIdsOf(layoutId);
+    const QString moved = original.first();
+    const QString child = model.blocksOfColumn(moved).first();
+
+    QVERIFY(model.moveColumnToIndex(moved, 2));
+    QCOMPARE(model.columnIdsOf(layoutId)[2], moved);
+    QCOMPARE(model.indexOfBlock(child), model.indexOfBlock(moved) + 1);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdsOf(layoutId)[0], moved);
+    QCOMPARE(model.indexOfBlock(child), model.indexOfBlock(moved) + 1);
+  }
+
+  void movingColumnToOtherLayoutMovesWholeSubtree() {
+    BlockModel model;
+    const QString firstLayout = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const int otherRow = model.count() - 1;
+    const QString secondLayout = model.blockIdAt(otherRow);
+    model.createColumnsLayout(otherRow, 2);
+
+    const QString moved = model.columnIdsOf(firstLayout).last();
+    const QString child = model.blocksOfColumn(moved).first();
+
+    QVERIFY(model.moveColumnToLayout(moved, secondLayout, 0));
+    QCOMPARE(model.columnIdsOf(secondLayout).first(), moved);
+    QCOMPARE(model.indexOfBlock(child), model.indexOfBlock(moved) + 1);
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.columnIdsOf(firstLayout).last(), moved);
+    QCOMPARE(model.indexOfBlock(child), model.indexOfBlock(moved) + 1);
+  }
+
+  void resizeSingleColumnLayoutIsSingleUndoStep() {
+    BlockModel model;
+    const QString layoutId = model.blockIdAt(0);
+    model.createColumnsLayout(0, 2);
+
+    const QStringList columns = model.columnIdsOf(layoutId);
+    const int otherRow = model.count() - 1;
+    const QString otherLayout = model.blockIdAt(otherRow);
+    model.createColumnsLayout(otherRow, 2);
+    QVERIFY(model.moveColumnToLayout(columns.last(), otherLayout, 0));
+    QCOMPARE(model.columnIdsOf(layoutId).size(), 1);
+
+    const QString single = model.columnIdsOf(layoutId).first();
+    const double before = model.columnWidth(single);
+
+    QVERIFY(model.beginColumnResize(layoutId));
+    QVERIFY(model.setColumnWidth(single, 420));
+    QVERIFY(model.setColumnWidth(single, 480));
+    QVERIFY(model.endColumnResize());
+    QVERIFY(qFuzzyCompare(model.columnWidth(single), 480.0));
+
+    QVERIFY(model.undo());
+    QVERIFY(qFuzzyCompare(model.columnWidth(single), before));
+  }
+
   void columnsSurviveSaveLoad() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());

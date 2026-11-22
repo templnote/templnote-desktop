@@ -108,7 +108,7 @@ Item {
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
   signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
-  signal focusDelegateRequested(int row, int position)
+  signal focusDelegateRequested(string blockId, int position)
   signal focusRequested(int position)
   signal searchNavigated(int direction)
   signal searchDismissed()
@@ -524,15 +524,11 @@ Item {
     root.setEditorText(parsed.body)
     root.internalUpdating = false
 
-    const row = root.model.indexOfBlock(root.blockId)
-    if (row >= 0) {
-      const newId = root.model.insertBlockAfter(root.blockId, 0, "")
-      if (newId.length > 0) {
-        const nextRow = row + 1
-        Qt.callLater(function() {
-          root.focusDelegateRequested(nextRow, 0)
-        })
-      }
+    const newId = root.model.insertBlockAfter(root.blockId, 0, "")
+    if (newId.length > 0) {
+      Qt.callLater(function() {
+        root.focusDelegateRequested(newId, 0)
+      })
     }
   }
 }

@@ -255,6 +255,9 @@ signals:
   void documentCreated();
   void fullWidthChanged();
   void contentRevisionChanged();
+  // Emitted when a column's stored width changes. QML uses it to refresh the
+  // pane-width bindings instead of reacting to every dataChanged signal.
+  void columnWidthsChanged();
 
 private:
   void markModified();
@@ -310,6 +313,17 @@ private:
                         QVector<PatchOp> &patch) const;
   QVector<PatchOp> widthPatch(const QVector<QString> &columnIds,
                               const QVector<double> &widths) const;
+  // A column and its direct children, in document order. Keeping the subtree
+  // together is what makes column reorders preserve document order.
+  QStringList columnSubtreeIds(const QString &columnId) const;
+  int subtreeEndRow(const QString &columnId) const;
+  // Reorders the document into `desired` with the minimal set of Move ops.
+  QVector<PatchOp> reorderPatch(const QStringList &desired) const;
+  // Places `subtree` at `insertRow` (a row in the list without the subtree).
+  QVector<PatchOp> moveSubtreePatch(const QStringList &subtree,
+                                    int insertRow) const;
+  // Drops the per-column proxies whose column no longer exists.
+  void pruneColumnModels();
 
   void saveHistory(const QVector<PatchOp> &patch,
                    const QString &focusBeforeId = {},

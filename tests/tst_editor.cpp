@@ -1079,6 +1079,24 @@ private slots:
     QCOMPARE(blockModel->document().findBlock(childId)->text, QString("abc"));
   }
 
+  void focusingLayoutPutsCaretInFirstChild() {
+    BlockModel *blockModel = model();
+    const QString childId = blockModel->createColumnsLayout(0, 2);
+    QVERIFY(!childId.isEmpty());
+    const QString layoutId = blockModel->blockIdAt(0);
+
+    QTest::qWait(300);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, layoutId),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(300);
+
+    QCOMPARE(focusedBlockId(), childId);
+  }
+
   void nestedGutterPillVisibleOnHover() {
     BlockModel *blockModel = model();
     const QString firstChildId = blockModel->createColumnsLayout(0, 2);
@@ -1136,6 +1154,762 @@ private slots:
     QTest::qWait(200);
 
     QCOMPARE(blockModel->columnIdOfBlock(firstChildId), columnIds.at(1));
+  }
+
+  void secondChildCanBeDragged() {
+    BlockModel *blockModel = model();
+    const QString first = blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columnIds = blockModel->columnIdsOf(layoutId);
+    const QString second = blockModel->appendBlockToColumn(columnIds[0]);
+    blockModel->updateBlockText(first, "first");
+    blockModel->updateBlockText(second, "second");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    QCOMPARE(pills.size(), 3);
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    // The second pill is the second child of the first column.
+    const QPoint source = centerOf(pills[1]);
+    const QPoint target = QPoint(centerOf(dividers[1]).x() - 40,
+                                 centerOf(pills[1]).y());
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->columnIdOfBlock(second), columnIds[1]);
+  }
+
+  void uiTypedSecondColumnSecondBlockDrag() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString rightColumn = blockModel->columnIdsOf(layoutId)[1];
+    const QString rightFirst = blockModel->blocksOfColumn(rightColumn).first();
+    QTest::qWait(300);
+
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, rightFirst),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(100);
+    typeText(m_window, "Beginning");
+    QTest::qWait(80);
+    QTest::keyClick(m_window, Qt::Key_Return);
+    QTest::qWait(120);
+    typeText(m_window, "code");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    const QStringList children = blockModel->blocksOfColumn(rightColumn);
+    QCOMPARE(children.size(), 2);
+    const QString second = children[1];
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    QList<QQuickItem *> rightPills;
+    for (QQuickItem *pill : pills) {
+      if (centerOf(pill).x() > centerOf(dividers[0]).x())
+        rightPills.append(pill);
+    }
+    std::sort(rightPills.begin(), rightPills.end(),
+              [&](QQuickItem *a, QQuickItem *b) {
+                return centerOf(a).y() < centerOf(b).y();
+              });
+    QCOMPARE(rightPills.size(), 2);
+
+    const QPoint source = centerOf(rightPills[1]);
+    const QPoint target = QPoint(centerOf(pills[0]).x() + 30, source.y());
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->columnIdOfBlock(second),
+             blockModel->columnIdsOf(layoutId)[0]);
+  }
+
+  void columnPillsHideAfterClick() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 3);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "columnDragPill")
+        pills.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(pills.size(), 3);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    const QPoint source = centerOf(pills[0]);
+
+    QTest::mouseMove(m_window, source);
+    QTest::qWait(150);
+    QVERIFY2(pills[0]->opacity() > 0.9, "Hover should light the column pill");
+
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(200);
+    QTest::mouseMove(m_window, QPoint(500, 500));
+    QTest::qWait(400);
+
+    for (QQuickItem *pill : pills)
+      QVERIFY2(pill->opacity() < 0.1,
+               "Column pills should hide after the click and mouse leave");
+  }
+
+  void clickedPillDoesNotStayActive() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString firstChild = blockModel->blockIdAt(
+      blockModel->indexOfBlock(layoutId) + 2);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(pills.size(), 2);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    const QPoint source = centerOf(pills[0]);
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(300);
+
+    QTest::keyClick(m_window, Qt::Key_Escape);
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(400);
+
+    QVERIFY2(pills[0]->opacity() < 0.1, "Pill should be unhighlighted");
+  }
+
+  void firstColumnPillDoesNotMoveOnFocus() {
+    BlockModel *blockModel = model();
+    const QString first = blockModel->createColumnsLayout(0, 2);
+    blockModel->changeBlockType(first, 1, 1);
+    blockModel->updateBlockText(first, "Hello");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(pills.size(), 2);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    QQuickItem *firstEditor = editorForBlock(first);
+    QVERIFY(firstEditor);
+    const QPoint before = centerOf(pills[0]);
+    const QPoint textBefore = centerOf(firstEditor);
+
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, first),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(300);
+    const QPoint after = centerOf(pills[0]);
+    const QPoint textAfter = centerOf(firstEditor);
+
+    QCOMPARE(after, before);
+    QVERIFY2(qAbs(before.y() - textBefore.y()) < 12,
+             "Gutter pill should sit beside the block's first line");
+  }
+
+  void childPillHidesAfterOptionsMenuClick() {
+    BlockModel *blockModel = model();
+    const QString first = blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString columnId = blockModel->columnIdsOf(layoutId).first();
+    const QString second = blockModel->appendBlockToColumn(columnId);
+    blockModel->updateBlockText(first, "first");
+    blockModel->updateBlockText(second, "second");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(pills.size(), 3);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    const int boundary = centerOf(dividers[0]).x();
+
+    QQuickItem *rightPill = nullptr;
+    for (QQuickItem *pill : pills) {
+      if (centerOf(pill).x() > boundary)
+        rightPill = pill;
+    }
+    QVERIFY(rightPill);
+    const QPoint source = centerOf(rightPill);
+
+    QTest::mouseMove(m_window, source);
+    QTest::qWait(150);
+    QVERIFY2(rightPill->opacity() > 0.9, "Pill should be highlighted on hover");
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(250);
+    QVERIFY2(editorObject->property("columnMenusOpen").toBool(),
+             "Click should open the context menu");
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(250);
+    QVERIFY2(!editorObject->property("columnMenusOpen").toBool(),
+             "Clicking the icon again should close the context menu");
+    QVERIFY2(rightPill->opacity() < 0.1,
+             "Clicking the icon again should unhighlight the pill");
+
+    QTest::mouseClick(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(200);
+    QTest::keyClick(m_window, Qt::Key_Escape);
+    QTest::qWait(300);
+    QVERIFY2(rightPill->opacity() < 0.1,
+             "Escape should close the menu and unhighlight the pill");
+
+    // A fresh hover over another block should light its pill again.
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(100);
+    QTest::mouseMove(m_window, centerOf(pills[0]));
+    QTest::qWait(250);
+    QVERIFY2(pills[0]->opacity() > 0.9,
+             "A fresh hover should highlight the pill again");
+  }
+
+  void focusDoesNotHighlightChildGutterPills() {
+    BlockModel *blockModel = model();
+    const QString first = blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString columnId = blockModel->columnIdsOf(layoutId).first();
+    const QString second = blockModel->appendBlockToColumn(columnId);
+    blockModel->updateBlockText(first, "first");
+    blockModel->updateBlockText(second, "second");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(100);
+    QVERIFY(QMetaObject::invokeMethod(m_window, "focusBlock",
+                                      Q_ARG(QVariant, second),
+                                      Q_ARG(QVariant, 0)));
+    QTest::qWait(300);
+
+    QList<QQuickItem *> pills;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(pills.size(), 3);
+
+    for (QQuickItem *pill : pills)
+      QVERIFY2(pill->opacity() < 0.1,
+               "Focus alone must not highlight a gutter pill");
+  }
+
+  void otherColumnsDoNotAnimateDuringChildDrag() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columnIds = blockModel->columnIdsOf(layoutId);
+    const QString a0 = blockModel->blocksOfColumn(columnIds[0])[0];
+    const QString a1 = blockModel->appendBlockToColumn(columnIds[0]);
+    const QString b0 = blockModel->blocksOfColumn(columnIds[1])[0];
+    const QString b1 = blockModel->appendBlockToColumn(columnIds[1]);
+    blockModel->updateBlockText(a0, "a0");
+    blockModel->updateBlockText(a1, "a1");
+    blockModel->updateBlockText(b0, "b0");
+    blockModel->updateBlockText(b1, "b1");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    const int boundary = centerOf(dividers[0]).x();
+
+    QList<QQuickItem *> leftPills;
+    for (QQuickItem *pill : pills) {
+      if (centerOf(pill).x() < boundary)
+        leftPills.append(pill);
+    }
+    std::sort(leftPills.begin(), leftPills.end(),
+              [&](QQuickItem *x, QQuickItem *y) {
+                return centerOf(x).y() < centerOf(y).y();
+              });
+    QCOMPARE(leftPills.size(), 2);
+
+    const QPoint source = centerOf(leftPills[0]);
+    QQuickItem *secondEditor = editorForBlock(a1);
+    QVERIFY(secondEditor);
+    const QPoint target(source.x(), centerOf(secondEditor).y() + 40);
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+
+    auto delegateFor = [this](const QString &id) {
+      QQuickItem *item = editorForBlock(id);
+
+      while (item && !item->property("nestedDisplacement").isValid())
+        item = item->parentItem();
+
+      return item;
+    };
+    QQuickItem *a1Delegate = delegateFor(a1);
+    QQuickItem *b1Delegate = delegateFor(b1);
+    QVERIFY(a1Delegate);
+    QVERIFY(b1Delegate);
+
+    QVERIFY2(qAbs(a1Delegate->property("nestedDisplacement").toDouble()) > 0.5,
+             "Sibling in the dragged column should be displaced");
+    QCOMPARE(b1Delegate->property("nestedDisplacement").toDouble(), 0.0);
+
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+  }
+
+  void gutterHitTestSelectsCorrectColumn() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString rightColumn = blockModel->columnIdsOf(layoutId)[1];
+    const QString rightFirst = blockModel->blocksOfColumn(rightColumn).first();
+    const QString rightSecond = blockModel->appendBlockToColumn(rightColumn);
+    blockModel->updateBlockText(rightSecond, "code");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(dividers.size(), 2);
+
+    QQuickItem *secondEditor = editorForBlock(rightSecond);
+    QVERIFY(secondEditor);
+    const QPointF center = secondEditor->mapToScene(
+      QPointF(secondEditor->width() / 2, secondEditor->height() / 2));
+    const QPointF divider = dividers[0]->mapToScene(
+      QPointF(dividers[0]->width() / 2, dividers[0]->height() / 2));
+
+    QObject *editorObject = m_window->findChild<QObject *>("editor");
+    QVERIFY(editorObject);
+    QVariant hit;
+    QVERIFY(QMetaObject::invokeMethod(
+      editorObject, "columnChildAtGutterPoint",
+      Q_RETURN_ARG(QVariant, hit), Q_ARG(QVariant, divider.x() + 8),
+      Q_ARG(QVariant, center.y()), Q_ARG(QVariant, layoutId)));
+    QCOMPARE(hit.toString(), rightSecond);
+  }
+
+  void secondColumnHoverHighlightsCorrectPill() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString rightColumn = blockModel->columnIdsOf(layoutId)[1];
+    const QString rightFirst = blockModel->blocksOfColumn(rightColumn).first();
+    blockModel->changeBlockType(rightFirst, 1, 1);
+    blockModel->updateBlockText(rightFirst, "Beginning");
+    const QString rightSecond = blockModel->splitBlock(rightFirst, 9,
+                                                       "Beginning");
+    blockModel->updateBlockText(rightSecond, "code");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    const int firstBoundary = centerOf(dividers[0]).x();
+
+    QList<QQuickItem *> rightPills;
+    for (QQuickItem *pill : pills) {
+      if (centerOf(pill).x() > firstBoundary)
+        rightPills.append(pill);
+    }
+    std::sort(rightPills.begin(), rightPills.end(),
+              [&](QQuickItem *a, QQuickItem *b) {
+                return centerOf(a).y() < centerOf(b).y();
+              });
+    QCOMPARE(rightPills.size(), 2);
+
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(50);
+    QTest::mouseMove(m_window, centerOf(rightPills[1]));
+    QTest::qWait(250);
+
+    QVERIFY2(rightPills[1]->opacity() > 0.9,
+             "The hovered second pill should light up");
+    QVERIFY2(rightPills[0]->opacity() < 0.1,
+             "The first pill should stay hidden");
+
+    QTest::mouseMove(m_window, QPoint(400, 400));
+    QTest::qWait(250);
+    QVERIFY2(rightPills[1]->opacity() < 0.1,
+             "The pill should hide again once the mouse leaves");
+  }
+
+  void secondColumnSecondChildGutterSelectsCorrectBlock() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList columnIds = blockModel->columnIdsOf(layoutId);
+    const QString &rightColumn = columnIds[1];
+    const QString rightFirst = blockModel->blocksOfColumn(rightColumn).first();
+    blockModel->changeBlockType(rightFirst, 1, 1);
+    blockModel->updateBlockText(rightFirst, "Beginning");
+    const QString rightSecond = blockModel->splitBlock(rightFirst, 9,
+                                                       "Beginning");
+    blockModel->updateBlockText(rightSecond, "code");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+    const int firstBoundary = centerOf(dividers[0]).x();
+
+    // The two pills in the right column, top to bottom.
+    QList<QQuickItem *> rightPills;
+    for (QQuickItem *pill : pills) {
+      if (centerOf(pill).x() > firstBoundary)
+        rightPills.append(pill);
+    }
+    std::sort(rightPills.begin(), rightPills.end(),
+              [&](QQuickItem *a, QQuickItem *b) {
+                return centerOf(a).y() < centerOf(b).y();
+              });
+    QCOMPARE(rightPills.size(), 2);
+
+    const QPoint source = centerOf(rightPills[1]);
+    const QPoint target = QPoint(centerOf(pills[0]).x() + 30, source.y());
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->columnIdOfBlock(rightSecond), columnIds[0]);
+    QCOMPARE(blockModel->columnIdOfBlock(rightFirst), columnIds[1]);
+  }
+
+  void secondChildCanBeReorderedWithinColumn() {
+    BlockModel *blockModel = model();
+    const QString first = blockModel->createColumnsLayout(0, 2);
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QString columnId = blockModel->columnIdsOf(layoutId).first();
+    const QString second = blockModel->appendBlockToColumn(columnId);
+    blockModel->updateBlockText(first, "first");
+    blockModel->updateBlockText(second, "second");
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+    QCOMPARE(pills.size(), 3);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const QPoint source = centerOf(pills[1]);
+    const QPoint target = QPoint(source.x(), centerOf(pills[0]).y() - 8);
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    QCOMPARE(blockModel->blocksOfColumn(columnId).first(), second);
+  }
+
+  void childDropLineFollowsRightColumn() {
+    BlockModel *blockModel = model();
+    const QString firstChild = blockModel->createColumnsLayout(0, 2);
+    QVERIFY(!firstChild.isEmpty());
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    QQuickItem *dropLine = nullptr;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "nestedChildPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      if (item->objectName() == "columnChildDropLine" && item->isVisible())
+        dropLine = item;
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    QCOMPARE(pills.size(), 2);
+    QCOMPARE(dividers.size(), 2);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const QPoint source = centerOf(pills[0]);
+    const int firstBoundary = centerOf(dividers[0]).x();
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::qWait(260);
+
+    // The left half of the right-hand column, just past its left boundary.
+    const QPoint target(firstBoundary + 30, source.y());
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+
+    dropLine = nullptr;
+    find(m_window->contentItem());
+    QVERIFY(dropLine);
+    const int lineX = dropLine->mapToScene(
+      QPointF(dropLine->width() / 2, 1)).toPoint().x();
+    QVERIFY2(lineX > firstBoundary,
+             "Drop line should be in the right column, not the left one");
+
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    const QStringList columnIds =
+      blockModel->columnIdsOf(blockModel->blockIdAt(0));
+    QCOMPARE(blockModel->columnIdOfBlock(firstChild), columnIds.at(1));
+  }
+
+  void columnReorderDropLineTracksRightHalf() {
+    BlockModel *blockModel = model();
+    blockModel->createColumnsLayout(0, 3);
+    QTest::qWait(400);
+    m_window->grabWindow();
+    QTest::qWait(100);
+
+    const QString layoutId = blockModel->blockIdAt(0);
+    const QStringList before = blockModel->columnIdsOf(layoutId);
+
+    QList<QQuickItem *> pills;
+    QList<QQuickItem *> dividers;
+    std::function<void(QQuickItem *)> find = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "columnDragPill")
+        pills.append(item);
+      if (item->objectName() == "columnResizeDivider" && item->isVisible())
+        dividers.append(item);
+      for (QQuickItem *child : item->childItems())
+        find(child);
+    };
+    find(m_window->contentItem());
+
+    QCOMPARE(pills.size(), 3);
+    QCOMPARE(dividers.size(), 3);
+
+    auto centerOf = [](QQuickItem *item) {
+      return item->mapToScene(
+        QPointF(item->width() / 2, item->height() / 2)).toPoint();
+    };
+
+    const QPoint source = centerOf(pills[0]);
+    // Right half of the second column: the line should jump past its right
+    // edge, not stay beside the first column.
+    const QPoint target = QPoint(centerOf(dividers[1]).x() - 20, source.y());
+
+    QTest::mousePress(m_window, Qt::LeftButton, Qt::NoModifier, source);
+    QTest::mouseMove(m_window, target);
+    QTest::qWait(80);
+
+    QQuickItem *line = nullptr;
+    std::function<void(QQuickItem *)> findLine = [&](QQuickItem *item) {
+      if (!item)
+        return;
+      if (item->objectName() == "columnInsertionLine" && item->isVisible())
+        line = item;
+      for (QQuickItem *child : item->childItems())
+        findLine(child);
+    };
+    findLine(m_window->contentItem());
+    QVERIFY(line);
+    const int lineX = line->mapToScene(
+      QPointF(line->width() / 2, 1)).toPoint().x();
+    QVERIFY2(lineX > centerOf(dividers[1]).x(),
+             "Insertion line should be past the second column");
+
+    QTest::mouseRelease(m_window, Qt::LeftButton, Qt::NoModifier, target);
+    QTest::qWait(200);
+
+    const QStringList after = blockModel->columnIdsOf(layoutId);
+    QCOMPARE(after.at(1), before.at(0));
   }
 
   void eachColumnHasIndependentResizeSlider() {
@@ -1606,7 +2380,7 @@ private slots:
     // width (editor width minus the gap and the add-column strip) evenly.
     QQuickItem *documentView = m_window->findChild<QQuickItem *>("documentView");
     QVERIFY(documentView);
-    const double expected = documentView->width() - 8 - 18;
+    const double expected = documentView->width() - 4 - 18;
     double total = 0.0;
     for (const QString &id : columns)
       total += model()->columnWidth(id);

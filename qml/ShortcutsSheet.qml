@@ -71,6 +71,17 @@ Item {
       open()
   }
 
+  // The sheet has no focusable controls; keep Tab from reaching the editor
+  // behind it instead of leaving focus on the backdrop.
+  Keys.onTabPressed: function(event) {
+    event.accepted = true
+    root.forceActiveFocus()
+  }
+  Keys.onBacktabPressed: function(event) {
+    event.accepted = true
+    root.forceActiveFocus()
+  }
+
   Shortcut {
     sequence: "Escape"
     enabled: root.visible

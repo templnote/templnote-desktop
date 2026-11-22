@@ -4,7 +4,7 @@ Item {
   id: root
 
   // Surface colors from theme
-  property color baseColor: Theme.isDark ? Theme.surface : Theme.surface
+  property color baseColor: Theme.surface
   property color grainColor: Theme.isDark ? Theme.tint(Theme.text, 0.08) : Theme.tint(Theme.text, 0.05)
   property real grainIntensity: Preferences.paperGrain
   property real vignetteIntensity: 0.03

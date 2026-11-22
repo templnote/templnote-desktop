@@ -15,6 +15,8 @@ Item {
   property real commandMenuAnchorY: 0
   property real commandMenuGap: 2
 
+  // Set by ColumnsBlock so menu open/close can be observed from tests.
+  property bool columnMenusOpen: false
   property var activeSelectionDelegate: null
   property bool selectionToolbarAbove: true
   property real selectionToolbarAnchorY: 0
@@ -62,32 +64,74 @@ Item {
   property real draggingVisualY: 0
   property real draggingItemHeight: 0
   property real dragGlobalY: 0
+  property real dragGlobalX: 0
   property bool isDraggingBlock: draggingBlockId.length > 0
   // Set while a top-level block is dragged over a column pane.
   property var blockDropIntoColumn: null
+
+  // Nested child and whole-column drags reuse the auto-scroll timer below.
+  // Each renderer caches the last pointer position so a stationary pointer at
+  // the edge keeps scrolling and the drop target is recomputed after each step.
+  property real nestedDragGlobalX: 0
+  property real nestedDragGlobalY: 0
+  readonly property bool isNestedChildDragActive: {
+    const rendererItem = root.nestedDragRenderer(root.nestedDragChildId)
+    return !!rendererItem && rendererItem.childDragActive === true
+  }
+  property bool isColumnDragActive: false
+  property var activeColumnDragRenderer: null
+  property real columnDragGlobalX: 0
+  property real columnDragGlobalY: 0
 
   Timer {
     id: dragAutoScrollTimer
     interval: 16
     repeat: true
-    running: root.isDraggingBlock
+    running: root.isDraggingBlock || root.isNestedChildDragActive
+             || root.isColumnDragActive
     onTriggered: {
-      if (!root.isDraggingBlock) return
-      // Map global drag Y to documentView coordinates
-      const viewPos = documentView.mapFromItem(null, 0, root.dragGlobalY)
+      // Map the active drag's global Y to documentView coordinates.
+      let pointerY = root.dragGlobalY
+
+      if (root.isNestedChildDragActive)
+        pointerY = root.nestedDragGlobalY
+      else if (root.isColumnDragActive)
+        pointerY = root.columnDragGlobalY
+
+      const viewPos = documentView.mapFromItem(null, 0, pointerY)
       const topEdge = 40
       const bottomEdge = documentView.height - 40
+      let nextY = documentView.contentY
 
       if (viewPos.y < topEdge) {
         const factor = Math.max(0, Math.min(1, (topEdge - viewPos.y) / topEdge))
         const step = (factor * 12) + 2
-        documentView.contentY = documentView.clampY(documentView.contentY - step)
-        root.updateDragTarget()
+        nextY = documentView.clampY(nextY - step)
       } else if (viewPos.y > bottomEdge) {
         const factor = Math.max(0, Math.min(1, (viewPos.y - bottomEdge) / 40))
         const step = (factor * 12) + 2
-        documentView.contentY = documentView.clampY(documentView.contentY + step)
+        nextY = documentView.clampY(nextY + step)
+      }
+
+      if (nextY === documentView.contentY)
+        return
+
+      documentView.contentY = nextY
+
+      if (root.isDraggingBlock) {
         root.updateDragTarget()
+        // Scrolling changes which pane/row is under the pointer. Recompute the
+        // cached column target instead of dropping into the pre-scroll pane.
+        root.updateBlockDropIntoColumn(root.dragGlobalX, root.dragGlobalY)
+      } else if (root.isNestedChildDragActive) {
+        const rendererItem = root.nestedDragRenderer(root.nestedDragChildId)
+
+        if (rendererItem)
+          rendererItem.updateChildDrag(root.nestedDragGlobalX,
+                                       root.nestedDragGlobalY)
+      } else if (root.isColumnDragActive && root.activeColumnDragRenderer) {
+        root.activeColumnDragRenderer.updateColumnDrag(root.columnDragGlobalX,
+                                                       root.columnDragGlobalY)
       }
     }
   }
@@ -163,12 +207,14 @@ Item {
         flippedAbove = false
       }
 
-      // Center horizontally around the active cursor position, constrained to editor bounds
-      const idealX = pos.x - (selectionToolbar.implicitWidth / 2)
-      selectionToolbar.x = Math.max(
-        8,
-        Math.min(root.width - selectionToolbar.implicitWidth - 8, idealX)
-      )
+      // Center horizontally around the caret, constrained to editor bounds.
+      // The toolbar clamps its own width when the editor is narrow; use that
+      // same width here so the right-hand controls never spill past the edge.
+      const availableWidth = Math.max(0, root.width - 16)
+      selectionToolbar.maxWidth = availableWidth
+      const toolbarWidth = Math.min(selectionToolbar.implicitWidth, availableWidth)
+      const idealX = pos.x - (toolbarWidth / 2)
+      selectionToolbar.x = Math.max(8, Math.min(root.width - toolbarWidth - 8, idealX))
 
       root.selectionToolbarAbove = flippedAbove
       root.selectionToolbarAnchorY = pos.y
@@ -511,12 +557,17 @@ Item {
     if (!rendererItem || typeof rendererItem.beginChildDrag !== "function")
       return false
 
+    if (!rendererItem.beginChildDrag(childId, globalX, globalY))
+      return false
+
     root.nestedDragChildId = childId
-    return rendererItem.beginChildDrag(childId, globalX, globalY)
+    return true
   }
 
   function updateNestedChildDrag(globalX, globalY) {
     const rendererItem = nestedDragRenderer(root.nestedDragChildId)
+    root.nestedDragGlobalX = globalX
+    root.nestedDragGlobalY = globalY
 
     if (rendererItem && typeof rendererItem.updateChildDrag === "function")
       rendererItem.updateChildDrag(globalX, globalY)
@@ -561,6 +612,7 @@ Item {
     root.draggingItemHeight = delegate ? delegate.height : 0
     root.layoutDragStartY = globalY
     root.dragGlobalY = globalY
+    root.dragGlobalX = globalX
     root.updateDragTarget()
     return true
   }
@@ -570,6 +622,7 @@ Item {
       return
 
     root.dragGlobalY = globalY
+    root.dragGlobalX = globalX
     root.draggingVisualY = globalY - root.layoutDragStartY
     root.updateDragTarget()
   }
@@ -632,8 +685,10 @@ Item {
     if (rendererItem && typeof rendererItem.columnAtPoint === "function") {
       const columnId = rendererItem.columnAtPoint(globalX, globalY)
 
-      if (columnId.length > 0)
-        return { kind: "column", columnId: columnId }
+      if (columnId.length > 0) {
+        return { kind: "column", columnId: columnId,
+                 slot: rendererItem.insertionSlotAtPoint(globalX, globalY) }
+      }
     }
 
     if (viewPos.y < 0 || viewPos.y > documentView.height)
@@ -661,6 +716,20 @@ Item {
       return null
 
     return { columnId: columnId, row: rendererItem.childRowAtPoint(globalX, globalY) }
+  }
+
+  // A whole Columns layout cannot be nested into a column. Ignore that target
+  // so the normal top-level reorder is used instead of silently dropping it.
+  function updateBlockDropIntoColumn(globalX, globalY) {
+    const draggedId = root.draggingBlockId
+    const sourceRow = draggedId.length > 0
+                      ? root.model.indexOfBlock(draggedId) : -1
+    const isLayout = sourceRow >= 0
+                     && root.model.blockTypeAtRow(sourceRow) === 12
+
+    root.blockDropIntoColumn = isLayout
+                               ? null
+                               : root.resolveBlockDropIntoColumn(globalX, globalY)
   }
 
   function focusDelegateAt(row, position) {
@@ -886,6 +955,9 @@ Item {
   property real gutterPressGlobalX: 0
   property bool gutterWasDragging: false
   property bool gutterPressIsColumns: false
+  // Which column child sits under the press point; the margin may be over any
+  // of the first column's handles, not just the first block's.
+  property string gutterPressChildId: ""
   property bool gutterChildDragStarted: false
   property real gutterHoverGlobalX: -1
   property real gutterHoverGlobalY: -1
@@ -913,6 +985,17 @@ Item {
     return children.length > 0 ? children[0] : ""
   }
 
+  // The editor margin covers every handle of the first column. Ask the layout
+  // under the pointer which child handle the press landed on.
+  function columnChildAtGutterPoint(globalX, globalY, layoutId) {
+    const rendererItem = rendererAtGlobalPoint(globalX, globalY)
+    const childId = rendererItem
+                    && typeof rendererItem.childIdAtGutterPoint === "function"
+                    ? rendererItem.childIdAtGutterPoint(globalX, globalY) : ""
+
+    return childId.length > 0 ? childId : root.firstChildOfLayout(layoutId)
+  }
+
   Timer {
     id: gutterHoldTimer
     interval: 200
@@ -923,12 +1006,19 @@ Item {
         return
 
       if (root.gutterPressIsColumns) {
-        const childId = root.firstChildOfLayout(root.gutterPressBlockId)
+        const childId = root.gutterPressChildId.length > 0
+                        ? root.gutterPressChildId
+                        : root.firstChildOfLayout(root.gutterPressBlockId)
+
+        // Use the last hovered point if the pointer moved during the hold so
+        // the lifted child does not jump back to the press position.
+        const startX = root.gutterHoverGlobalX >= 0
+                       ? root.gutterHoverGlobalX : root.gutterPressGlobalX
+        const startY = root.gutterHoverGlobalY >= 0
+                       ? root.gutterHoverGlobalY : root.gutterPressGlobalY
 
         if (childId.length > 0
-            && root.beginNestedChildDrag(childId,
-                                         root.gutterPressGlobalX,
-                                         root.gutterPressGlobalY)) {
+            && root.beginNestedChildDrag(childId, startX, startY)) {
           root.gutterChildDragStarted = true
           root.gutterWasDragging = true
         }
@@ -947,6 +1037,7 @@ Item {
       root.draggingVisualY = 0
       root.draggingItemHeight = item ? item.height : 40
       root.dragGlobalY = root.gutterPressGlobalY
+      root.dragGlobalX = root.gutterPressGlobalX
       root.gutterWasDragging = true
     }
   }
@@ -1003,16 +1094,17 @@ Item {
 
       if (root.isDraggingBlock) {
         root.dragGlobalY = global.y
+        root.dragGlobalX = global.x
         root.draggingVisualY = root.dragGlobalY - root.gutterPressGlobalY
         root.updateDragTarget()
-        root.blockDropIntoColumn =
-          root.resolveBlockDropIntoColumn(global.x, global.y)
+        root.updateBlockDropIntoColumn(global.x, global.y)
       }
     }
 
     onPressed: function(mouse) {
       root.gutterWasDragging = false
       root.gutterPressIsColumns = false
+      root.gutterPressChildId = ""
 
       if (mouse.x < leftMarginClickArea.width - 24)
         return
@@ -1030,9 +1122,12 @@ Item {
           return
         }
 
-        // A plain press-and-hold drags the first child of that column.
+        // A plain press-and-hold drags the child whose handle is under the
+        // pointer, which may be any block in the first column.
         root.gutterPressBlockId = layoutId
         root.gutterPressIsColumns = true
+        root.gutterPressChildId =
+          root.columnChildAtGutterPoint(global.x, global.y, layoutId)
         root.gutterPressGlobalX = global.x
         root.gutterPressGlobalY = global.y
         gutterHoldTimer.restart()
@@ -1053,6 +1148,7 @@ Item {
         root.endNestedChildDrag()
         root.gutterChildDragStarted = false
         root.gutterPressIsColumns = false
+        root.gutterPressChildId = ""
         root.gutterPressBlockId = ""
         return
       }
@@ -1078,6 +1174,7 @@ Item {
 
       root.gutterPressBlockId = ""
       root.gutterPressIsColumns = false
+      root.gutterPressChildId = ""
     }
 
     onExited: {
@@ -1096,6 +1193,7 @@ Item {
       }
       root.gutterPressBlockId = ""
       root.gutterPressIsColumns = false
+      root.gutterPressChildId = ""
     }
 
     onClicked: function(mouse) {
@@ -1373,6 +1471,11 @@ Item {
           hoverEnabled: true
           preventStealing: false
           propagateComposedEvents: true
+          // This area sits above the nested column panes and receives all
+          // hover events, so it owns their pointer cursor too.
+          cursorShape: delegateRoot.rendererItem
+                       ? delegateRoot.rendererItem.hoverCursorShape
+                       : Qt.ArrowCursor
           z: 10
 
           // Allow click and press events to pass right through to the text editor, links, or handles
@@ -1384,7 +1487,8 @@ Item {
 
         // Dynamic vertical shift to make room for dragged block
         property real visualDisplacement: {
-          if (!root.isDraggingBlock || isBeingDragged)
+          if (!root.isDraggingBlock || isBeingDragged
+              || delegateRoot.isColumnChild)
             return 0
           const from = root.draggingSourceIndex
           const to = root.dropTargetIndex
@@ -1407,6 +1511,7 @@ Item {
           if (!delegateRoot.isColumnChild || !columnLayoutRenderer
               || !columnLayoutRenderer.childDragActive
               || delegateRoot.isBeingDragged
+              || delegateRoot.columnId !== columnLayoutRenderer.childDragColumnId
               || columnLayoutRenderer.childDragSourceColumn
                  !== columnLayoutRenderer.childDragDropColumn)
             return 0
@@ -1431,6 +1536,9 @@ Item {
         // parent width is the correct writing width for this block.
         width: parent ? parent.width : documentView.width
         height: renderer.implicitHeight + delegateRoot.bottomGap
+        // Column gutter handles centre on the block's first text line so the
+        // pill stays beside the text regardless of height or focus state.
+        readonly property real handleHeight: renderer.firstLineHeight
         z: isBeingDragged ? 100 : 1
 
         // Visualization overlay to inspect delegate bounding box & focus state
@@ -1489,7 +1597,10 @@ Item {
 
         // Drop target boundary visualizer during drag-and-drop
         Rectangle {
-          visible: Preferences.showDragDropBounds && root.isDraggingBlock && root.dropTargetIndex === delegateRoot.index && !delegateRoot.isBeingDragged
+          visible: Preferences.showDragDropBounds && root.isDraggingBlock
+                   && !delegateRoot.isColumnChild
+                   && root.dropTargetIndex === delegateRoot.index
+                   && !delegateRoot.isBeingDragged
           z: 20
           anchors.left: parent.left
           anchors.right: parent.right
@@ -1641,8 +1752,8 @@ Item {
             root.requestFocusBlock(delegateRoot.blockId, position)
           }
 
-          onFocusDelegateRequested: function(row, position) {
-            root.focusDelegateAt(row, position)
+          onFocusDelegateRequested: function(blockId, position) {
+            root.requestFocusBlock(blockId, position)
           }
 
           onTabRequested: function(direction) {
@@ -1688,10 +1799,12 @@ Item {
 
             root.activeCommandDelegate = delegateRoot
 
-            documentView.positionViewAtIndex(
-              delegateRoot.index,
-              ListView.Contain
-            )
+            // A column child's `index` is local to its pane's list. Resolve
+            // the owning visible row so the menu stays anchored to the block.
+            const menuRow = root.model.visibleRowOf(delegateRoot.blockId)
+
+            if (menuRow >= 0)
+              documentView.positionViewAtIndex(menuRow, ListView.Contain)
 
             Qt.callLater(function() {
               commandMenu.openFor(query)
@@ -2031,6 +2144,7 @@ Item {
                 root.draggingVisualY = 0
                 root.draggingItemHeight = delegateRoot.height
                 root.dragGlobalY = handleArea.startGlobalY
+                root.dragGlobalX = handleArea.startGlobalX
                 handleArea.cursorShape = Qt.ClosedHandCursor
               }
             }
@@ -2039,6 +2153,7 @@ Item {
               startGlobalX = mapToItem(null, mouse.x, mouse.y).x
               startGlobalY = mapToItem(null, mouse.x, mouse.y).y
               root.dragGlobalY = startGlobalY
+              root.dragGlobalX = startGlobalX
               wasDragging = false
               holdTimer.restart()
             }
@@ -2046,6 +2161,7 @@ Item {
             onPositionChanged: function(mouse) {
               const currentGlobalY = mapToItem(null, mouse.x, mouse.y).y
               root.dragGlobalY = currentGlobalY
+              root.dragGlobalX = mapToItem(null, mouse.x, mouse.y).x
 
               if (delegateRoot.isColumnChild) {
                 if (root.nestedDragChildId.length > 0) {
@@ -2060,8 +2176,7 @@ Item {
               const global = mapToItem(null, mouse.x, mouse.y)
               root.draggingVisualY = currentGlobalY - startGlobalY
               root.updateDragTarget()
-              root.blockDropIntoColumn =
-                root.resolveBlockDropIntoColumn(global.x, global.y)
+              root.updateBlockDropIntoColumn(global.x, global.y)
             }
 
             onReleased: function(mouse) {
@@ -2240,12 +2355,15 @@ Item {
       // A fresh layout should fill the editor: subtract the gaps and the add
       // column strip that ColumnsBlock places after the last pane, then let
       // the model split the remainder evenly. Individual panes stay resizable.
-      const columnSpacing = 8
+      // Keep in sync with ColumnsBlock.columnSpacing.
+      const columnSpacing = 4
       const addStripWidth = 18
       const available = documentView.width - (count - 1) * columnSpacing
                         - addStripWidth
+      // Use the block's own document row. A column child's `index` is local
+      // to its pane and would point at an unrelated top-level block.
       const newId = root.model.createColumnsLayout(
-        root.model.sourceRowOfVisibleRow(delegate.index), count, available)
+        root.model.sourceRowOfBlock(delegate.blockId), count, available)
 
       if (newId.length > 0)
         root.requestFocusBlock(newId, 0)

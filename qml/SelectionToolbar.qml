@@ -35,9 +35,11 @@ Rectangle {
   signal alignmentSelected(string align)
 
   property bool showToolbar: false
+  // Set by the editor to the available width. -1 means unconstrained.
+  property real maxWidth: -1
 
   height: 40
-  width: implicitWidth
+  width: maxWidth > 0 ? Math.min(implicitWidth, maxWidth) : implicitWidth
   implicitWidth: mainRow.implicitWidth + 16
   radius: 8
   color: Theme.surface
@@ -107,12 +109,24 @@ Rectangle {
     fontSizeMenu.close()
   }
 
-  Row {
+  // When the full control row cannot fit, keep the toolbar inside the editor
+  // and let the row scroll horizontally instead of spilling past its edge.
+  Flickable {
+    id: contentFlickable
+
+    anchors.fill: parent
+    clip: true
+    flickableDirection: Flickable.HorizontalFlick
+    boundsBehavior: Flickable.StopAtBounds
+    contentWidth: mainRow.implicitWidth + 16
+    contentHeight: height
+    interactive: contentWidth > width
+
+    Row {
     id: mainRow
     z: 2
-    anchors.verticalCenter: parent.verticalCenter
-    anchors.left: parent.left
-    anchors.leftMargin: 8
+    x: 8
+    y: (contentFlickable.height - height) / 2
     spacing: 4
 
     // 1. Block Type Selector (nested dropdown)
@@ -897,5 +911,6 @@ Rectangle {
         }
       }
     }
-  }
+    }
+  } // Flickable
 }

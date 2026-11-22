@@ -32,6 +32,10 @@ Rectangle {
   // Deletion confirmation requested signal to display centered floating dialog at window level.
   signal deleteRequested(string path, string name, bool isFolder)
   signal newDocumentCreated()
+  // Document switches are requested from here and resolved by the window so
+  // unsaved edits are handled by one shared prompt.
+  signal openDocumentRequested(string path)
+  signal createDocumentRequested()
 
   function confirmDelete(path, name, isFolder) {
     root.deleteRequested(path, name, isFolder)
@@ -160,32 +164,13 @@ Rectangle {
       return
     }
 
-    if (root.openDocument(path)) {
-      root.documentList.currentFilePath = path
-    }
+    root.openDocumentRequested(path)
   }
 
-  // Switching documents must not silently discard edits: save first and
-  // abort the switch if the save fails. An untitled document has no file of
-  // its own, so its edits go into a fresh Untitled file instead.
-  function savePendingEdits() {
-    const model = root.documentModel
-
-    if (!model || !model.isModified)
-      return true
-
-    if (model.currentFilePath.length > 0)
-      return model.saveCurrentDocument()
-
-    const path = root.documentList.createUntitledPath()
-    return path.length > 0 && model.saveDocument(path)
-  }
-
-  function openDocument(path) {
+  // Loading itself is kept separate from the unsaved-edits decision so the
+  // window can route every document switch through the same prompt.
+  function openDocumentNow(path) {
     if (!root.documentModel || !path || path.length === 0)
-      return false
-
-    if (!root.savePendingEdits())
       return false
 
     return root.documentModel.loadDocument(path)
@@ -305,17 +290,15 @@ Rectangle {
         root.documentList.navigateTo(parentDirectory)
     }
 
-    if (root.openDocument(result.filePath))
-      root.documentList.currentFilePath = result.filePath
+    root.openDocumentRequested(result.filePath)
   }
 
   function createDocument() {
-    if (!root.documentModel || !root.documentList)
-      return
+    root.createDocumentRequested()
+  }
 
-    // Creating a document replaces the open one, so persist pending edits
-    // first and abort if the save fails, matching openDocument().
-    if (!root.savePendingEdits())
+  function createDocumentNow() {
+    if (!root.documentModel || !root.documentList)
       return
 
     const path = root.documentList.createUntitledPath()
@@ -931,9 +914,7 @@ Rectangle {
                 return
               }
 
-              if (entry.explorerRoot.openDocument(entry.filePath)) {
-                entry.explorerRoot.documentList.currentFilePath = entry.filePath
-              }
+              entry.explorerRoot.openDocumentRequested(entry.filePath)
             }
           }
 

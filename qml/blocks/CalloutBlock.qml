@@ -35,7 +35,7 @@ Item {
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
   signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
-  signal focusDelegateRequested(int row, int position)
+  signal focusDelegateRequested(string blockId, int position)
   signal focusRequested(int position)
   signal searchNavigated(int direction)
   signal searchDismissed()

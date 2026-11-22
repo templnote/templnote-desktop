@@ -60,11 +60,32 @@ Item {
     return sections[0]
   }
 
+  ModalFocusGuard { id: settingsFocusGuard }
+
+  Keys.onTabPressed: function(event) {
+    event.accepted = true
+    settingsFocusGuard.cycle(1)
+  }
+  Keys.onBacktabPressed: function(event) {
+    event.accepted = true
+    settingsFocusGuard.cycle(-1)
+  }
+
   function open(section) {
     if (section !== undefined)
       activeSection = section
     visible = true
-    forceActiveFocus()
+
+    Qt.callLater(function() {
+      const targets = [closeButton]
+      for (let i = 0; i < sectionRepeater.count; ++i) {
+        const row = sectionRepeater.itemAt(i)
+        if (row)
+          targets.push(row)
+      }
+      settingsFocusGuard.setTargets(targets)
+      closeButton.forceActiveFocus()
+    })
   }
 
   function close() {
@@ -155,6 +176,7 @@ Item {
         }
 
         Repeater {
+          id: sectionRepeater
           model: root.sections
 
           delegate: Rectangle {
@@ -163,6 +185,12 @@ Item {
             required property var modelData
 
             readonly property bool selected: root.activeSection === modelData.key
+
+            focus: sectionRow.selected
+            activeFocusOnTab: true
+
+            Keys.onReturnPressed: root.activeSection = sectionRow.modelData.key
+            Keys.onSpacePressed: root.activeSection = sectionRow.modelData.key
 
             width: parent.width
             height: 38
@@ -284,6 +312,12 @@ Item {
             rightMargin: 20
             verticalCenter: parent.verticalCenter
           }
+
+          focus: true
+          activeFocusOnTab: true
+
+          Keys.onReturnPressed: root.close()
+          Keys.onSpacePressed: root.close()
 
           width: 30
           height: 30

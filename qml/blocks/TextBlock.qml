@@ -925,7 +925,7 @@ Item {
   signal enterPressed()
   signal backspacePressed()
   signal focusRequested(int position)
-  signal focusDelegateRequested(int row, int position)
+  signal focusDelegateRequested(string blockId, int position)
   signal undoRequested()
   signal redoRequested()
   signal moveFocusRequested(int direction, real xPosition)
@@ -1787,8 +1787,9 @@ Item {
               const newId = root.model.insertBlockAfter(root.blockId, 0, "")
               if (newId.length > 0) {
                 root.transformingShortcut = false
-                const row = root.model.indexOfBlock(root.blockId)
-                root.focusDelegateRequested(row + 1, 0)
+                // Pass the id: source rows and visible rows diverge once the
+                // document contains a column layout.
+                root.focusDelegateRequested(newId, 0)
                 return
               }
 
