@@ -35,6 +35,11 @@ add_test(
     COMMAND tst_document
 )
 
+# QSyntaxHighlighter needs QGuiApplication for QTextDocument layout/formats.
+set_tests_properties(DocumentTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 add_executable(tst_blockmodel
     tst_blockmodel.cpp
 )
@@ -77,6 +82,24 @@ add_test(
     COMMAND tst_searchindex
 )
 
+add_executable(tst_plugins
+    tst_plugins.cpp
+)
+
+target_compile_definitions(tst_plugins PRIVATE
+    TEMPLNOTE_TEST_BUNDLED_PLUGINS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../bundled-plugins"
+)
+
+target_link_libraries(tst_plugins PRIVATE
+    templnote_core
+    Qt6::Test
+)
+
+add_test(
+    NAME PluginTests
+    COMMAND tst_plugins
+)
+
 # QML regression tests: compile the editor QML into the test executable and
 # drive it with Qt Test. This keeps the app target untouched while still
 # exercising the real delegates, focus handling and undo/redo routing.
@@ -100,6 +123,19 @@ set_source_files_properties(
     QT_RESOURCE_ALIAS "qml/Preferences.qml"
 )
 
+foreach(emoji_file data.json messages.json shortcodes-github.json)
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../assets/emoji/${emoji_file}" PROPERTIES
+        QT_RESOURCE_ALIAS "assets/emoji/${emoji_file}"
+    )
+endforeach()
+
+set_source_files_properties(
+    "${TEST_QML_DIR}/MarkdownSyntax.qml" PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+    QT_RESOURCE_ALIAS "qml/MarkdownSyntax.qml"
+)
+
 set_source_files_properties(
     "${TEST_QML_DIR}/shaders/paper.frag.qsb" PROPERTIES
     QT_RESOURCE_ALIAS "qml/shaders/paper.frag.qsb"
@@ -114,6 +150,7 @@ foreach(qml_file
     PaperSheet.qml
     BlockRenderer.qml
     CommandMenu.qml
+    EmojiPicker.qml
     ImageSourceMenu.qml
     SelectionToolbar.qml
     SearchWindow.qml
@@ -167,10 +204,12 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/Theme.qml
     ${TEST_QML_DIR}/BlockSpacing.qml
     ${TEST_QML_DIR}/Preferences.qml
+    ${TEST_QML_DIR}/MarkdownSyntax.qml
     ${TEST_QML_DIR}/Editor.qml
     ${TEST_QML_DIR}/PaperSheet.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
     ${TEST_QML_DIR}/CommandMenu.qml
+    ${TEST_QML_DIR}/EmojiPicker.qml
     ${TEST_QML_DIR}/ImageSourceMenu.qml
     ${TEST_QML_DIR}/SelectionToolbar.qml
     ${TEST_QML_DIR}/blocks/TextBlock.qml
@@ -192,6 +231,9 @@ qt_add_qml_module(tst_editor
     ${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
     ${TEST_QML_DIR}/shaders/paper.frag.qsb
     ${TEST_QML_DIR}/shaders/edgefade.frag.qsb
+    ${CMAKE_CURRENT_SOURCE_DIR}/../assets/emoji/data.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/../assets/emoji/messages.json
+    ${CMAKE_CURRENT_SOURCE_DIR}/../assets/emoji/shortcodes-github.json
 )
 
 target_link_libraries(tst_editor PRIVATE

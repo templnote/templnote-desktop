@@ -1,0 +1,49 @@
+{
+  "id": "theme-solarized-osaka",
+  "name": "Solarized Osaka",
+  "version": "1.0.1",
+  "description": "Clean, contrast-rich adaptation of the classic Solarized palette.",
+  "author": "Templnote",
+  "bundled": true,
+  "category": "theme",
+  "dependencies": [],
+  "capabilities": {
+    "theme": {
+      "schemeKey": "solarized-osaka",
+      "name": {
+        "dark": "Solarized Osaka",
+        "light": "Solarized Osaka Light"
+      },
+      "dark": {
+        "background": "#002b36",
+        "surface": "#00212b",
+        "surfaceAlt": "#073642",
+        "surfaceHover": "#0a4350",
+        "border": "#586e75",
+        "text": "#93a1a1",
+        "textMuted": "#839496",
+        "textFaint": "#7a929a",
+        "accent": "#268bd2",
+        "accentText": "#fdf6e3",
+        "danger": "#dc322f"
+      },
+      "light": {
+        "background": "#fdf6e3",
+        "surface": "#eee8d5",
+        "surfaceAlt": "#e6dfc8",
+        "surfaceHover": "#ded7c0",
+        "border": "#d3cbb7",
+        "text": "#586e75",
+        "textMuted": "#657b83",
+        "textFaint": "#708587",
+        "accent": "#268bd2",
+        "accentText": "#fdf6e3",
+        "danger": "#dc322f"
+      }
+    }
+  },
+  "settings": {
+    "component": "ThemeSettings.qml",
+    "defaults": {}
+  }
+}

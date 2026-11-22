@@ -6,6 +6,23 @@ Column {
   width: parent ? parent.width : 0
   spacing: 28
 
+  // Theme plugins are managed here rather than in the Plugins page: selecting
+  // a colour scheme is the primary action, and enable/disable plus per-colour
+  // overrides are exposed on the same card set.
+  property string customizingThemeId: ""
+
+  function enableTheme(id) {
+    if (typeof pluginManager === "undefined" || !pluginManager) return
+    pluginManager.enablePlugin(id)
+  }
+
+  function disableTheme(id) {
+    if (typeof pluginManager === "undefined" || !pluginManager) return
+    pluginManager.disablePlugin(id)
+    if (root.customizingThemeId === id)
+      root.customizingThemeId = ""
+  }
+
   Column {
     width: parent.width
     spacing: 12
@@ -79,44 +96,81 @@ Column {
 
     Text {
       width: parent.width
-      text: "Colour schemes provide a light and a dark palette. The selected theme mode decides which palette is used."
+      text: "Colour schemes are provided by theme plugins. Select one here, or enable and customise it without leaving this page."
       color: Theme.textMuted
       font.pixelSize: 12
       wrapMode: Text.Wrap
     }
 
+    // Scheme cards, one per theme plugin (including disabled ones). Using the
+    // plugin model rather than Theme.schemeKeys keeps disabled themes visible
+    // so they can still be enabled from here.
     Grid {
+      visible: root.customizingThemeId.length === 0
       width: parent.width
       columns: 2
       columnSpacing: 12
       rowSpacing: 12
 
       Repeater {
-        model: Theme.schemeKeys
+        model: typeof pluginManager !== "undefined" && pluginManager
+               ? pluginManager.pluginsModel : null
 
         delegate: Rectangle {
-          id: schemeCard
+          id: themeCard
 
-          required property string modelData
+          required property string id
+          required property string name
+          required property string description
+          required property string category
+          required property bool bundled
 
-          readonly property var schemeInfo: Theme.schemes[modelData]
-          readonly property var preview: schemeInfo[Theme.resolvedMode]
-          readonly property bool selected: Theme.scheme === modelData
+          readonly property bool pluginEnabled: {
+            if (typeof pluginManager === "undefined" || !pluginManager)
+              return false
+            // isEnabled() has no NOTIFY; the revision read keeps the card in
+            // sync when a theme is toggled from this page.
+            const revision = pluginManager.stateRevision
+            return pluginManager.isEnabled(themeCard.id)
+          }
+          readonly property var pluginInfo: typeof pluginManager !== "undefined" && pluginManager
+                                            ? pluginManager.pluginInfo(themeCard.id) : null
+          // Theme.schemes is keyed by schemeKey, not by plugin id.
+          readonly property string schemeKey: pluginInfo && pluginInfo.schemeKey
+                                              ? pluginInfo.schemeKey : ""
+          readonly property var schemeInfo: Theme.schemes[themeCard.schemeKey]
+          readonly property var preview: schemeInfo && schemeInfo[Theme.resolvedMode]
+                                         ? schemeInfo[Theme.resolvedMode] : null
+          readonly property bool selected: Theme.scheme === themeCard.schemeKey
 
+          visible: themeCard.category === "theme"
           width: (root.width - 12) / 2
-          height: 108
+          height: 124
           radius: 8
           color: Theme.surfaceAlt
           border.width: selected ? 2 : 1
           border.color: selected ? Theme.accent : Theme.border
 
+          // Behind the content so the action buttons keep their own clicks.
+          MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+              if (themeCard.pluginEnabled) {
+                if (themeCard.schemeKey.length > 0)
+                  Theme.setScheme(themeCard.schemeKey)
+              } else {
+                root.enableTheme(themeCard.id)
+              }
+            }
+          }
+
           Column {
             anchors {
               fill: parent
-              margins: 14
+              margins: 12
             }
-
-            spacing: 12
+            spacing: 9
 
             Row {
               width: parent.width
@@ -124,7 +178,7 @@ Column {
 
               Text {
                 width: parent.width - 22
-                text: schemeCard.schemeInfo.name[Theme.resolvedMode]
+                text: themeCard.name
                 color: Theme.text
                 font.pixelSize: 14
                 font.bold: true
@@ -132,7 +186,7 @@ Column {
               }
 
               Text {
-                visible: schemeCard.selected
+                visible: themeCard.selected
                 text: "\u2713"
                 color: Theme.accent
                 font.pixelSize: 14
@@ -144,12 +198,12 @@ Column {
               spacing: 7
 
               Repeater {
-                model: [
-                  schemeCard.preview.background,
-                  schemeCard.preview.surface,
-                  schemeCard.preview.text,
-                  schemeCard.preview.accent
-                ]
+                model: themeCard.preview ? [
+                  themeCard.preview.background,
+                  themeCard.preview.surface,
+                  themeCard.preview.text,
+                  themeCard.preview.accent
+                ] : []
 
                 delegate: Rectangle {
                   required property color modelData
@@ -162,22 +216,157 @@ Column {
                   border.color: Theme.tint(Theme.text, 0.16)
                 }
               }
+
+              Text {
+                visible: !themeCard.preview
+                text: "Enable to preview this palette"
+                color: Theme.textFaint
+                font.pixelSize: 11
+              }
             }
 
-            Text {
+            Row {
               width: parent.width
-              text: Theme.resolvedMode === "dark" ? "Dark palette" : "Light palette"
-              color: Theme.textFaint
-              font.pixelSize: 11
+              spacing: 10
+
+              Text {
+                width: Math.max(0, parent.width - 140)
+                anchors.verticalCenter: parent.verticalCenter
+                text: themeCard.pluginEnabled
+                      ? (Theme.resolvedMode === "dark" ? "Dark palette" : "Light palette")
+                      : "Disabled"
+                color: themeCard.pluginEnabled ? Theme.textFaint : Theme.danger
+                font.pixelSize: 11
+                elide: Text.ElideRight
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: themeCard.pluginEnabled ? "Disable" : "Enable"
+                color: Theme.accent
+                font.pixelSize: 11
+                font.bold: true
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    if (themeCard.pluginEnabled)
+                      root.disableTheme(themeCard.id)
+                    else
+                      root.enableTheme(themeCard.id)
+                  }
+                }
+              }
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: themeCard.pluginEnabled
+                text: "Customize"
+                color: Theme.accent
+                font.pixelSize: 11
+                font.bold: true
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.customizingThemeId = themeCard.id
+                }
+              }
             }
+          }
+        }
+      }
+    }
+
+    // Inline per-plugin settings (palette overrides) for the chosen theme.
+    Column {
+      visible: root.customizingThemeId.length > 0
+      width: parent.width
+      spacing: 16
+
+      Row {
+        width: parent.width
+        spacing: 12
+
+        Rectangle {
+          id: themeBackButton
+          width: 32
+          height: 32
+          radius: 8
+          color: themeBackMouse.containsMouse ? Theme.surfaceHover : Theme.surfaceAlt
+          border.width: 1
+          border.color: Theme.border
+
+          Text {
+            anchors.centerIn: parent
+            text: "←"
+            color: Theme.text
+            font.pixelSize: 16
+            font.bold: true
           }
 
           MouseArea {
+            id: themeBackMouse
             anchors.fill: parent
+            hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: Theme.setScheme(schemeCard.modelData)
+            onClicked: root.customizingThemeId = ""
           }
         }
+
+        Column {
+          anchors.verticalCenter: parent.verticalCenter
+          width: parent.width - 44
+          spacing: 2
+
+          Text {
+            text: {
+              if (root.customizingThemeId.length === 0 ||
+                  typeof pluginManager === "undefined" || !pluginManager)
+                return ""
+              const info = pluginManager.pluginInfo(root.customizingThemeId)
+              return info.name ? info.name : root.customizingThemeId
+            }
+            color: Theme.text
+            font.pixelSize: 15
+            font.bold: true
+          }
+
+          Text {
+            text: "Edit the dark and light palettes for this colour scheme."
+            color: Theme.textMuted
+            font.pixelSize: 11
+          }
+        }
+      }
+
+      Rectangle {
+        width: parent.width
+        height: 1
+        color: Theme.border
+      }
+
+      Loader {
+        id: themeSettingsLoader
+        width: parent.width
+        source: root.customizingThemeId.length > 0 &&
+                typeof pluginManager !== "undefined" && pluginManager
+                ? pluginManager.settingsComponent(root.customizingThemeId) : ""
+
+        property var pluginContext: ({
+          pluginId: root.customizingThemeId,
+          getSetting: function(key) {
+            return pluginManager
+                   ? pluginManager.pluginSetting(root.customizingThemeId, key)
+                   : undefined
+          },
+          setSetting: function(key, value) {
+            if (pluginManager)
+              pluginManager.setPluginSetting(root.customizingThemeId, key, value)
+          },
+          theme: Theme
+        })
       }
     }
   }

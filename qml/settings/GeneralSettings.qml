@@ -22,15 +22,6 @@ Column {
     }
   }
 
-  SettingToggle {
-    title: "Check for updates automatically"
-    description: "Look for new versions in the background and notify you when one is available."
-    checked: Preferences.checkForUpdates
-    onToggled: function(value) {
-      Preferences.checkForUpdates = value
-    }
-  }
-
   Rectangle {
     width: parent.width
     height: 1

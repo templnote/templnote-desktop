@@ -6,10 +6,15 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QJsonParseError>
+#include <QJsonValue>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QUrl>
 #include <QTextBoundaryFinder>
 #include <algorithm>
 #include <functional>
@@ -27,6 +32,94 @@ struct TextDiff {
   QString removed;
   QString inserted;
 };
+
+QString attachmentManifestPath() {
+  const QString config = AppPaths::configDirectory();
+  return config.isEmpty()
+             ? QString()
+             : QDir(config).filePath(
+                   QStringLiteral("attachment-documents.json"));
+}
+
+// Reads the raw (cleaned, but not existence-filtered) contents of the manifest.
+// Callers use it both to merge known paths and to detect whether a save would
+// actually change anything.
+// `loaded` distinguishes "no usable manifest" from "valid but empty manifest".
+QSet<QString> readAttachmentManifest(const QString &path, bool *loaded) {
+  if (loaded)
+    *loaded = false;
+
+  if (path.isEmpty())
+    return {};
+
+  QFile file(path);
+
+  if (!file.open(QIODevice::ReadOnly))
+    return {};
+
+  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+
+  if (!doc.isArray())
+    return {};
+
+  if (loaded)
+    *loaded = true;
+
+  QSet<QString> paths;
+
+  for (const QJsonValue &value : doc.array()) {
+    const QString candidate = QDir::cleanPath(value.toString());
+
+    if (!candidate.isEmpty())
+      paths.insert(candidate);
+  }
+
+  return paths;
+}
+
+// Merges the on-disk manifest into `known`: registrations whose document no
+// longer exists are dropped and paths written by other live models are folded
+// in. The unfiltered on-disk set is returned through `rawOnDisk` when provided
+// so a writer can detect a no-op without reading the file a second time.
+bool mergeAttachmentManifest(const QString &path, QSet<QString> *known,
+                             QSet<QString> *rawOnDisk) {
+  bool loaded = false;
+  const QSet<QString> onDisk = readAttachmentManifest(path, &loaded);
+
+  if (rawOnDisk)
+    *rawOnDisk = onDisk;
+
+  if (!loaded)
+    return false;
+
+  for (auto it = known->begin(); it != known->end();) {
+    if (!QFile::exists(*it))
+      it = known->erase(it);
+    else
+      ++it;
+  }
+
+  for (const QString &candidate : std::as_const(onDisk)) {
+    if (QFile::exists(candidate))
+      known->insert(candidate);
+  }
+
+  return true;
+}
+
+// rebuildNumberIndices() uses "number == 0" as its "no run yet" sentinel, so
+// listStart <= 0 makes the first item render as 0. Clamp at every BlockModel
+// entry point (including documents read from disk) instead of relying on
+// Document::fromJson, which is shared with other tools.
+QVariantMap normalizedMetadata(const QVariantMap &metadata) {
+  QVariantMap result = metadata;
+  const QString key = QStringLiteral("listStart");
+
+  if (result.contains(key) && result.value(key).toInt() < 1)
+    result.insert(key, 1);
+
+  return result;
+}
 
 TextDiff diffText(const QString &before, const QString &after) {
   int prefix = 0;
@@ -249,6 +342,8 @@ void BlockModel::rebuildNumberIndices() const {
     const Block *block = m_document.blockAt(row);
 
     if (block && block->type == BlockType::NumberedList) {
+      if (number == 0)
+        number = block->metadata.value(QStringLiteral("listStart"), 1).toInt() - 1;
       ++number;
       m_numberIndices[row] = number;
     } else {
@@ -672,6 +767,15 @@ QString BlockModel::splitBlock(const QString &id, int position,
 
   const Block beforeBlock = *m_document.blockAt(row);
 
+  // Validate first: the editor text is what the document will contain after
+  // the update, so an out-of-range position must not leave the block text
+  // replaced while the split itself fails.
+  const QString &effectiveText =
+      editorText.isNull() ? beforeBlock.text : editorText;
+
+  if (position < 0 || position > effectiveText.size())
+    return {};
+
   if (!editorText.isNull() &&
       !m_document.updateBlockText(id, editorText)) {
     return {};
@@ -679,9 +783,8 @@ QString BlockModel::splitBlock(const QString &id, int position,
 
   const Block *block = m_document.blockAt(row);
 
-  if (!block || position < 0 || position > block->text.size()) {
+  if (!block)
     return {};
-  }
 
   invalidateStructureCaches();
 
@@ -992,13 +1095,17 @@ bool BlockModel::setBlockImageWidthRatio(const QString &id, double ratio) {
   if (!block || block->type != BlockType::Image)
     return false;
 
+  // Document::updateBlockImageWidthRatio() stores a value clamped to
+  // [0.2, 1.0]; compare against that same value or an out-of-range ratio
+  // (e.g. 2.0) would create a no-op history entry and mark the document dirty.
+  const double clampedRatio = qBound(0.2, ratio, 1.0);
   const double currentRatio = block->metadata.value(QStringLiteral("imageWidthRatio"), 1.0).toDouble();
-  if (qFuzzyCompare(currentRatio, ratio))
+  if (qFuzzyCompare(currentRatio, clampedRatio))
     return true;
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockImageWidthRatio(id, ratio))
+  if (!m_document.updateBlockImageWidthRatio(id, clampedRatio))
     return false;
 
   PatchOp op;
@@ -1021,16 +1128,18 @@ bool BlockModel::setBlockMetadata(const QString &id, const QVariantMap &metadata
   if (!block)
     return false;
 
-  if (block->metadata == metadata)
+  const QVariantMap effective = normalizedMetadata(metadata);
+
+  if (block->metadata == effective)
     return true;
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockMetadata(id, metadata))
+  if (!m_document.updateBlockMetadata(id, effective))
     return false;
 
-  if (metadata.contains(QStringLiteral("plainText"))) {
-    m_document.updateBlockText(id, metadata.value(QStringLiteral("plainText")).toString());
+  if (effective.contains(QStringLiteral("plainText"))) {
+    m_document.updateBlockText(id, effective.value(QStringLiteral("plainText")).toString());
   }
 
   PatchOp op;
@@ -1039,6 +1148,59 @@ bool BlockModel::setBlockMetadata(const QString &id, const QVariantMap &metadata
   op.block = *m_document.blockAt(row);
   saveHistory({op}, id, id);
   emit dataChanged(index(row), index(row), {MetadataRole, ContentRole, Qt::DisplayRole});
+
+  if (effective.contains(QStringLiteral("listStart"))) {
+    m_numberIndicesDirty = true;
+    emitNumberIndexChanged(row);
+  }
+
+  markModified();
+  return true;
+}
+
+bool BlockModel::setBlockMetadataWithText(const QString &id,
+                                          const QVariantMap &metadata,
+                                          const QString &plainText) {
+  const int row = m_document.indexOf(id);
+  if (row < 0)
+    return false;
+
+  const Block *block = m_document.blockAt(row);
+  if (!block)
+    return false;
+
+  const QVariantMap effective = normalizedMetadata(metadata);
+
+  if (block->metadata == effective && block->text == plainText)
+    return true;
+
+  const Block beforeBlock = *block;
+
+  if (!m_document.updateBlockMetadata(id, effective))
+    return false;
+
+  if (block->text != plainText &&
+      !m_document.updateBlockText(id, plainText)) {
+    // Keep the two fields atomic: don't leave metadata applied when the text
+    // half of the operation was rejected.
+    m_document.setBlock(row, beforeBlock);
+    return false;
+  }
+
+  // One PatchOp captures both fields, so undo/redo restores them together and
+  // the edit produces a single history entry, dataChanged and contentRevision.
+  PatchOp op;
+  op.type = PatchOp::Type::Update;
+  op.beforeBlock = beforeBlock;
+  op.block = *m_document.blockAt(row);
+  saveHistory({op}, id, id);
+  emit dataChanged(index(row), index(row),
+                   {MetadataRole, ContentRole, Qt::DisplayRole});
+
+  if (effective.contains(QStringLiteral("listStart"))) {
+    m_numberIndicesDirty = true;
+    emitNumberIndexChanged(row);
+  }
 
   markModified();
   return true;
@@ -1065,6 +1227,72 @@ QString BlockModel::importAttachment(const QUrl &fileUrl) {
   return QUrl::fromLocalFile(localPath).toString();
 }
 
+void BlockModel::loadKnownAttachmentPaths() {
+  // Always re-read the manifest. Two BlockModels can be alive at once; a
+  // load-once cache made the later writer overwrite paths another model had
+  // registered in the meantime. Merging on every read/save removes that race.
+  // A deleted document can never reference an attachment again, so the merge
+  // also prunes stale entries.
+  mergeAttachmentManifest(attachmentManifestPath(), &m_knownAttachmentPaths,
+                          nullptr);
+}
+
+void BlockModel::saveKnownAttachmentPaths() {
+  const QString path = attachmentManifestPath();
+
+  if (path.isEmpty())
+    return;
+
+  // Merge anything another live model has written since our last read before
+  // replacing the file, otherwise this model's snapshot would drop it. The
+  // merge also prunes entries whose documents have since been deleted. Reuse
+  // this one read for the no-op check below instead of loading and reading
+  // the same file again.
+  QSet<QString> onDisk;
+  const bool loaded =
+      mergeAttachmentManifest(path, &m_knownAttachmentPaths, &onDisk);
+
+  // Autosave calls this on every save. When the set already matches the file
+  // there is nothing to do - avoid the QSaveFile rewrite (and its fsync) so a
+  // no-op autosave stays cheap. A mismatch includes the pruning case, where
+  // the on-disk set still holds paths to deleted documents.
+  if (loaded && onDisk == m_knownAttachmentPaths)
+    return;
+
+  QJsonArray paths;
+
+  for (const QString &known : std::as_const(m_knownAttachmentPaths))
+    paths.append(known);
+
+  QDir().mkpath(QFileInfo(path).absolutePath());
+
+  // Atomic replace: a crash mid-write must not leave a truncated manifest.
+  QSaveFile file(path);
+
+  if (!file.open(QIODevice::WriteOnly))
+    return;
+
+  file.write(QJsonDocument(paths).toJson(QJsonDocument::Compact));
+  file.commit();
+}
+
+void BlockModel::rememberAttachmentDocumentPath(const QString &path) {
+  if (path.isEmpty())
+    return;
+
+  const QString normalized =
+      QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+
+  if (normalized.isEmpty())
+    return;
+
+  // saveKnownAttachmentPaths() re-reads and merges the manifest before it
+  // writes, so loading here would be a redundant second read on every
+  // registration (and on every autosave that calls it).
+  m_knownAttachmentPaths.insert(normalized);
+  saveKnownAttachmentPaths();
+}
+
 void BlockModel::cleanupOrphanedAttachments() {
   const QString directoryPath = AppPaths::attachmentsDirectory();
 
@@ -1078,41 +1306,112 @@ void BlockModel::cleanupOrphanedAttachments() {
   if (files.isEmpty())
     return;
 
-  // Attachment names are UUIDs, so a substring search over the saved document
-  // files and the open document is enough to tell whether one is still used.
-  QByteArray corpus;
+  // Always load the manifest: closeDocument() clears the current path before
+  // the sweep, so registration alone would leave the known-path set empty and
+  // reclaim attachments that other documents still reference.
+  loadKnownAttachmentPaths();
 
-  auto collectFromDirectory = [&corpus](const QString &root) {
-    if (root.isEmpty())
+  if (!m_currentFilePath.isEmpty()) {
+    const QString normalized =
+        QDir::cleanPath(QFileInfo(m_currentFilePath).absoluteFilePath());
+
+    if (!normalized.isEmpty())
+      m_knownAttachmentPaths.insert(normalized);
+  }
+
+  // Persist even when no new path was added: loading prunes entries for files
+  // deleted outside the app, and that pruned set must replace the manifest.
+  saveKnownAttachmentPaths();
+
+  // Collect attachment file names by parsing documents instead of doing a
+  // substring search over concatenated bytes: this is linear in document
+  // content rather than attachments x total bytes on every autosave.
+  QSet<QString> referenced;
+
+  auto rememberReference = [&referenced](const QString &source) {
+    if (source.isEmpty())
       return;
 
-    QDirIterator it(root, QStringList{QStringLiteral("*.templnote")},
-                    QDir::Files, QDirIterator::Subdirectories);
+    const QUrl url(source);
+    const QString local = url.isLocalFile() ? url.toLocalFile() : source;
+    const QString name = QFileInfo(local).fileName();
 
-    while (it.hasNext()) {
-      QFile file(it.next());
+    if (!name.isEmpty())
+      referenced.insert(name);
+  };
 
-      if (file.open(QIODevice::ReadOnly))
-        corpus.append(file.readAll());
+  auto collectFromDocument = [&rememberReference](const QByteArray &data) {
+    const QJsonDocument doc = QJsonDocument::fromJson(data);
+
+    if (!doc.isObject())
+      return;
+
+    const QJsonArray blocks =
+        doc.object().value(QStringLiteral("blocks")).toArray();
+
+    for (const QJsonValue &value : blocks) {
+      const QJsonObject block = value.toObject();
+      const QString source =
+          block.value(QStringLiteral("metadata")).toObject()
+              .value(QStringLiteral("imageSource")).toString();
+      rememberReference(source);
+
+      // Images may also be embedded as Markdown `![alt](file:///.../uuid.png)`
+      // in the block text, which carries no imageSource metadata.
+      static const QRegularExpression imageLink(QStringLiteral(
+          R"(!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\))"));
+      auto matches = imageLink.globalMatch(
+          block.value(QStringLiteral("text")).toString());
+
+      while (matches.hasNext())
+        rememberReference(matches.next().captured(1));
     }
   };
 
-  collectFromDirectory(AppPaths::documentsDirectory());
+  // Every document this app has opened or saved, including Save As targets
+  // outside the documents root. Their attachments must never be reclaimed.
+  for (const QString &path : std::as_const(m_knownAttachmentPaths)) {
+    QFile file(path);
 
-  // Documents may live outside the documents folder as well.
-  if (!m_currentFilePath.isEmpty())
-    collectFromDirectory(QFileInfo(m_currentFilePath).absolutePath());
+    if (file.open(QIODevice::ReadOnly))
+      collectFromDocument(file.readAll());
+  }
 
-  // Serialize the open document as well: attachment URLs live in block
-  // metadata (imageSource), not only in the block text.
-  corpus.append(
+  // Documents created outside the app still live in the default folder.
+  QDirIterator it(AppPaths::documentsDirectory(),
+                  QStringList{QStringLiteral("*.templnote")}, QDir::Files,
+                  QDirIterator::Subdirectories);
+
+  while (it.hasNext()) {
+    QFile file(it.next());
+
+    if (file.open(QIODevice::ReadOnly))
+      collectFromDocument(file.readAll());
+  }
+
+  // A Save As copy can live beside the open document outside the documents
+  // root. Scan that directory too so siblings sharing an attachment UUID keep
+  // it alive even when neither is in the default folder or the manifest yet.
+  if (!m_currentFilePath.isEmpty()) {
+    QDirIterator siblings(QFileInfo(m_currentFilePath).absolutePath(),
+                          QStringList{QStringLiteral("*.templnote")},
+                          QDir::Files);
+
+    while (siblings.hasNext()) {
+      QFile file(siblings.next());
+
+      if (file.open(QIODevice::ReadOnly))
+        collectFromDocument(file.readAll());
+    }
+  }
+
+  // Unsaved edits in the open document (metadata and Markdown text refs).
+  collectFromDocument(
       QJsonDocument(m_document.toJson()).toJson(QJsonDocument::Compact));
 
   for (const QString &name : files) {
-    const QString path = directory.filePath(name);
-
-    if (!corpus.contains(name.toUtf8()))
-      QFile::remove(path);
+    if (!referenced.contains(name))
+      QFile::remove(directory.filePath(name));
   }
 }
 
@@ -1238,11 +1537,23 @@ void BlockModel::syncModifiedState() {
 void BlockModel::markModified() { syncModifiedState(); }
 
 void BlockModel::emitNumberIndexChanged(int firstRow) {
-  // Numbering resets at the first non-numbered block, so a change can only
-  // affect the run that starts at (or contains) firstRow. Stop at that
-  // boundary instead of rescanning the rest of the document and emitting one
-  // signal per numbered block in the whole file.
-  for (int row = qMax(0, firstRow); row < m_document.count(); ++row) {
+  // Renumbering is scoped to one contiguous numbered run. If the changed row
+  // is no longer numbered (e.g. it was converted to a paragraph), the run
+  // that *follows* it is the one whose displayed indices changed — skipping
+  // forward is essential here, otherwise its delegates keep showing stale
+  // numbers until some unrelated invalidation.
+  int row = qMax(0, firstRow);
+
+  while (row < m_document.count()) {
+    const Block *block = m_document.blockAt(row);
+
+    if (block && block->type == BlockType::NumberedList)
+      break;
+
+    ++row;
+  }
+
+  for (; row < m_document.count(); ++row) {
     const Block *block = m_document.blockAt(row);
 
     if (!block || block->type != BlockType::NumberedList)
@@ -1335,6 +1646,20 @@ bool BlockModel::resetDocument(Document document) {
   beginResetModel();
 
   m_document = std::move(document);
+
+  // Documents loaded from JSON may carry a non-positive listStart. Clamp here
+  // too so numbering is consistent regardless of who wrote the file.
+  for (int i = 0; i < m_document.count(); ++i) {
+    const Block *block = m_document.blockAt(i);
+
+    if (!block || !block->metadata.contains(QStringLiteral("listStart")))
+      continue;
+
+    const QVariantMap normalized = normalizedMetadata(block->metadata);
+
+    if (normalized != block->metadata)
+      m_document.updateBlockMetadata(block->id, normalized);
+  }
 
   m_autosaveTimer.stop();
   m_undoStack.clear();
@@ -1569,6 +1894,9 @@ bool BlockModel::closeDocument() {
 
   setModified(false);
   setLastModified({});
+  // The sweep below sees an empty current path, so register the document we
+  // are closing before it is cleared or its images would look unreferenced.
+  rememberAttachmentDocumentPath(m_currentFilePath);
   setCurrentFilePath({});
   emit fullWidthChanged();
 
@@ -2681,6 +3009,9 @@ bool BlockModel::renameDocument(const QString &newBaseName) {
     return setError(QStringLiteral("Could not rename the document."));
 
   setCurrentFilePath(target);
+  // The old path no longer exists; register the new one so the attachment
+  // sweep keeps collecting references from the renamed document.
+  rememberAttachmentDocumentPath(target);
 
   // Rename is already complete; updating the JSON title is best effort so a
   // read-only or externally modified file never blocks the rename itself.
@@ -2735,6 +3066,7 @@ void BlockModel::adoptRenamedPath(const QString &newPath) {
     m_lastSavedPath = normalized;
 
   setCurrentFilePath(normalized);
+  rememberAttachmentDocumentPath(normalized);
 }
 
 // undo redo functionality
@@ -2898,9 +3230,18 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
     const bool typeChanged = current->type != wanted.type ||
                              current->headingLevel != wanted.headingLevel;
     // `current` points into the document, so compare before setBlock()
-    // replaces it.
-    const bool widthsChanged = current->type == BlockType::Column &&
-                               current->metadata != wanted.metadata;
+    // replaces it. Only a column width edit should notify column listeners;
+    // other metadata changes on a column must not.
+    const bool widthsChanged =
+        current->type == BlockType::Column &&
+        current->metadata.value(QStringLiteral("width")) !=
+            wanted.metadata.value(QStringLiteral("width"));
+    // A listStart-only edit leaves from/to at -1 (Update ops carry no rows),
+    // so applyPatch()'s numberStarts is empty. Notify numbering explicitly or
+    // the visible numbers stay stale after undo/redo.
+    const bool listStartChanged =
+        current->metadata.value(QStringLiteral("listStart")) !=
+        wanted.metadata.value(QStringLiteral("listStart"));
 
     QVector<int> roles;
 
@@ -2908,9 +3249,14 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
       roles << ContentRole << Qt::DisplayRole;
     if (typeChanged)
       roles << BlockTypeRole << HeadingLevelRole << NumberIndexRole;
+    if (listStartChanged && !typeChanged)
+      roles << NumberIndexRole;
     if (current->parentId != wanted.parentId ||
-        current->metadata != wanted.metadata)
-      roles << ParentIdRole << MetadataRole << AlignmentRole << CheckedRole;
+        current->metadata != wanted.metadata) {
+      roles << ParentIdRole << MetadataRole << AlignmentRole << CheckedRole
+            << CalloutTypeRole << CodeLanguageRole << ImageSourceRole
+            << ImageWidthRatioRole;
+    }
 
     if (roles.isEmpty())
       break;
@@ -2932,6 +3278,9 @@ bool BlockModel::applyPatchOp(const PatchOp &op, bool inverse) {
 
       return true;
     }
+
+    if (listStartChanged)
+      emitNumberIndexChanged(row);
 
     return false;
   }

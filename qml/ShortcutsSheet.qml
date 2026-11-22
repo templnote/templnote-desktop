@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 
 // Floating reference sheet for the application's keyboard shortcuts.
 // Opened with F1 or from the options menu, dismissed with Escape or a click
@@ -35,7 +36,9 @@ Item {
         { label: "Underline", keys: "Ctrl+U" },
         { label: "Strikethrough", keys: "Ctrl+Shift+X" },
         { label: "Subscript", keys: "Ctrl+," },
-        { label: "Superscript", keys: "Ctrl+." }
+        { label: "Superscript", keys: "Ctrl+." },
+        { label: "Inline code", keys: "Ctrl+E" },
+        { label: "Insert link", keys: "Ctrl+K" }
       ]
     },
     {
@@ -55,13 +58,28 @@ Item {
     }
   ]
 
+  // Focus to hand back to when the sheet is dismissed.
+  property var previousFocus: null
+
   function open() {
+    // Re-opening while visible must not overwrite the original focus target
+    // with a control inside the sheet.
+    if (!root.visible)
+      root.previousFocus = Window.window ? Window.window.activeFocusItem : null
     visible = true
     forceActiveFocus()
   }
 
   function close() {
+    if (!root.visible)
+      return
+
+    const focusTarget = root.previousFocus
     visible = false
+    root.previousFocus = null
+
+    if (focusTarget)
+      focusTarget.forceActiveFocus()
   }
 
   function toggle() {

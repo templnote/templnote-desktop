@@ -31,16 +31,46 @@ QtObject {
                 ? highlightColor
                 : "#ffe082"
 
-    let html = ""
-    let cursor = 0
+    // Sanitize into a sorted copy. A malformed range (NaN offsets, negative
+    // or reversed bounds) must never move the cursor backwards or duplicate
+    // text, and the caller's array must not be mutated.
+    const normalized = []
 
     for (let i = 0; i < ranges.length; ++i) {
       const range = ranges[i]
-      const start = Math.max(cursor,
-                             Math.min(source.length, Number(range.start)))
-      const end = Math.max(start,
-                           Math.min(source.length,
-                                    Number(range.start) + Number(range.length)))
+      if (!range)
+        continue
+
+      const rawStart = Number(range.start)
+      const rawLength = Number(range.length)
+      if (!isFinite(rawStart) || !isFinite(rawLength))
+        continue
+
+      const start = Math.min(source.length, Math.max(0, Math.trunc(rawStart)))
+      const length = Math.min(source.length - start,
+                              Math.max(0, Math.trunc(rawLength)))
+      if (length <= 0)
+        continue
+
+      normalized.push({ start: start, end: start + length })
+    }
+
+    if (normalized.length === 0)
+      return root.formatText(source)
+
+    normalized.sort(function(left, right) {
+      return left.start - right.start || left.end - right.end
+    })
+
+    let html = ""
+    let cursor = 0
+
+    for (let i = 0; i < normalized.length; ++i) {
+      const range = normalized[i]
+      // Clamp forward only: overlapping or out-of-order ranges collapse into
+      // the existing highlight instead of re-emitting the same characters.
+      const start = Math.max(cursor, range.start)
+      const end = Math.max(start, range.end)
 
       if (start >= end)
         continue

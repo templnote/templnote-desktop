@@ -20,6 +20,14 @@ Item {
   property var searchHighlights: []
   property bool searchNavigationActive: false
 
+  readonly property string contentFontFamily: {
+    if (Preferences.fontFamily === "Mono")
+      return "monospace"
+    if (Preferences.fontFamily === "Serif")
+      return "Georgia, 'Times New Roman', serif"
+    return Qt.application.font.family
+  }
+
   readonly property int cursorPosition: 0
   readonly property string editorText: root.content
   readonly property bool isFocused: hasCellActiveFocus || root.activeFocus
@@ -117,6 +125,10 @@ Item {
   property var columnsData: []
   property var rowsData: []
   property bool headerRowEnabled: false
+  // Set while this block writes its own metadata back to the model. The model
+  // echoes the value through blockMetadata; without this guard every keystroke
+  // would rebuild all rows and columns from that echo.
+  property bool internalUpdating: false
 
   // Default Column width
   readonly property real minColWidth: 70
@@ -175,7 +187,10 @@ Item {
     }
   }
 
-  onBlockMetadataChanged: reloadFromMetadata()
+  onBlockMetadataChanged: {
+    if (!root.internalUpdating)
+      reloadFromMetadata()
+  }
   Component.onCompleted: reloadFromMetadata()
 
   // Persist table changes to BlockModel
@@ -217,9 +232,15 @@ Item {
       rows: rowsOut,
       headerRow: headerRowEnabled
     }
-    currentMeta.plainText = plainTextParts.join("\n")
+    var plainText = plainTextParts.join("\n")
+    currentMeta.plainText = plainText
 
-    root.model.setBlockMetadata(root.blockId, currentMeta)
+    // One history entry for both the structure and its plain-text projection.
+    // The model's blockMetadataChanged echo must not rebuild the table here:
+    // the in-memory columnsData/rowsData are already the source of truth.
+    root.internalUpdating = true
+    root.model.setBlockMetadataWithText(root.blockId, currentMeta, plainText)
+    root.internalUpdating = false
   }
 
   // Cell text change handler
@@ -232,15 +253,10 @@ Item {
     if (r.cells[colId] === text)
       return
     r.cells[colId] = text
-    // Debounce save or save immediately
-    cellSaveTimer.restart()
-  }
-
-  Timer {
-    id: cellSaveTimer
-    interval: 350
-    repeat: false
-    onTriggered: root.saveTableData()
+    // Save synchronously. A debounce here left the model unmodified for 350ms,
+    // so closing the window (or Ctrl+S) during that window silently dropped
+    // the edit without an unsaved-changes prompt.
+    saveTableData()
   }
 
   // Row and Column Mutations
@@ -894,6 +910,7 @@ Item {
                       anchors.bottomMargin: 7
                       wrapMode: TextEdit.Wrap
                       font.pixelSize: 14
+                      font.family: root.contentFontFamily
                       font.bold: isHeaderCell
                       color: Theme.text
                       selectionColor: Theme.accent

@@ -14,6 +14,25 @@ constexpr auto kDocumentsFolder = "Templnote";
 QString location(QStandardPaths::StandardLocation type) {
   return QStandardPaths::writableLocation(type);
 }
+
+// Windows reserves these base names (with any extension) for devices, so a
+// file or folder using one of them cannot be created. The check is applied on
+// every platform to keep names portable.
+bool isWindowsReservedName(const QString &baseName) {
+  const QString upper = baseName.trimmed().toUpper();
+
+  if (upper == QLatin1String("CON") || upper == QLatin1String("PRN") ||
+      upper == QLatin1String("AUX") || upper == QLatin1String("NUL")) {
+    return true;
+  }
+
+  const bool numbered =
+      upper.startsWith(QLatin1String("COM")) ||
+      upper.startsWith(QLatin1String("LPT"));
+  return numbered && upper.size() == 4 &&
+         upper.at(3) >= QLatin1Char('1') &&
+         upper.at(3) <= QLatin1Char('9');
+}
 } // namespace
 
 QString documentsDirectory() {
@@ -41,7 +60,32 @@ QString ensureDocumentsDirectory(QString *error) {
   return directory;
 }
 
-QString configDirectory() { return location(QStandardPaths::AppConfigLocation); }
+QString configDirectory() {
+  const QString env = qEnvironmentVariable("TEMPLNOTE_CONFIG_DIR");
+  if (!env.isEmpty()) {
+    QDir().mkpath(env);
+    return env;
+  }
+  return location(QStandardPaths::AppConfigLocation);
+}
+
+QString pluginsDirectory() {
+  const QString config = configDirectory();
+  if (config.isEmpty())
+    return {};
+  const QString path = QDir(config).filePath(QStringLiteral("plugins"));
+  QDir().mkpath(path);
+  return path;
+}
+
+QString pluginSettingsDirectory() {
+  const QString config = configDirectory();
+  if (config.isEmpty())
+    return {};
+  const QString path = QDir(config).filePath(QStringLiteral("plugin-settings"));
+  QDir().mkpath(path);
+  return path;
+}
 
 QString cacheDirectory() {
   return location(QStandardPaths::AppLocalDataLocation);
@@ -79,6 +123,10 @@ QString sanitizeFileName(const QString &name) {
   while (result.endsWith(QLatin1Char(' ')) ||
          result.endsWith(QLatin1Char('.')))
     result.chop(1);
+
+  // Compare the base name only: "CON.txt" is just as reserved as "CON".
+  if (isWindowsReservedName(result.section(QLatin1Char('.'), 0, 0)))
+    result.prepend(QLatin1Char('_'));
 
   return result.trimmed();
 }

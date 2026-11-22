@@ -10,6 +10,7 @@ Rectangle {
   // Set by Main.qml.
   property var documentModel
   property var documentList
+  property bool modalOpen: false
 
 
   // Item that is currently being renamed inline after creation or rename click.
@@ -376,7 +377,7 @@ Rectangle {
 
   Shortcut {
     sequence: "Ctrl+Shift+N"
-    enabled: root.expanded
+    enabled: root.expanded && !root.modalOpen
     onActivated: root.createFolder()
   }
 

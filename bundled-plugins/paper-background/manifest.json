@@ -1,0 +1,35 @@
+{
+  "id": "paper-background",
+  "name": "Paper Background",
+  "version": "2.0.1",
+  "description": "Unified tactile paper substrate: grain, gradient and custom wallpaper in one plugin.",
+  "author": "Templnote",
+  "bundled": true,
+  "category": "decoration",
+  "dependencies": [],
+  "capabilities": {
+    "decorations": [
+      {
+        "slot": "paper-background",
+        "component": "PaperBackgroundDecoration.qml",
+        "zOrder": 0
+      }
+    ]
+  },
+  "settings": {
+    "component": "PaperBackgroundSettings.qml",
+    "defaults": {
+      "paperPreset": "Journal",
+      "paperGrain": 0.035,
+      "paperOverWorkspace": true,
+      "paperBgMode": "Solid",
+      "gradientPreset": "Warm Parchment",
+      "gradientColor1": "#fdf6e3",
+      "gradientColor2": "#e0d5be",
+      "gradientOpacity": 0.35,
+      "gradientAngle": 135,
+      "wallpaperPath": "",
+      "paperDim": 0.40
+    }
+  }
+}

@@ -5,6 +5,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
@@ -25,6 +26,40 @@ QJsonObject readDocumentJson(const QString &path) {
     return {};
 
   return QJsonDocument::fromJson(file.readAll()).object();
+}
+
+QString attachmentManifestPath() {
+  return QDir(AppPaths::configDirectory())
+      .filePath(QStringLiteral("attachment-documents.json"));
+}
+
+QStringList manifestPaths() {
+  QFile file(attachmentManifestPath());
+
+  if (!file.open(QIODevice::ReadOnly))
+    return {};
+
+  QStringList paths;
+
+  for (const QJsonValue &value :
+       QJsonDocument::fromJson(file.readAll()).array())
+    paths.append(value.toString());
+
+  return paths;
+}
+
+// The attachment sweep skips its work when the cache is empty, so drop a
+// placeholder file in the cache to exercise registry writes in tests.
+void touchAttachmentCacheFile() {
+  const QString directory = AppPaths::attachmentsDirectory();
+
+  if (directory.isEmpty())
+    return;
+
+  QFile file(QDir(directory).filePath(QStringLiteral("placeholder.png")));
+
+  if (file.open(QIODevice::WriteOnly))
+    file.write("placeholder");
 }
 } // namespace
 
@@ -488,6 +523,146 @@ private slots:
     QCOMPARE(numberAt(third), 1);
     QCOMPARE(numberAt(first), 2);
     QCOMPARE(numberAt(second), 3);
+  }
+
+  void listStartUndoRedoNotifiesNumberIndex() {
+    BlockModel model;
+
+    const QString first =
+        model.appendBlock(static_cast<int>(BlockType::NumberedList), "One");
+    const QString second =
+        model.appendBlock(static_cast<int>(BlockType::NumberedList), "Two");
+    const int row = model.document().indexOf(first);
+
+    QVariantMap metadata =
+        model.data(model.index(row), BlockModel::MetadataRole).toMap();
+    metadata.insert(QStringLiteral("listStart"), 5);
+    QVERIFY(model.setBlockMetadata(first, metadata));
+
+    const auto numberAt = [&](const QString &id) {
+      return model
+          .data(model.index(model.document().indexOf(id)),
+                BlockModel::NumberIndexRole)
+          .toInt();
+    };
+
+    QCOMPARE(numberAt(first), 5);
+    QCOMPARE(numberAt(second), 6);
+
+    QSignalSpy spy(&model, &QAbstractItemModel::dataChanged);
+
+    QVERIFY(model.undo());
+
+    bool notified = false;
+
+    for (const QList<QVariant> &args : std::as_const(spy)) {
+      if (args.value(2).value<QList<int>>().contains(
+              BlockModel::NumberIndexRole))
+        notified = true;
+    }
+
+    // Update ops carry no from/to rows, so applyPatch() cannot derive this
+    // notification from numberStarts; a metadata-only listStart edit must
+    // emit NumberIndexRole itself.
+    QVERIFY(notified);
+    QCOMPARE(numberAt(first), 1);
+
+    spy.clear();
+    QVERIFY(model.redo());
+    notified = false;
+
+    for (const QList<QVariant> &args : std::as_const(spy)) {
+      if (args.value(2).value<QList<int>>().contains(
+              BlockModel::NumberIndexRole))
+        notified = true;
+    }
+
+    QVERIFY(notified);
+    QCOMPARE(numberAt(first), 5);
+    QCOMPARE(numberAt(second), 6);
+  }
+
+  void nonPositiveListStartIsClamped() {
+    BlockModel model;
+
+    const QString first =
+        model.appendBlock(static_cast<int>(BlockType::NumberedList), "One");
+    const QString second =
+        model.appendBlock(static_cast<int>(BlockType::NumberedList), "Two");
+    const int row = model.document().indexOf(first);
+
+    QVariantMap metadata =
+        model.data(model.index(row), BlockModel::MetadataRole).toMap();
+    metadata.insert(QStringLiteral("listStart"), 0);
+    QVERIFY(model.setBlockMetadata(first, metadata));
+
+    QCOMPARE(model.data(model.index(row), BlockModel::MetadataRole)
+                 .toMap()
+                 .value(QStringLiteral("listStart"))
+                 .toInt(),
+             1);
+    QCOMPARE(model.data(model.index(row), BlockModel::NumberIndexRole).toInt(),
+             1);
+    QCOMPARE(model.data(model.index(model.document().indexOf(second)),
+                        BlockModel::NumberIndexRole)
+                 .toInt(),
+             2);
+  }
+
+  void setBlockMetadataWithTextIsOneUndoStep() {
+    BlockModel model;
+
+    const QString id = model.appendBlock(
+        static_cast<int>(BlockType::Paragraph), QStringLiteral("before"));
+    const int row = model.document().indexOf(id);
+
+    QVariantMap metadata =
+        model.data(model.index(row), BlockModel::MetadataRole).toMap();
+    metadata.insert(QStringLiteral("align"), QStringLiteral("center"));
+
+    QSignalSpy dataSpy(&model, &QAbstractItemModel::dataChanged);
+    QSignalSpy revisionSpy(&model, &BlockModel::contentRevisionChanged);
+
+    QVERIFY(model.setBlockMetadataWithText(id, metadata,
+                                           QStringLiteral("after")));
+    QCOMPARE(dataSpy.count(), 1);
+    QCOMPARE(revisionSpy.count(), 1);
+    QCOMPARE(model.data(model.index(row), BlockModel::ContentRole).toString(),
+             QStringLiteral("after"));
+
+    QVERIFY(model.undo());
+    QCOMPARE(model.data(model.index(row), BlockModel::ContentRole).toString(),
+             QStringLiteral("before"));
+    QVERIFY(model.data(model.index(row), BlockModel::MetadataRole)
+                .toMap()
+                .value(QStringLiteral("align"))
+                .toString()
+                .isEmpty());
+
+    QVERIFY(model.redo());
+    QCOMPARE(model.data(model.index(row), BlockModel::ContentRole).toString(),
+             QStringLiteral("after"));
+    QCOMPARE(model.data(model.index(row), BlockModel::MetadataRole)
+                 .toMap()
+                 .value(QStringLiteral("align"))
+                 .toString(),
+             QStringLiteral("center"));
+  }
+
+  void splitBlockRejectsInvalidPositionWithoutEditingText() {
+    BlockModel model;
+
+    const QString id = model.appendBlock(
+        static_cast<int>(BlockType::Paragraph), QStringLiteral("original"));
+    const int row = model.document().indexOf(id);
+    const int count = model.count();
+    const int revision = model.contentRevision();
+
+    QVERIFY(model.splitBlock(id, 999, QStringLiteral("editor text")).isEmpty());
+    QCOMPARE(model.data(model.index(row), BlockModel::ContentRole).toString(),
+             QStringLiteral("original"));
+    QCOMPARE(model.count(), count);
+    QCOMPARE(model.contentRevision(), revision);
   }
 
   void undoTextWordByWord() {
@@ -1030,6 +1205,228 @@ private slots:
     QVERIFY(QFile::exists(kept));
 
     QFile::remove(kept);
+  }
+
+  void attachmentOutsideDocumentsRootSurvivesClose() {
+    QTemporaryDir sourceDirectory;
+    QTemporaryDir outsideDirectory;
+    QVERIFY(sourceDirectory.isValid());
+    QVERIFY(outsideDirectory.isValid());
+
+    const QString source = sourceDirectory.filePath("source.png");
+    {
+      QFile file(source);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      QVERIFY(file.write("image data") > 0);
+    }
+
+    BlockModel model;
+    QVERIFY(model.closeDocument());
+
+    const QString url = model.importAttachment(QUrl::fromLocalFile(source));
+    const QString cached = QUrl(url).toLocalFile();
+    QVERIFY(QFile::exists(cached));
+
+    const QString blockId =
+        model.appendBlock(static_cast<int>(BlockType::Image));
+    QVERIFY(model.setBlockImageSource(blockId, url));
+
+    // Save outside the default documents folder: the old sweep scanned only
+    // that folder plus the currently open path and deleted the image.
+    QVERIFY(model.saveDocument(outsideDirectory.filePath("Outside")));
+    QVERIFY(QFile::exists(cached));
+
+    // Unrelated saves in a second model must not reclaim the attachment.
+    {
+      BlockModel other;
+      QVERIFY(other.closeDocument());
+      QVERIFY(other.saveDocument(outsideDirectory.filePath("Unrelated")));
+    }
+
+    QVERIFY(QFile::exists(cached));
+    QFile::remove(cached);
+  }
+
+  void twoLiveModelsDoNotOverwriteAttachmentPaths() {
+    QTemporaryDir outside;
+    QVERIFY(outside.isValid());
+
+    const QString manifest = attachmentManifestPath();
+    QFile::remove(manifest);
+
+    const QString docB = outside.filePath("B.templnote");
+    const QString docA = outside.filePath("A.templnote");
+    const QString docB2 = outside.filePath("B2.templnote");
+
+    // B caches the manifest while it is still empty.
+    touchAttachmentCacheFile();
+    BlockModel modelB;
+    QVERIFY(modelB.saveDocument(docB));
+    QVERIFY(manifestPaths().contains(QDir::cleanPath(docB)));
+
+    // A saves after B's first read and registers a path B never saw.
+    touchAttachmentCacheFile();
+    BlockModel modelA;
+    QVERIFY(modelA.saveDocument(docA));
+
+    // B saves another document; reloading the manifest before writing keeps A.
+    touchAttachmentCacheFile();
+    QVERIFY(modelB.saveDocument(docB2));
+
+    const QStringList paths = manifestPaths();
+    QVERIFY(paths.contains(QDir::cleanPath(docA)));
+    QVERIFY(paths.contains(QDir::cleanPath(docB2)));
+
+    QFile::remove(manifest);
+  }
+
+  void attachmentManifestPrunesDeletedDocuments() {
+    QTemporaryDir outside;
+    QVERIFY(outside.isValid());
+
+    const QString manifest = attachmentManifestPath();
+    QFile::remove(manifest);
+
+    const QString alive = outside.filePath("Alive.templnote");
+    const QString gone = outside.filePath("Gone.templnote");
+
+    for (const QString &path : {alive, gone}) {
+      QFile file(path);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write("{}");
+    }
+
+    // Seed the manifest with both documents, then remove one behind the app's
+    // back so its entry is stale when the manifest is next read.
+    {
+      QJsonArray paths{QDir::cleanPath(alive), QDir::cleanPath(gone)};
+      QFile file(manifest);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write(QJsonDocument(paths).toJson(QJsonDocument::Compact));
+    }
+    QVERIFY(QFile::remove(gone));
+
+    touchAttachmentCacheFile();
+    BlockModel model;
+    QVERIFY(model.saveDocument(alive));
+
+    const QStringList paths = manifestPaths();
+    QVERIFY(paths.contains(QDir::cleanPath(alive)));
+    QVERIFY(!paths.contains(QDir::cleanPath(gone)));
+
+    QFile::remove(manifest);
+  }
+
+  void attachmentManifestSkipsUnchangedWrite() {
+    QTemporaryDir outside;
+    QVERIFY(outside.isValid());
+
+    const QString manifest = attachmentManifestPath();
+    QFile::remove(manifest);
+
+    const QString doc = outside.filePath("Unchanged.templnote");
+    touchAttachmentCacheFile();
+
+    BlockModel model;
+    QVERIFY(model.saveDocument(doc));
+    QVERIFY(manifestPaths().contains(QDir::cleanPath(doc)));
+
+    // Store a byte-different but set-equivalent manifest. If the next save
+    // rewrites an unchanged set, this sentinel is clobbered by the compact
+    // JSON form the production code writes.
+    const QByteArray sentinel =
+        QJsonDocument(QJsonArray{QDir::cleanPath(doc)})
+            .toJson(QJsonDocument::Indented);
+    {
+      QFile file(manifest);
+      QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+      file.write(sentinel);
+    }
+
+    touchAttachmentCacheFile();
+    QVERIFY(model.saveDocument(doc));
+
+    QFile file(manifest);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), sentinel);
+
+    QFile::remove(manifest);
+  }
+
+  void saveSweepRegistersCurrentPathWithoutPriorManifest() {
+    QTemporaryDir outside;
+    QVERIFY(outside.isValid());
+
+    const QString manifest = attachmentManifestPath();
+    QFile::remove(manifest);
+
+    // The sweep now relies on rememberAttachmentDocumentPath() as its single
+    // manifest read/merge. A fresh model with no manifest on disk must still
+    // end up registering the path it just saved.
+    touchAttachmentCacheFile();
+    BlockModel model;
+    const QString doc = outside.filePath("Registered.templnote");
+    QVERIFY(model.saveDocument(doc));
+
+    const QStringList paths = manifestPaths();
+    QVERIFY(paths.contains(QDir::cleanPath(doc)));
+
+    QFile::remove(manifest);
+  }
+
+  void renameAndCloseRegisterAttachmentPaths() {
+    QTemporaryDir outside;
+    QVERIFY(outside.isValid());
+
+    const QString manifest = attachmentManifestPath();
+    QFile::remove(manifest);
+
+    BlockModel model;
+    const QString original = outside.filePath("Original.templnote");
+    touchAttachmentCacheFile();
+    QVERIFY(model.saveDocument(original));
+
+    QVERIFY(model.renameDocument(QStringLiteral("Renamed")));
+    const QString renamed = outside.filePath("Renamed.templnote");
+    QVERIFY(manifestPaths().contains(QDir::cleanPath(renamed)));
+
+    // Simulate another writer replacing the manifest, then close. The close
+    // path must re-register its document before the path is cleared.
+    QFile::remove(manifest);
+    QVERIFY(model.closeDocument());
+    QVERIFY(manifestPaths().contains(QDir::cleanPath(renamed)));
+
+    QFile::remove(manifest);
+  }
+
+  void markdownTextImageReferenceSurvivesSweep() {
+    QTemporaryDir sourceDirectory;
+    QTemporaryDir documentDirectory;
+    QVERIFY(sourceDirectory.isValid());
+    QVERIFY(documentDirectory.isValid());
+
+    const QString source = sourceDirectory.filePath("source.png");
+    {
+      QFile file(source);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      QVERIFY(file.write("image data") > 0);
+    }
+
+    BlockModel model;
+    QVERIFY(model.closeDocument());
+
+    const QString url = model.importAttachment(QUrl::fromLocalFile(source));
+    const QString cached = QUrl(url).toLocalFile();
+    QVERIFY(QFile::exists(cached));
+
+    const QString blockId = model.appendBlock(0);
+    QVERIFY(model.updateBlockText(
+        blockId, QStringLiteral("![alt](%1)").arg(url)));
+
+    // No imageSource metadata: the only reference is Markdown in block text.
+    QVERIFY(model.saveDocument(documentDirectory.filePath("MarkdownRef")));
+    QVERIFY(QFile::exists(cached));
+    QFile::remove(cached);
   }
 
   void appendToEmptyDocumentCreatesFirstBlock() {

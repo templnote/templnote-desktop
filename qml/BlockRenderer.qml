@@ -17,6 +17,8 @@ Item {
   property string imageSource: ""
   property real imageWidthRatio: 1.0
   property var blockMetadata: null
+  property var linkDefinitions: ({})
+  property var footnoteDefinitions: ({})
   property bool isBlockHovered: false
   property real hoverX: -1
   property real hoverY: -1
@@ -50,6 +52,12 @@ Item {
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
+  signal emojiPickerRequested(string blockId, string query, int queryStart,
+                              int queryEnd, real xPosition, real yPosition,
+                              real cursorHeight)
+  signal emojiPickerDismissed()
+  signal emojiPickerAccepted()
+  signal emojiPickerNavigated(int direction)
   signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
   property bool commandMenuActive: false
 
@@ -73,6 +81,26 @@ Item {
       requestFocus(position)
   }
 
+  // Converts a raw editor caret offset into a body-relative one for renderers
+  // whose editable text carries a header (code fences, callout markers).
+  // Other blocks have no header and return the position unchanged.
+  function rawToBodyPosition(position) {
+    if (block && loader.status === Loader.Ready
+        && typeof block.rawToBodyPosition === "function")
+      return block.rawToBodyPosition(position)
+    return position
+  }
+
+  // A Columns layout owns several editable children. The editor resolves a
+  // nested callout/code child by block id, so forward that lookup to the
+  // concrete layout instead of requiring callers to reach into loader.item.
+  function rawToBodyPositionForBlock(blockId, position) {
+    if (block && loader.status === Loader.Ready
+        && typeof block.rawToBodyPositionForBlock === "function")
+      return block.rawToBodyPositionForBlock(blockId, position)
+    return position
+  }
+
   function focusEditorAtX(xPosition) {
     if (block && loader.status === Loader.Ready)
       block.focusEditorAtX(xPosition)
@@ -93,6 +121,23 @@ Item {
       block.toggleScriptFormat(type)
   }
 
+  function applyColor(color) {
+    if (block && loader.status === Loader.Ready && typeof block.applyColor === "function")
+      block.applyColor(color)
+  }
+
+  function applyFontSize(size) {
+    if (block && loader.status === Loader.Ready && typeof block.applyFontSize === "function")
+      block.applyFontSize(size)
+  }
+
+  // The editor calls this before changing the alignment role so TextBlock can
+  // animate the text from its pre-change caret position.
+  function captureAlignmentStart() {
+    if (block && loader.status === Loader.Ready && typeof block.captureAlignmentStart === "function")
+      block.captureAlignmentStart()
+  }
+
   function isFormatActive(type) {
     if (block && loader.status === Loader.Ready && typeof block.isFormatActive === "function")
       return block.isFormatActive(type)
@@ -102,6 +147,16 @@ Item {
   function notifySelection() {
     if (block && loader.status === Loader.Ready && typeof block.notifySelection === "function")
       block.notifySelection()
+  }
+
+  // The emoji picker talks to the BlockRenderer (the delegate's rendererItem),
+  // so the call has to be forwarded to the concrete text block. Without this
+  // shim the picker silently did nothing and left the block in picker mode,
+  // swallowing arrow/Enter keys.
+  function insertEmoji(start, end, emoji) {
+    if (block && loader.status === Loader.Ready &&
+        typeof block.insertEmoji === "function")
+      block.insertEmoji(start, end, emoji)
   }
 
   function requestFocus(position) {
@@ -170,6 +225,7 @@ Item {
   // Column drag/drop hit-testing, forwarded to ColumnsBlock only.
   property var columnDropResolver: null
   property var editorApi: null
+  property bool emojiPickerActive: false
   function columnAtPoint(globalX, globalY) {
     return block && typeof block.columnAtPoint === "function"
            ? block.columnAtPoint(globalX, globalY) : ""
@@ -331,6 +387,10 @@ Item {
         item.imageWidthRatio = Qt.binding(function() { return root.imageWidthRatio })
       if ("blockMetadata" in item)
         item.blockMetadata = Qt.binding(function() { return root.blockMetadata })
+      if ("linkDefinitions" in item)
+        item.linkDefinitions = Qt.binding(function() { return root.linkDefinitions })
+      if ("footnoteDefinitions" in item)
+        item.footnoteDefinitions = Qt.binding(function() { return root.footnoteDefinitions })
       if ("isBlockHovered" in item)
         item.isBlockHovered = Qt.binding(function() { return root.isBlockHovered })
       if ("hoverX" in item)
@@ -363,11 +423,21 @@ Item {
       item.commandMenuDismissed.connect(root.commandMenuDismissed)
       item.commandMenuAccepted.connect(root.commandMenuAccepted)
       item.commandMenuNavigated.connect(root.commandMenuNavigated)
+      if ("emojiPickerRequested" in item)
+        item.emojiPickerRequested.connect(root.emojiPickerRequested)
+      if ("emojiPickerDismissed" in item)
+        item.emojiPickerDismissed.connect(root.emojiPickerDismissed)
+      if ("emojiPickerAccepted" in item)
+        item.emojiPickerAccepted.connect(root.emojiPickerAccepted)
+      if ("emojiPickerNavigated" in item)
+        item.emojiPickerNavigated.connect(root.emojiPickerNavigated)
       item.selectionChanged.connect(root.selectionChanged)
       // Not every renderer hosts the slash-command menu (callouts and code
       // blocks do not), so only bind the property when it exists.
       if ("commandMenuActive" in item)
         item.commandMenuActive = Qt.binding(function() { return root.commandMenuActive })
+      if ("emojiPickerActive" in item)
+        item.emojiPickerActive = Qt.binding(function() { return root.emojiPickerActive })
       item.searchNavigated.connect(root.searchNavigated)
       item.searchDismissed.connect(root.searchDismissed)
       item.searchEditStarted.connect(root.searchEditStarted)

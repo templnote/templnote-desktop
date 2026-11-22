@@ -17,6 +17,10 @@ QString ensureDocumentsDirectory(QString *error = nullptr);
 // App settings (QSettings, window state, preferences).
 QString configDirectory();
 
+// Plugins and per-plugin settings.
+QString pluginsDirectory();
+QString pluginSettingsDirectory();
+
 // Autosave and cache data. Deliberately separate from the user documents.
 QString cacheDirectory();
 QString autosaveDirectory();

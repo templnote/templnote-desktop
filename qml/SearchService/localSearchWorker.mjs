@@ -1,5 +1,6 @@
-// Worker-side of LocalSearchService. The GUI thread sends a lowercased text
-// snapshot once per document revision, then only needles/tokens per keystroke.
+// Worker-side of LocalSearchService. The GUI thread sends the raw text
+// snapshot once per document revision; case folding happens here so typing
+// and result activation never block the GUI thread.
 
 let cachedCacheId = -1
 let cachedTexts = []
@@ -99,8 +100,27 @@ function findTermMatches(texts, ids, terms) {
 WorkerScript.onMessage = function(message) {
   if (message.kind === "cache") {
     cachedCacheId = message.cacheId
-    cachedTexts = message.texts
+    cachedTexts = message.texts.map(function(text) {
+      return String(text).toLowerCase()
+    })
     cachedIds = message.ids
+    return
+  }
+
+  if (message.kind === "updateRows") {
+    // Patch a single edited row instead of lowercasing the whole corpus.
+    // A stale cacheId belongs to a superseded snapshot and is ignored.
+    if (message.cacheId !== cachedCacheId)
+      return
+    const first = message.first
+
+    for (let i = 0; i < message.texts.length; ++i) {
+      const row = first + i
+      if (row < 0 || row >= cachedTexts.length)
+        continue
+      cachedTexts[row] = String(message.texts[i]).toLowerCase()
+      cachedIds[row] = message.ids[i]
+    }
     return
   }
 

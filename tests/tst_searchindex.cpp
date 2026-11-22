@@ -284,6 +284,48 @@ private slots:
     QCOMPARE(index.search(QStringLiteral("changedword")).size(), 0);
   }
 
+  void syncKeepsPreviouslyOpenedOutOfRootDocuments() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    const QString outsideA = writeDocument(
+        temp.filePath("outside"), QStringLiteral("OutsideA.templnote"),
+        QStringLiteral("OutsideA"), {QStringLiteral("outsidealpha token")});
+    const QString insideB = writeDocument(
+        root, QStringLiteral("InsideB.templnote"), QStringLiteral("InsideB"),
+        {QStringLiteral("insidebravo token")});
+    QVERIFY(!outsideA.isEmpty());
+    QVERIFY(!insideB.isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+    QCOMPARE(index.search(QStringLiteral("insidebravo")).size(), 1);
+
+    // Opening A from outside documentsRoot teaches the index about it.
+    BlockModel modelA;
+    QVERIFY(modelA.loadDocument(outsideA));
+    index.setBlockModel(&modelA);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        index.search(QStringLiteral("outsidealpha")).size(), 1, 3000);
+
+    // Switch to an in-root document. A is no longer the open document and is
+    // invisible to the directory scan, but its file still exists.
+    BlockModel modelB;
+    QVERIFY(modelB.loadDocument(insideB));
+    index.setBlockModel(&modelB);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        index.search(QStringLiteral("insidebravo")).size(), 1, 3000);
+
+    index.syncIncremental();
+    QCOMPARE(index.search(QStringLiteral("outsidealpha")).size(), 1);
+
+    // Only a genuinely deleted file may lose its index rows.
+    QVERIFY(QFile::remove(outsideA));
+    index.syncIncremental();
+    QCOMPARE(index.search(QStringLiteral("outsidealpha")).size(), 0);
+  }
+
   void liveBlockChangesAreDebounced() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -374,6 +416,104 @@ private slots:
     QCOMPARE(results.first().snippetRanges.first().start, 2);
   }
 
+  void asciiQueryMatchesAccentedText() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    const QString path = writeDocument(
+        root, QStringLiteral("Accents.templnote"), QStringLiteral("Accents"),
+        {QString::fromUtf8("Café résumé naive")});
+    QVERIFY(!path.isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+
+    // FTS5 folds diacritics, so highlight matching must fold them too or the
+    // row is dropped for empty match ranges.
+    const auto cafe = index.search(QStringLiteral("cafe"));
+    QCOMPARE(cafe.size(), 1);
+    QVERIFY(!cafe.first().ranges.isEmpty());
+    QCOMPARE(cafe.first().ranges.first().start, 0);
+    QCOMPARE(cafe.first().ranges.first().length, 4);
+
+    const auto resume = index.search(QStringLiteral("resume"));
+    QCOMPARE(resume.size(), 1);
+    QVERIFY(!resume.first().ranges.isEmpty());
+    QCOMPARE(resume.first().blockText, QString::fromUtf8("Café résumé naive"));
+  }
+
+  void asciiFastPathAndAccentedFallbackKeepOffsets() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+    // Plain ASCII takes the direct-append path while `ï` takes the per-code-unit
+    // fallback. Both must map folded matches back to the original code units.
+    QVERIFY(!writeDocument(root, QStringLiteral("Fold.templnote"),
+                           QStringLiteral("Fold"),
+                           {QString::fromUtf8("cafe naïve alpha")})
+                 .isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+
+    const auto cafe = index.search(QStringLiteral("cafe"));
+    QCOMPARE(cafe.size(), 1);
+    QCOMPARE(cafe.first().ranges.size(), 1);
+    QCOMPARE(cafe.first().ranges.first().start, 0);
+    QCOMPARE(cafe.first().ranges.first().length, 4);
+
+    // The ASCII needle folds against the accented text; the offset map must
+    // still point at the original five-unit "naïve" span.
+    const auto naive = index.search(QStringLiteral("naive"));
+    QCOMPARE(naive.size(), 1);
+    QCOMPARE(naive.first().ranges.size(), 1);
+    QCOMPARE(naive.first().ranges.first().start, 5);
+    QCOMPARE(naive.first().ranges.first().length, 5);
+
+    // And a match after the non-ASCII unit must not be shifted.
+    const auto alpha = index.search(QStringLiteral("alpha"));
+    QCOMPARE(alpha.size(), 1);
+    QCOMPARE(alpha.first().ranges.size(), 1);
+    QCOMPARE(alpha.first().ranges.first().start, 11);
+    QCOMPARE(alpha.first().ranges.first().length, 5);
+  }
+
+  void nfdCombiningMarksAreFoldedForHighlighting() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+
+    // NFD "naïve": the diaeresis is a standalone U+0308 combining mark with
+    // NoDecomposition. FTS5 still folds it away, so highlight matching must
+    // drop it too or the row is discarded for having empty match ranges.
+    const QString nfdNaive =
+        QStringLiteral("nai") + QChar(0x0308) + QStringLiteral("ve");
+    const QString text = nfdNaive + QStringLiteral(" alpha");
+    QVERIFY(!writeDocument(root, QStringLiteral("Nfd.templnote"),
+                           QStringLiteral("Nfd"), {text})
+                 .isEmpty());
+
+    SearchIndex index(root, temp.filePath("search.sqlite"));
+    waitForInitialIndex(index);
+
+    const auto naive = index.search(QStringLiteral("naive"));
+    QCOMPARE(naive.size(), 1);
+    QCOMPARE(naive.first().blockText, text);
+    QCOMPARE(naive.first().ranges.size(), 1);
+    QCOMPARE(naive.first().ranges.first().start, 0);
+    QCOMPARE(naive.first().ranges.first().length, nfdNaive.size());
+
+    // Dropping the mark must not shift offsets for later matches either.
+    const auto alpha = index.search(QStringLiteral("alpha"));
+    QCOMPARE(alpha.size(), 1);
+    QCOMPARE(alpha.first().ranges.size(), 1);
+    QCOMPARE(alpha.first().ranges.first().start, nfdNaive.size() + 1);
+    QCOMPARE(alpha.first().ranges.first().length, 5);
+  }
+
   void prefixCacheKeepsMatchesCutFromLargerQuery() {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -405,6 +545,43 @@ private slots:
 
     for (const auto &result : gammaResults)
       QCOMPARE(result.blockText, QStringLiteral("alpha gamma"));
+  }
+
+  void prefixCacheMatchesFreshQueryRanking() {
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString root = temp.filePath("documents");
+
+    QVERIFY(!writeDocument(root, QStringLiteral("One.templnote"),
+                           QStringLiteral("One"),
+                           {QStringLiteral("alpha alpha gamma")}).isEmpty());
+    QVERIFY(!writeDocument(root, QStringLiteral("Two.templnote"),
+                           QStringLiteral("Two"),
+                           {QStringLiteral("alpha gamma gamma")}).isEmpty());
+
+    // Reference: a clean index executes the longer query directly, so bm25
+    // ranks come straight from SQLite.
+    SearchIndex fresh(root, temp.filePath("fresh.sqlite"));
+    waitForInitialIndex(fresh);
+    const auto expected = fresh.search(QStringLiteral("alpha gamma"));
+    QCOMPARE(expected.size(), 2);
+
+    // This index caches the shorter query first. Refining that cached set used
+    // to invent a surrogate rank, making ordering/ranks diverge from a fresh
+    // query depending on which keys had been typed before.
+    SearchIndex refined(root, temp.filePath("refined.sqlite"));
+    waitForInitialIndex(refined);
+    QCOMPARE(refined.search(QStringLiteral("alpha")).size(), 2);
+    const auto actual = refined.search(QStringLiteral("alpha gamma"));
+
+    QCOMPARE(actual.size(), expected.size());
+
+    for (int i = 0; i < actual.size(); ++i) {
+      QCOMPARE(actual.at(i).documentPath, expected.at(i).documentPath);
+      QCOMPARE(actual.at(i).blockText, expected.at(i).blockText);
+      QCOMPARE(actual.at(i).rank, expected.at(i).rank);
+    }
   }
 
   void renamesAndDeletesUpdateIndex() {

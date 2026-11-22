@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QTextStream>
 
+#include <cmath>
+
 #if defined(Q_OS_LINUX)
 #include <sys/resource.h>
 #include <unistd.h>
@@ -14,6 +16,14 @@
 #include <windows.h>
 #include <psapi.h>
 #endif
+
+namespace {
+// formattedStats() prints two decimals; compare at the same precision so
+// sub-0.01 MB sampling jitter does not emit a spurious statsChanged signal.
+double roundedMb(double value) {
+    return std::round(value * 100.0) / 100.0;
+}
+} // namespace
 
 namespace Templnote {
 
@@ -91,7 +101,20 @@ QString MemoryTracker::formattedStats() const {
 }
 
 void MemoryTracker::refresh() {
-    m_stats = snapshot();
+    const MemoryStats updated = snapshot();
+
+    // Honour the "emits if updated" contract: compare at the displayed
+    // precision so tiny fluctuations that never change formattedStats() are
+    // not reported as changes.
+    const bool changed =
+        roundedMb(updated.residentSetSizeMb) != roundedMb(m_stats.residentSetSizeMb) ||
+        roundedMb(updated.virtualMemorySizeMb) != roundedMb(m_stats.virtualMemorySizeMb) ||
+        roundedMb(updated.peakRssMb) != roundedMb(m_stats.peakRssMb);
+
+    if (!changed)
+        return;
+
+    m_stats = updated;
     emit statsChanged();
 }
 

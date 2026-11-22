@@ -15,6 +15,16 @@ Item {
                                     && result !== undefined
                                     && result.blockText !== undefined
 
+  Accessible.name: root.hasResult
+                   ? "Search result preview: " + root.result.documentTitle
+                   : "Search result preview"
+  Accessible.description: root.hasResult
+                          ? root.result.matchCount + " "
+                            + (root.result.matchCount === 1 ? "match" : "matches")
+                            + " in this block"
+                          : "Select a result to preview it"
+  Accessible.role: Accessible.Section
+
   HighlightService {
     id: highlighter
   }
@@ -83,6 +93,10 @@ Item {
         id: previewText
 
         width: previewFlickable.width
+        // Expose the plain block text instead of the generated highlight HTML.
+        Accessible.name: root.hasResult ? root.result.blockText : ""
+        Accessible.role: Accessible.StaticText
+        Accessible.focusable: true
         textFormat: Text.RichText
         text: root.hasResult
               ? highlighter.highlight(

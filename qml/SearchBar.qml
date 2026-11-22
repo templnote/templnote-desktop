@@ -74,6 +74,9 @@ Rectangle {
 
     searchDebounce.stop()
     ++root.searchToken
+    // No query is live any more; stop patch-triggered rechecks from doing
+    // worker work for a find bar that is closed.
+    localService.clearActiveQuery()
     root.pendingAccept = false
     root.visible = false
     root.previousFocus = null
@@ -129,6 +132,9 @@ Rectangle {
 
     if (root.matches.length === 0) {
       root.currentIndex = -1
+      // Do not carry an Enter for a query that matched nothing into a later
+      // query that happens to find a result.
+      root.pendingAccept = false
       if (root.editor)
         root.editor.setSearchMatches([], -1)
       return
@@ -335,7 +341,11 @@ Rectangle {
     selectByMouse: true
     background: null
 
-    onTextChanged: searchDebounce.restart()
+    onTextChanged: {
+      if (root.visible) {
+        searchDebounce.restart()
+      }
+    }
     onAccepted: {
       // Apply the latest query before accepting, so Enter never acts on a
       // result list that is one debounce interval behind.

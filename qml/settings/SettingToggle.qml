@@ -13,6 +13,37 @@ Item {
   width: parent ? parent.width : 0
   implicitHeight: Math.max(labels.implicitHeight, 24) + 20
 
+  activeFocusOnTab: true
+
+  Accessible.name: root.title
+  Accessible.description: root.description
+  Accessible.role: Accessible.CheckBox
+  Accessible.checked: root.checked
+  Accessible.focusable: true
+  // A CheckBox exposes one action only: some ATs emit both press and toggle
+  // for a single gesture, which would flip the value twice.
+  Accessible.onToggleAction: root.toggleValue()
+
+  function toggleValue() {
+    // `checked` is bound to a preference in the containing page. Assigning to
+    // it here would break that binding, so just report the requested value;
+    // the page writes the preference and the binding updates this property.
+    root.toggled(!root.checked)
+  }
+
+  Keys.onReturnPressed: function(event) {
+    event.accepted = true
+    root.toggleValue()
+  }
+  Keys.onEnterPressed: function(event) {
+    event.accepted = true
+    root.toggleValue()
+  }
+  Keys.onSpacePressed: function(event) {
+    event.accepted = true
+    root.toggleValue()
+  }
+
   Column {
     id: labels
 
@@ -77,10 +108,21 @@ Item {
     MouseArea {
       anchors.fill: parent
       cursorShape: Qt.PointingHandCursor
-      onClicked: {
-        root.checked = !root.checked
-        root.toggled(root.checked)
-      }
+      onClicked: root.toggleValue()
     }
+  }
+
+  Rectangle {
+    visible: root.activeFocus
+
+    anchors {
+      fill: parent
+      margins: 2
+    }
+
+    radius: 6
+    color: "transparent"
+    border.width: 1
+    border.color: Theme.accent
   }
 }

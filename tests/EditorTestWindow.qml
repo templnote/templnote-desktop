@@ -29,4 +29,12 @@ ApplicationWindow {
     editor.requestFocusBlock(blockId, position)
   }
 
+  function syntaxRender(text, focused, definitions, footnotes) {
+    return MarkdownSyntax.render(text, focused, definitions || {}, footnotes || {})
+  }
+
+  function syntaxRawToRendered(text, index, definitions) {
+    return MarkdownSyntax.rawToRenderedIndex(text, index, definitions || {})
+  }
+
 }

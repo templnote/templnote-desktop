@@ -1,13 +1,39 @@
 
 #include <QtTest>
 
+#include <QColor>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTextBlock>
+#include <QTextDocument>
+#include <QTextFragment>
+#include <QTextLayout>
 
+#include "../src/core/CodeHighlighter.h"
 #include "../src/core/Document.h"
 
 using namespace Templnote;
+
+namespace {
+QColor charColorAt(const QTextDocument &document, int position) {
+  const QTextBlock block = document.findBlock(position);
+
+  if (!block.isValid() || !block.layout())
+    return {};
+
+  // QSyntaxHighlighter stores its formats in the block layout, not in the
+  // document's text fragments, so inspect the layout ranges directly.
+  const int offset = position - block.position();
+
+  for (const QTextLayout::FormatRange &range : block.layout()->formats()) {
+    if (offset >= range.start && offset < range.start + range.length)
+      return range.format.foreground().color();
+  }
+
+  return {};
+}
+} // namespace
 
 class DocumentTests : public QObject {
   Q_OBJECT
@@ -226,6 +252,151 @@ private slots:
     QCOMPARE(empty.count(), 0);
   }
 
+  void multiLineCommentDelimitersInsideStrings() {
+    const QColor stringColor("#98c379");
+    const QColor commentColor("#7f848e");
+
+    // `/*` inside a quoted string must not open a multi-line comment: the next
+    // line has to be highlighted normally instead of as a comment body.
+    {
+      QTextDocument document;
+      document.setPlainText(
+          QStringLiteral("auto s = \"/*\";\nint x = 5;"));
+
+      CodeHighlighter highlighter;
+      highlighter.setLanguage(QStringLiteral("cpp"));
+      highlighter.setDocument(&document);
+      highlighter.rehighlight();
+
+      const int start = document.toPlainText().indexOf(QStringLiteral("/*"));
+      QVERIFY(start >= 0);
+      QCOMPARE(charColorAt(document, start), stringColor);
+
+      const int keyword = document.toPlainText().indexOf(QStringLiteral("int"));
+      QVERIFY(keyword > start);
+      QCOMPARE(charColorAt(document, keyword), QColor("#e5c07b"));
+    }
+
+    // Conversely, a `*/` inside a string must not end a comment that started
+    // on a previous line.
+    {
+      QTextDocument document;
+      document.setPlainText(QStringLiteral(
+          "/* begin\nauto s = \"*/\";\nstill comment */"));
+
+      CodeHighlighter highlighter;
+      highlighter.setLanguage(QStringLiteral("cpp"));
+      highlighter.setDocument(&document);
+      highlighter.rehighlight();
+
+      const int still =
+          document.toPlainText().indexOf(QStringLiteral("still"));
+      QVERIFY(still >= 0);
+      QCOMPARE(charColorAt(document, still), commentColor);
+    }
+  }
+
+  void singleLineMarkerDoesNotHideMultiLineCommentEnd() {
+    const QColor commentColor("#7f848e");
+
+    QTextDocument document;
+    document.setPlainText(QStringLiteral(
+        "/* start\n// foo */\nint after = 1;"));
+
+    CodeHighlighter highlighter;
+    highlighter.setLanguage(QStringLiteral("cpp"));
+    highlighter.setDocument(&document);
+    highlighter.rehighlight();
+
+    const QString text = document.toPlainText();
+
+    // The whole second line is block-comment text; its `//` marker must not
+    // mask the `*/` that closes the comment.
+    const int marker = text.indexOf(QStringLiteral("// foo"));
+    QVERIFY(marker >= 0);
+    QCOMPARE(charColorAt(document, marker), commentColor);
+
+    // The third line must be ordinary code. An `after` identifier has no rule
+    // of its own, so a block-comment range covering it is the thing to reject.
+    const int after = text.indexOf(QStringLiteral("after"));
+    QVERIFY(after >= 0);
+    QVERIFY(charColorAt(document, after) != commentColor);
+    QCOMPARE(document.findBlock(after).userState(), 0);
+  }
+
+  void lineCommentInsideOpeningBlockCommentDoesNotKeepItOpen() {
+    const QColor commentColor("#7f848e");
+
+    QTextDocument document;
+    document.setPlainText(
+        QStringLiteral("/* a // b */\nint after = 1;"));
+
+    CodeHighlighter highlighter;
+    highlighter.setLanguage(QStringLiteral("cpp"));
+    highlighter.setDocument(&document);
+    highlighter.rehighlight();
+
+    const QString text = document.toPlainText();
+
+    // The `//` is inside a block comment that opens on this very line. It must
+    // not become a single-line comment range that masks the closing `*/`.
+    const int marker = text.indexOf(QStringLiteral("// b"));
+    QVERIFY(marker >= 0);
+    QCOMPARE(charColorAt(document, marker), commentColor);
+
+    // The next line must be ordinary code with a clean state.
+    const int after = text.indexOf(QStringLiteral("after"));
+    QVERIFY(after >= 0);
+    QVERIFY(charColorAt(document, after) != commentColor);
+    QCOMPARE(document.findBlock(after).userState(), 0);
+
+    // A `//` that genuinely follows a closed block comment still behaves like
+    // a line comment and does not reopen the block state.
+    QTextDocument trailing;
+    trailing.setPlainText(
+        QStringLiteral("/* a */ // trailing\nint after = 2;"));
+
+    CodeHighlighter trailingHighlighter;
+    trailingHighlighter.setLanguage(QStringLiteral("cpp"));
+    trailingHighlighter.setDocument(&trailing);
+    trailingHighlighter.rehighlight();
+
+    const QString trailingText = trailing.toPlainText();
+    const int trailingMarker = trailingText.indexOf(QStringLiteral("trailing"));
+    QVERIFY(trailingMarker >= 0);
+    QCOMPARE(charColorAt(trailing, trailingMarker), commentColor);
+
+    const int trailingAfter = trailingText.indexOf(QStringLiteral("after"));
+    QVERIFY(trailingAfter >= 0);
+    QVERIFY(charColorAt(trailing, trailingAfter) != commentColor);
+    QCOMPARE(trailing.findBlock(trailingAfter).userState(), 0);
+  }
+
+  void trailingLineCommentOnClosingLineDoesNotReopenComment() {
+    const QColor commentColor("#7f848e");
+
+    QTextDocument document;
+    document.setPlainText(QStringLiteral(
+        "/* open\nclose */ // start /* fake\nline3 code\nline4 code"));
+
+    CodeHighlighter highlighter;
+    highlighter.setLanguage(QStringLiteral("cpp"));
+    highlighter.setDocument(&document);
+    highlighter.rehighlight();
+
+    const QString text = document.toPlainText();
+    const int fake = text.indexOf(QStringLiteral("/* fake"));
+    QVERIFY(fake >= 0);
+    QCOMPARE(charColorAt(document, fake), commentColor);
+
+    // The block comment closed on line 2; the `/*` inside its trailing line
+    // comment must not grey out the rest of the file.
+    const int line3 = text.indexOf(QStringLiteral("line3 code"));
+    QVERIFY(line3 >= 0);
+    QVERIFY(charColorAt(document, line3) != commentColor);
+    QCOMPARE(document.findBlock(line3).userState(), 0);
+  }
+
   void imageBlockMetadataRoundTrip() {
     Document document;
     Block block = Block::create(BlockType::Image, "A caption");
@@ -245,6 +416,6 @@ private slots:
   }
 };
 
-QTEST_GUILESS_MAIN(DocumentTests)
+QTEST_MAIN(DocumentTests)
 
 #include "tst_document.moc"

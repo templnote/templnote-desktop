@@ -14,6 +14,12 @@ Item {
   property string alignment: "left"
   property bool isChecked: false
   property string codeLanguage: ""
+  property var blockMetadata: null
+  readonly property string codeFence: {
+    const fence = blockMetadata && blockMetadata.codeFence
+                  ? String(blockMetadata.codeFence) : ""
+    return /^[`~]{3,}$/.test(fence) ? fence : "```"
+  }
   property bool showPlaceholder: false
   property var model: null
   property var searchHighlights: []
@@ -35,7 +41,7 @@ Item {
     if (lastNewline < 0)
       return -1
 
-    return text.substring(lastNewline + 1).trim() === "```"
+    return text.substring(lastNewline + 1).trim() === root.codeFence
            ? lastNewline + 1
            : -1
   }
@@ -125,11 +131,11 @@ Item {
   // Formats raw markdown into editor text when focused
   function getRawMarkdown() {
     const lang = (root.codeLanguage || "").trim()
-    const header = "```" + lang
+    const header = root.codeFence + lang
     const body = root.content || ""
     // Keep an explicit body line even when empty, so there is a real editing
     // position between the fences instead of the caret sitting on the close.
-    return header + "\n" + body + "\n" + "```"
+    return header + "\n" + body + "\n" + root.codeFence
   }
 
   // Parses the editor text back into language and code body
@@ -143,12 +149,12 @@ Item {
     let bodyStartIndex = 0
     let bodyEndIndex = lines.length
 
-    if (lines[0].startsWith("```")) {
-      lang = lines[0].substring(3).trim()
+    if (lines[0].startsWith(root.codeFence)) {
+      lang = lines[0].substring(root.codeFence.length).trim()
       bodyStartIndex = 1
     }
 
-    if (lines.length > 1 && lines[lines.length - 1].trim() === "```") {
+    if (lines.length > 1 && lines[lines.length - 1].trim() === root.codeFence) {
       bodyEndIndex = lines.length - 1
     }
 
@@ -182,7 +188,7 @@ Item {
     if (position === -1) {
       // Focus in the body just before the closing ```
       const lines = editor.text.split("\n")
-      if (lines.length > 1 && lines[lines.length - 1].trim() === "```") {
+      if (lines.length > 1 && lines[lines.length - 1].trim() === root.codeFence) {
         const lastLineLen = lines[lines.length - 1].length
         const targetPos = Math.max(0, editor.text.length - (lastLineLen + 1))
         editor.cursorPosition = root.clampCursorPosition(targetPos)
@@ -197,6 +203,17 @@ Item {
             Math.min(offset + position, root.bodyEndPosition))
     }
     updateCaretGeometry()
+  }
+
+  // The editor shows ` ```lang\n ... \n``` ` while focused, but the model (and
+  // therefore focus requests) uses body-relative positions. Convert a raw
+  // editor offset to the body coordinate before handing it back to
+  // focusEditor(), which adds the fence offset again.
+  function rawToBodyPosition(rawPosition) {
+    const text = editor ? editor.text : ""
+    const firstLineEnd = text.indexOf("\n")
+    const offset = (firstLineEnd >= 0) ? (firstLineEnd + 1) : 0
+    return Math.max(0, rawPosition - offset)
   }
 
   function focusEditorAtX(xPosition) {
@@ -256,7 +273,7 @@ Item {
       // would derive an empty language and clear the saved tag. Only sync when
       // a fence header is actually present and the exit path did not opt out.
       const raw = editor.text || ""
-      const hasFenceHeader = raw.trim().startsWith("```")
+      const hasFenceHeader = raw.trim().startsWith(root.codeFence)
       if (!root.skipFocusLossSync && hasFenceHeader) {
         const parsed = parseEditorText(raw)
         if (root.model && root.blockId.length > 0) {
@@ -281,7 +298,9 @@ Item {
     width: root.width
     height: Math.max(editor.implicitHeight + 24, 48)
     radius: 6
-    color: Theme.codeBlockBackground || (Theme.isDark ? "#1e1e24" : "#f4f4f6")
+    // Theme.codeBlockBackground was removed; use a current palette colour
+    // with an explicit fallback for themes that do not define it.
+    color: Theme.surfaceAlt || (Theme.isDark ? "#1e1e24" : "#f4f4f6")
     border.color: root.isFocused ? Theme.accent : (Theme.border || (Theme.isDark ? "#2e2e38" : "#e0e0e4"))
     border.width: root.isFocused ? 1.5 : 1
 
@@ -405,7 +424,7 @@ Item {
             // Enter must insert a newline instead.
             if (lastLineIndex >= 0 && pos > lastLineIndex) {
               const lineContent = currentText.substring(lastLineIndex + 1).trim()
-              if (lineContent === "```") {
+              if (lineContent === root.codeFence) {
                 exitCodeBlockBelow()
                 return
               }
@@ -438,7 +457,10 @@ Item {
           const parsed = parseEditorText(editor.text)
           if (parsed.body.length === 0) {
             // Check if cursor is near the start or whole block is effectively empty
-            if (editor.cursorPosition <= 3 || editor.text.trim() === "```" || editor.text.trim() === "``````" || parsed.body.length === 0) {
+            if (editor.cursorPosition <= 3 ||
+                editor.text.trim() === root.codeFence ||
+                editor.text.trim() === root.codeFence + root.codeFence ||
+                parsed.body.length === 0) {
               event.accepted = true
               root.backspacePressed()
               return

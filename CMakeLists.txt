@@ -40,6 +40,10 @@ set_source_files_properties(qml/Preferences.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
 )
 
+set_source_files_properties(qml/MarkdownSyntax.qml PROPERTIES
+  QT_QML_SINGLETON_TYPE TRUE
+)
+
 add_library(templnote_core STATIC
   src/core/Block.h
   src/core/Block.cpp
@@ -52,6 +56,8 @@ add_library(templnote_core STATIC
   src/model/BlockModel.cpp
   src/model/BlockModel.h
 
+  src/emoji/EmojiDatabase.h
+  src/emoji/EmojiDatabase.cpp
   src/storage/AppPaths.h
   src/storage/AppPaths.cpp
   src/storage/DocumentListModel.h
@@ -66,6 +72,13 @@ add_library(templnote_core STATIC
   src/tracking/MemoryTracker.cpp
   src/tracking/ScopedTimer.h
   src/tracking/ScopedTimer.cpp
+
+  src/plugins/PluginManifest.h
+  src/plugins/PluginManifest.cpp
+  src/plugins/PluginsModel.h
+  src/plugins/PluginsModel.cpp
+  src/plugins/PluginManager.h
+  src/plugins/PluginManager.cpp
 )
 
 target_include_directories(templnote_core PUBLIC
@@ -93,12 +106,14 @@ qt_add_qml_module(templnote
   qml/Theme.qml
   qml/BlockSpacing.qml
   qml/Preferences.qml
+  qml/MarkdownSyntax.qml
   qml/PaperSheet.qml
   qml/HomeScreen.qml
   qml/DocumentHeader.qml
   qml/Editor.qml
   qml/BlockRenderer.qml
   qml/CommandMenu.qml
+  qml/EmojiPicker.qml
   qml/ImageSourceMenu.qml
   qml/SearchBar.qml
   qml/SearchWindow.qml
@@ -142,9 +157,28 @@ qt_add_qml_module(templnote
   qml/SearchService/HighlightService.qml
 
   RESOURCES
+  bundled-plugins/theme-tokyo-night/manifest.json
+  bundled-plugins/theme-tokyo-night/ThemeSettings.qml
+  bundled-plugins/theme-gruvbox/manifest.json
+  bundled-plugins/theme-gruvbox/ThemeSettings.qml
+  bundled-plugins/theme-solarized-osaka/manifest.json
+  bundled-plugins/theme-solarized-osaka/ThemeSettings.qml
+  bundled-plugins/theme-github/manifest.json
+  bundled-plugins/theme-github/ThemeSettings.qml
+  bundled-plugins/paper-background/manifest.json
+  bundled-plugins/paper-background/PaperBackgroundDecoration.qml
+  bundled-plugins/paper-background/PaperBackgroundSettings.qml
+  bundled-plugins/prompt-panel/manifest.json
+  bundled-plugins/prompt-panel/PromptPanelDecoration.qml
+  bundled-plugins/prompt-panel/PromptPanelSettings.qml
+
   qml/shaders/paper.frag.qsb
   qml/shaders/edgefade.frag.qsb
   qml/SearchService/localSearchWorker.mjs
+  assets/emoji/data.json
+  assets/emoji/messages.json
+  assets/emoji/shortcodes-github.json
+  assets/emoji/LICENSE
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_image_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg

@@ -13,6 +13,10 @@ Item {
   property int numberIndex: 1
   property string alignment: "left"
   property var model: null
+  // Document-scoped link reference definitions, supplied by the editor.
+  property var linkDefinitions: ({})
+  property var footnoteDefinitions: ({})
+  property var editorApi: null
 
   // Appearance overrides for each concrete block type.
   property bool showBullet: false
@@ -21,6 +25,7 @@ Item {
   property bool showQuote: false
   property bool isChecked: false
   property string calloutType: "note"
+  property var blockMetadata: null
   property bool showPlaceholder: false
   property string numberPrefix: numberIndex + "."
   property int verticalPadding: 0
@@ -43,6 +48,30 @@ Item {
   readonly property int selectionEnd: editor.selectionEnd
   readonly property bool isFocused: editor.activeFocus
 
+  // Block-level markdown markers are view-only decorations. They are shown
+  // dimmed while the block is focused and hidden otherwise; the stored text
+  // never contains them. Code and callout blocks render their own raw source.
+  readonly property string blockMarker: {
+    if (root.blockType === 1)
+      return "#".repeat(Math.max(1, Math.min(6, root.headingLevel))) + " "
+    if (root.showNumbered)
+      return root.numberIndex + ". "
+    if (root.showTodo)
+      return root.isChecked ? "- [x] " : "- [ ] "
+    if (root.showBullet)
+      return "- "
+    // Quotes render their own `>` inside quoteBar (which also draws the accent
+    // bar). Returning one here would show a second marker in bulletGutter.
+    return ""
+  }
+  readonly property bool showBlockMarker: root.blockMarker.length > 0
+                                          && editor.activeFocus
+  readonly property int listIndent: {
+    const value = root.blockMetadata && root.blockMetadata.listIndent
+    const level = parseInt(value, 10) || 0
+    return Math.max(0, Math.min(5, level))
+  }
+
   property bool transformingShortcut: false
   property bool syncingFromModel: false
 
@@ -50,6 +79,17 @@ Item {
   // rewrite the same text with/without syntax dimming, so caching avoids a
   // redundant parse + relayout when nothing textual changed.
   property string renderedHtml: ""
+
+  // Content font from Preferences. Kept here so every text block (including
+  // headings, lists and quotes, which derive from TextBlock) picks it up.
+  readonly property string contentFontFamily: {
+    if (Preferences.fontFamily === "Mono")
+      return "monospace"
+    if (Preferences.fontFamily === "Serif")
+      return "Georgia, 'Times New Roman', serif"
+    return Qt.application.font.family
+  }
+
   // Height of the formatted text as shown while the block is not focused.
   // Measured explicitly because a hidden Text's implicitHeight does not
   // reliably notify the delegate's layout before it has been polished.
@@ -69,6 +109,10 @@ Item {
   property real caretOffsetX: 0
   property real caretOffsetY: 0
   property real caretHeight: 0
+  // Caret X from before the last alignment change. The viewer already reports
+  // the new X once onAlignmentChanged runs, so the slide needs a cached start.
+  property real lastCaretX: 0
+  property real alignmentStartX: -1
   property int pendingFocusPosition: 0
 
   Timer {
@@ -170,6 +214,18 @@ Item {
   }
 
   onIsCheckedChanged: {
+    renderCacheValid = false
+    refreshRenderedHtml()
+  }
+
+  // A link/footnote definition can live in any other block. Editing it used
+  // to leave every other block rendering the old target/reference.
+  onLinkDefinitionsChanged: {
+    renderCacheValid = false
+    refreshRenderedHtml()
+  }
+
+  onFootnoteDefinitionsChanged: {
     renderCacheValid = false
     refreshRenderedHtml()
   }
@@ -332,111 +388,132 @@ Item {
     return out
   }
 
-  // Syntax tokens that markdownToHtml() drops when a block is not focused.
-  // Unlike the focused render, unmatched inline tags stay visible as literal
-  // text, so only *matched* tag pairs may be skipped here.
-  function findSyntaxTokens(text, hiddenOnly) {
-    if (!text) return []
-    let tokens = []
-    const parsedTags = parseInlineTags(text)
-    for (let i = 0; i < parsedTags.tokens.length; ++i) {
-      const token = parsedTags.tokens[i]
-      if (hiddenOnly && !token.matched)
-        continue
-      tokens.push({ start: token.start, end: token.end })
-    }
-    let m
-    let bRegex = /\*\*(.+?)\*\*/g
-    while ((m = bRegex.exec(text)) !== null) {
-      tokens.push({ start: m.index, end: m.index + 2 })
-      tokens.push({ start: m.index + m[0].length - 2, end: m.index + m[0].length })
-    }
-    let sRegex = /~~(.+?)~~/g
-    while ((m = sRegex.exec(text)) !== null) {
-      tokens.push({ start: m.index, end: m.index + 2 })
-      tokens.push({ start: m.index + m[0].length - 2, end: m.index + m[0].length })
-    }
-    let iRegex = /(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g
-    while ((m = iRegex.exec(text)) !== null) {
-      let offset = m[0].startsWith("*") ? 0 : 1
-      let sPos = m.index + offset
-      let ePos = sPos + 1 + m[1].length
-      tokens.push({ start: sPos, end: sPos + 1 })
-      tokens.push({ start: ePos, end: ePos + 1 })
-    }
+  // Colour and font size are stored as distinctive inline markers in the
+  // block text so they survive save/reload without a second, parallel
+  // rich-text state. MarkdownSyntax passes the sentinel tokens through as
+  // plain text; after rendering we swap the matched ones for real spans. The
+  // tokens are hidden in both focus modes during caret mapping, like the
+  // <u>/<sub>/<sup> markers handled by MarkdownSyntax.hiddenTokens().
+  function styleTokens(text) {
+    const tokens = []
+    // Colours are stored as ⟦tn-color:0xff0000⟧ (never #rrggbb): a bare
+    // `#digits` inside the sentinel is parsed as a GitHub issue link by
+    // MarkdownSyntax and injects <a>/<span> markup into the marker. Sizes are
+    // unaffected: ⟦tn-size:16px⟧, close token ⟦tn-/style⟧.
+    const re = /⟦tn-(color|size):([^⟧\n]+)⟧|⟦tn-\/style⟧/g
+    let match
 
-    tokens.sort(function(a, b) { return a.start - b.start })
-    let clean = []
-    let lastEnd = 0
-    for (let i = 0; i < tokens.length; ++i) {
-      let t = tokens[i]
-      if (t.start >= lastEnd) {
-        clean.push(t)
-        lastEnd = t.end
+    while ((match = re.exec(text)) !== null) {
+      if (match[1]) {
+        tokens.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          style: (match[1] === "color" ? "color:" : "font-size:") + match[2],
+          closing: false
+        })
+      } else {
+        tokens.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          style: "",
+          closing: true
+        })
       }
     }
-    return clean
+    return tokens
+  }
+
+  // Builds the stored open token for a validated `color:...` / `font-size:...`
+  // style string. The close token is always STYLE_CLOSE.
+  readonly property string styleCloseToken: "⟦tn-/style⟧"
+  function openStyleToken(style) {
+    if (style.indexOf("color:") === 0)
+      return "⟦tn-color:" + style.substring(6) + "⟧"
+    if (style.indexOf("font-size:") === 0)
+      return "⟦tn-size:" + style.substring(10) + "⟧"
+    return ""
+  }
+
+  // Two style strings target the same property when the part before the colon
+  // matches ("color:0xff0000" / "color:0x00ff00", "font-size:14px" / "20px").
+  function styleKind(style) {
+    const colon = style.indexOf(":")
+    return colon >= 0 ? style.substring(0, colon) : style
+  }
+
+  // Pairs each close token with the most recent unmatched open token. Any
+  // unpaired token is left as literal text instead of becoming formatting.
+  function matchedStylePairs(tokens) {
+    const stack = []
+    const pairs = []
+    for (let i = 0; i < tokens.length; ++i) {
+      const token = tokens[i]
+      if (!token.closing) {
+        stack.push(token)
+      } else if (stack.length > 0) {
+        pairs.push({ open: stack.pop(), close: token })
+      }
+    }
+    return pairs
+  }
+
+  // The stored colour value is 0xRRGGBB; the CSS span needs #RRGGBB. Decode
+  // only a validated six-digit hex value so a hand-edited or malformed sentinel
+  // can never inject arbitrary CSS into the generated markup.
+  function cssStyle(style) {
+    return style.replace(/^color:0x([0-9a-fA-F]{6})$/, function(match, digits) {
+      return "color:#" + digits
+    })
+  }
+
+  function styleMarkerRanges(raw) {
+    const result = []
+    const pairs = root.matchedStylePairs(root.styleTokens(raw))
+    for (let i = 0; i < pairs.length; ++i) {
+      result.push({ start: pairs[i].open.start, end: pairs[i].open.end })
+      result.push({ start: pairs[i].close.start, end: pairs[i].close.end })
+    }
+    result.sort(function(a, b) { return a.start - b.start })
+    return result
+  }
+
+  function restoreStyleMarkers(html) {
+    const pairs = root.matchedStylePairs(root.styleTokens(html))
+    if (pairs.length === 0)
+      return html
+
+    const replacements = []
+    for (let i = 0; i < pairs.length; ++i) {
+      replacements.push({
+        start: pairs[i].open.start,
+        end: pairs[i].open.end,
+        html: '<span style="' + root.cssStyle(pairs[i].open.style) + '">'
+      })
+      replacements.push({
+        start: pairs[i].close.start,
+        end: pairs[i].close.end,
+        html: "</span>"
+      })
+    }
+    replacements.sort(function(a, b) { return a.start - b.start })
+
+    let out = ""
+    let pos = 0
+    for (let i = 0; i < replacements.length; ++i) {
+      out += html.substring(pos, replacements[i].start) + replacements[i].html
+      pos = replacements[i].end
+    }
+    return out + html.substring(pos)
   }
 
   function markdownToHtml(raw, includeSyntax) {
-    if (!raw) return ""
+    if (!raw)
+      return ""
 
-    // Fast path: without inline tags or markdown markers the tag tree and
-    // regex pipeline cannot add any styling, so only escaping, line breaks
-    // and whitespace preservation are needed. This is the common case while
-    // typing ordinary prose.
-    if (raw.indexOf("*") < 0 && raw.indexOf("~") < 0 &&
-        raw.indexOf("<") < 0 && raw.indexOf(">") < 0) {
-      let plain = escapeInlineText(raw)
-      plain = plain.replace(/\n/g, "<br/>")
-      plain = plain.replace(/  +/g, function(match) {
-        return " " + "&nbsp;".repeat(match.length - 1)
-      })
-      if (root.showTodo && root.isChecked)
-        plain = "<s>" + plain + "</s>"
-      return plain
-    }
-
-    const spanOpen = "<span style=\"color:" + Theme.textMuted + "; font-weight:normal; font-style:normal; text-decoration:none;\">"
-    const spanClose = "</span>"
-
-    // Render the inline HTML tags first so nested <sub>/<sup>/<u> pairs are
-    // balanced. Their contents are escaped before the markdown markers are
-    // styled below.
-    const tree = buildTagTree(raw)
-    let text = renderTagRange(raw, 0, raw.length, tree.root, includeSyntax)
-
-    if (includeSyntax) {
-      // Focused mode: render formatted styling WITH dimmed syntax markers
-      text = text.replace(/\*\*(.+?)\*\*/g, spanOpen + "**" + spanClose + "<b>$1</b>" + spanOpen + "**" + spanClose)
-      text = text.replace(/~~(.+?)~~/g, spanOpen + "~~" + spanClose + "<s>$1</s>" + spanOpen + "~~" + spanClose)
-      text = text.replace(/(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g, function(match, p1) {
-        let prefix = match.startsWith("*") ? "" : match.charAt(0)
-        let suffix = match.endsWith("*") ? "" : match.charAt(match.length - 1)
-        return prefix + spanOpen + "*" + spanClose + "<i>" + p1 + "</i>" + spanOpen + "*" + spanClose + suffix
-      })
-    } else {
-      // Unfocused mode: render formatted styling WITHOUT syntax markers
-      text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-      text = text.replace(/~~(.+?)~~/g, "<s>$1</s>")
-      text = text.replace(/(?:^|[^*])\*([^*\n]+?)\*(?:[^*]|$)/g, function(match, p1) {
-        let prefix = match.startsWith("*") ? "" : match.charAt(0)
-        let suffix = match.endsWith("*") ? "" : match.charAt(match.length - 1)
-        return prefix + "<i>" + p1 + "</i>" + suffix
-      })
-    }
-
-    text = text.replace(/\n/g, "<br/>")
-
-    // Preserve whitespace in RichText so multiple consecutive spaces don't collapse
-    text = text.replace(/  +/g, function(match) {
-      return " " + "&nbsp;".repeat(match.length - 1)
-    })
-
-    if (root.showTodo && root.isChecked) {
+    let text = MarkdownSyntax.render(raw, includeSyntax, linkDefinitions, footnoteDefinitions)
+    text = root.restoreStyleMarkers(text)
+    if (root.showTodo && root.isChecked)
       text = "<s>" + text + "</s>"
-    }
-
     return text
   }
 
@@ -448,8 +525,12 @@ Item {
     if (!renderedViewer || !editor)
       return Qt.rect(0, 0, 1, 0)
 
-    const maxPosition = Math.min(editor.length, renderedViewer.length)
-    const clamped = Math.max(0, Math.min(position, maxPosition))
+    // The focused render can be longer than the raw text (emoji shortcodes
+    // also emit the glyph), so map through the viewer's plain text instead of
+    // clamping to editor.length.
+    const maxPosition = renderedViewer.length
+    const mapped = root.rawToViewerIndex(editor.text, position)
+    const clamped = Math.max(0, Math.min(mapped, maxPosition))
     if (renderedViewer.length === 0)
       return Qt.rect(renderedViewer.x, renderedViewer.y, 1,
                      Math.max(1, renderedViewer.contentHeight))
@@ -460,6 +541,54 @@ Item {
                    Math.max(1, rect.width), rect.height)
   }
 
+  // Visual (wrapped) line checks. A newline count is not enough here: a long
+  // paragraph may span several visual lines, and Up/Down must move the caret
+  // inside it before jumping to the neighbouring block.
+  function isCursorOnFirstVisualLine() {
+    if (!renderedViewer || !editor)
+      return true
+
+    const limit = renderedViewer.length
+
+    if (limit === 0)
+      return true
+
+    const caret = renderedViewer.positionToRectangle(Math.min(
+      root.rawToViewerIndex(editor.text, editor.cursorPosition), limit))
+    const start = renderedViewer.positionToRectangle(0)
+    return Math.abs(caret.y - start.y) < 2
+  }
+
+  function isCursorOnLastVisualLine() {
+    if (!renderedViewer || !editor)
+      return true
+
+    const limit = renderedViewer.length
+
+    if (limit === 0)
+      return true
+
+    const caret = renderedViewer.positionToRectangle(Math.min(
+      root.rawToViewerIndex(editor.text, editor.cursorPosition), limit))
+    const end = renderedViewer.positionToRectangle(limit)
+    return Math.abs(caret.y - end.y) < 2
+  }
+
+  function caretLocalX() {
+    if (!renderedViewer || !editor)
+      return 0
+
+    const position = root.rawToViewerIndex(editor.text, editor.cursorPosition)
+    const clamped = Math.max(0, Math.min(position, renderedViewer.length))
+    return renderedViewer.positionToRectangle(clamped).x
+  }
+
+  // Called by the editor before it changes the alignment role. Reading the
+  // viewer afterwards would already yield the new (aligned) caret position.
+  function captureAlignmentStart() {
+    root.alignmentStartX = root.caretLocalX()
+  }
+
   function updateCaretGeometry() {
     if (!renderedViewer || !editor)
       return
@@ -468,13 +597,56 @@ Item {
     caretOffsetX = rect.x
     caretOffsetY = rect.y
     caretHeight = rect.height
+    lastCaretX = root.caretLocalX()
   }
 
   function viewerPositionAt(x, y) {
     if (!renderedViewer)
       return 0
 
-    return renderedViewer.positionAt(x - renderedViewer.x, y - renderedViewer.y)
+    const viewerIndex = renderedViewer.positionAt(
+      x - renderedViewer.x, y - renderedViewer.y)
+    const raw = editor ? editor.text : ""
+    const rawIndex = root.viewerToRawIndex(raw, viewerIndex)
+    return Math.max(0, Math.min(rawIndex, raw.length))
+  }
+
+  // textMouseArea sits above renderedViewer and consumes presses, so the
+  // viewer's onLinkActivated never sees a click. Resolve the same link from
+  // the MarkdownSyntax token that produced the <a> element: inline/reference
+  // links, autolinks, @mentions and footnote references all carry a URL.
+  // Returns "" for ordinary text so caret placement is unaffected.
+  function linkUrlAtViewerPosition(viewerPosition) {
+    if (!editor || !renderedViewer)
+      return ""
+
+    const raw = editor.text
+    if (!raw || raw.length === 0)
+      return ""
+
+    const rawPos = root.viewerToRawIndex(
+      raw, Math.max(0, Math.min(viewerPosition, renderedViewer.length)))
+    const defs = MarkdownSyntax.mergedDefinitions(raw, linkDefinitions)
+    const tokens = MarkdownSyntax.collectTokens(raw, defs)
+
+    for (let i = 0; i < tokens.length; ++i) {
+      const token = tokens[i]
+      if (rawPos < token.start || rawPos >= token.end)
+        continue
+
+      let url = ""
+      if (token.kind === "link" || token.kind === "autolink"
+          || token.kind === "mention") {
+        url = token.data.url
+      } else if (token.kind === "footnoteRef"
+                 && footnoteDefinitions
+                 && footnoteDefinitions[token.data.label]) {
+        url = "#fn-" + token.data.label
+      }
+      if (url && url.length > 0)
+        return MarkdownSyntax.safeUrl(url)
+    }
+    return ""
   }
 
   // Paint a raw-text range using the rendered viewer's rich-text geometry.
@@ -485,18 +657,13 @@ Item {
     if (!renderedViewer || end <= start)
       return
 
-    // Search ranges are raw-text offsets. While the block is focused the
-    // rendered text keeps the syntax markers, so positions match the editor.
-    // Unfocused blocks drop them, and painting the raw offsets directly would
-    // shift every highlight left by the hidden marker length.
+    // Search/selection ranges are raw-text offsets. rawToViewerIndex accounts
+    // for hidden markdown/style markers in unfocused blocks and for the extra
+    // emoji glyph in the focused render, so highlights stay over the right
+    // characters in both modes.
     const raw = editor.text
-    let rangeStart = start
-    let rangeEnd = end
-
-    if (!editor.activeFocus) {
-      rangeStart = rawToRenderedIndex(raw, start)
-      rangeEnd = rawToRenderedIndex(raw, end)
-    }
+    const rangeStart = root.rawToViewerIndex(raw, start)
+    const rangeEnd = root.rawToViewerIndex(raw, end)
 
     if (rangeEnd <= rangeStart)
       return
@@ -564,54 +731,170 @@ Item {
     flushRun()
   }
 
-  function renderedToRawIndex(raw, renderedIndex) {
-    if (!raw || renderedIndex <= 0) return 0
-    let tokens = findSyntaxTokens(raw)
-    let rIdx = 0
-    let rawIdx = 0
-    let tIdx = 0
-    while (rawIdx < raw.length) {
-      if (tIdx < tokens.length && rawIdx === tokens[tIdx].start) {
-        rawIdx = tokens[tIdx].end
-        tIdx++
-        continue
-      }
-      if (rIdx === renderedIndex) {
-        return rawIdx
-      }
-      rIdx++
-      rawIdx++
-    }
-    return raw.length
-  }
+  // MarkdownSyntax.renderedToRawIndex() and this wrapper were removed: the
+  // live path is viewerToRawIndex() below, which relies on the focus-aware
+  // viewerTokens() list. The dead helper only knew the syntax-hidden mapping.
 
   // Maps a raw editor position to the position in renderedViewer's plain text.
   // Unfocused blocks hide markdown markers and matched inline tags, so raw
   // search offsets must be shifted by the hidden characters before they can be
   // drawn against the rendered layout.
   function rawToRenderedIndex(raw, rawIndex) {
+    return MarkdownSyntax.rawToRenderedIndex(raw, rawIndex, linkDefinitions, footnoteDefinitions)
+  }
+
+  // Cached token list. caret/selection/highlight painting asks for these
+  // several times per move; recomputing scanned the whole block every time.
+  property var viewerTokensCache: null
+
+  // Positions inside renderedViewer's plain text. MarkdownSyntax supplies the
+  // unfocused (syntax-hidden) mapping. While focused, raw text is shown
+  // verbatim except that emoji shortcodes also emit their glyph, so model the
+  // glyph as a zero-width raw token with content. Our style markers are hidden
+  // in both modes and are added to either mapping.
+  function viewerTokens(raw) {
+    const focused = !!(editor && editor.activeFocus)
+    const cache = root.viewerTokensCache
+    if (cache && cache.raw === raw && cache.focused === focused
+        && cache.linkDefs === linkDefinitions
+        && cache.footnoteDefs === footnoteDefinitions) {
+      return cache.tokens
+    }
+
+    const tokens = []
+
+    if (focused) {
+      if (typeof EmojiDatabase !== "undefined" && EmojiDatabase) {
+        // MarkdownSyntax only renders the glyph for a shortcode that is its
+        // own token. A shortcode inside inline code, math, a link definition
+        // or an autolink stays literal, so adding a glyph token here would
+        // drift the caret. Use the same token collection as the renderer to
+        // skip shortcodes enclosed by a larger token.
+        // These kinds render their contents literally (or are invisible), so
+        // no glyph is emitted for a shortcode inside them. Other containers
+        // such as emphasis and link labels render recursively and do emit it.
+        const literalContainers = [
+          "code", "math", "definition", "footnoteDefinition", "autolink"
+        ]
+        const defs = MarkdownSyntax.mergedDefinitions(raw, linkDefinitions)
+        const syntaxTokens = MarkdownSyntax.collectTokens(raw, defs)
+        const emojiRe = /:([a-zA-Z0-9_+-]{1,40}):/g
+        let match
+        while ((match = emojiRe.exec(raw)) !== null) {
+          const emoji = EmojiDatabase.shortcodeToEmoji(match[1])
+          if (!emoji)
+            continue
+
+          const start = match.index
+          const end = start + match[0].length
+          let nested = false
+          for (let t = 0; t < syntaxTokens.length; ++t) {
+            const token = syntaxTokens[t]
+            if (literalContainers.indexOf(token.kind) >= 0
+                && token.start <= start && token.end >= end) {
+              nested = true
+              break
+            }
+          }
+          if (nested)
+            continue
+
+          const at = end
+          tokens.push({ start: at, end: at, contentLen: emoji.length })
+        }
+      }
+    } else {
+      const hidden = MarkdownSyntax.hiddenTokens(
+        raw, linkDefinitions, footnoteDefinitions)
+      for (let i = 0; i < hidden.length; ++i) {
+        tokens.push({ start: hidden[i].start, end: hidden[i].end,
+                      contentLen: hidden[i].contentLen })
+      }
+    }
+
+    const markers = root.styleMarkerRanges(raw)
+    for (let i = 0; i < markers.length; ++i) {
+      tokens.push({ start: markers[i].start, end: markers[i].end,
+                    contentLen: 0 })
+    }
+
+    tokens.sort(function(a, b) { return a.start - b.start })
+    root.viewerTokensCache = {
+      raw: raw,
+      focused: focused,
+      linkDefs: linkDefinitions,
+      footnoteDefs: footnoteDefinitions,
+      tokens: tokens
+    }
+    return tokens
+  }
+
+  function rawToViewerIndex(raw, rawIndex) {
     if (!raw || rawIndex <= 0)
       return 0
 
-    const tokens = findSyntaxTokens(raw, true)
-    let removed = 0
+    const tokens = root.viewerTokens(raw)
+    let delta = 0
 
     for (let i = 0; i < tokens.length; ++i) {
       const token = tokens[i]
-
-      if (rawIndex <= token.start)
+      // A zero-width token (focused emoji glyph) applies from its offset on;
+      // an ordinary token only starts shifting after its first character.
+      if (rawIndex <= token.start && token.end > token.start)
         break
-
       if (rawIndex < token.end) {
-        // A range boundary inside a hidden marker collapses to the start of
-        // the marker, which is the same visual position.
-        return token.start - removed
+        const within = rawIndex - token.start
+        return token.start - delta + Math.min(within, token.contentLen)
       }
-
-      removed += token.end - token.start
+      delta += (token.end - token.start) - token.contentLen
     }
 
-    return rawIndex - removed
+    return rawIndex - delta
+  }
+
+  function viewerToRawIndex(raw, viewerIndex) {
+    if (!raw || viewerIndex < 0)
+      return 0
+
+    const tokens = root.viewerTokens(raw)
+    let renderedPos = 0
+    let rawPos = 0
+    let index = 0
+
+    while (rawPos < raw.length) {
+      const token = tokens[index]
+      if (token && rawPos === token.start) {
+        const tokenViewEnd = renderedPos + token.contentLen
+        // A leading zero-width marker (the opening `**` of `**bold**`, a style
+        // sentinel, an invisible link definition, ...) has no rendered column.
+        // Rendered position 0 is the first *visible* character, so consume
+        // such markers and land past them, inside the format. Interior and
+        // trailing markers keep the <= behaviour below.
+        if (token.contentLen === 0 && renderedPos === 0
+            && viewerIndex === 0) {
+          rawPos = token.end
+          ++index
+          continue
+        }
+        // A token with content occupies rendered positions up to (but not
+        // including) its end: at that boundary the token has been consumed
+        // and the next raw character applies. Zero-width tokens have no such
+        // boundary, so they keep the <= behaviour and map their start.
+        if (viewerIndex < tokenViewEnd
+            || (token.contentLen === 0 && viewerIndex === tokenViewEnd))
+          return token.start + Math.max(0, viewerIndex - renderedPos)
+        renderedPos += token.contentLen
+        rawPos = token.end
+        ++index
+        continue
+      }
+      if (renderedPos === viewerIndex)
+        return rawPos
+      ++renderedPos
+      ++rawPos
+    }
+
+    return raw.length
   }
 
   function isFormatActive(type) {
@@ -694,10 +977,146 @@ Item {
     editor.notifySelection()
   }
 
+  // Replaces the typed ":<query>" range with the chosen glyph.
+  function insertEmoji(start, end, emoji) {
+    const raw = editor.text
+    const from = Math.max(0, Math.min(start, raw.length))
+    const to = Math.max(from, Math.min(end, raw.length))
+    const newText = raw.substring(0, from) + emoji + raw.substring(to)
+    commitEditorText(newText, from + emoji.length, from + emoji.length)
+    editor.forceActiveFocus()
+  }
+
+  // The toolbar's colour/size controls write validated inline style markers
+  // around the active selection. Wrapping in stored markdown keeps undo,
+  // saving and the existing renderer in charge; no parallel rich-text state
+  // has to be synced with the editor.
+  function applyColor(color) {
+    const match = /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.exec(
+      String(color || "").trim())
+    if (!match)
+      return
+    let value = match[0]
+    if (value.length === 4) {
+      value = "#" + value[1] + value[1] + value[2] + value[2] +
+              value[3] + value[3]
+    }
+    // Persist as 0xRRGGBB. A bare #000000 would be rewritten as an issue link
+    // by MarkdownSyntax before restoreStyleMarkers() sees the sentinel.
+    root.applyInlineStyle("color:0x" + value.substring(1))
+  }
+
+  function applyFontSize(size) {
+    const parsed = parseInt(size, 10)
+    if (isNaN(parsed) || parsed < 4 || parsed > 120)
+      return
+    root.applyInlineStyle("font-size:" + parsed + "px")
+  }
+
+  function applyInlineStyle(style) {
+    const raw = editor.text
+    const s = Math.min(editor.selectionStart, editor.selectionEnd)
+    const e = Math.max(editor.selectionStart, editor.selectionEnd)
+    if (s === e)
+      return
+
+    const open = root.openStyleToken(style)
+    if (open.length === 0)
+      return
+    const close = root.styleCloseToken
+    const sel = raw.substring(s, e)
+    const kind = root.styleKind(style)
+
+    // Selecting the same styled range again removes the marker (whole-span
+    // removal). Keep this ahead of pair replacement so an explicit toggle
+    // off still wins.
+    if (sel.length >= open.length + close.length &&
+        sel.substring(0, open.length) === open &&
+        sel.substring(sel.length - close.length) === close) {
+      const inner = sel.substring(open.length, sel.length - close.length)
+      commitEditorText(raw.substring(0, s) + inner + raw.substring(e),
+                       s, s + inner.length)
+      return
+    }
+
+    // Repeated colour/size edits must replace the existing pair instead of
+    // wrapping a new one around it. Colour and size spans nest legitimately,
+    // so the selection rarely lines up with a pair's exact boundaries: find
+    // the innermost same-kind pair whose content ENCLOSES the selection and
+    // rewrite that pair in place. Whole spans and sub-selections both match;
+    // other properties are left alone so real nesting still works.
+    const pairs = root.matchedStylePairs(root.styleTokens(raw))
+    let target = null
+    for (let i = 0; i < pairs.length; ++i) {
+      const pair = pairs[i]
+      if (root.styleKind(pair.open.style) !== kind)
+        continue
+      const contentContains = pair.open.end <= s && e <= pair.close.start
+      const wholeSpan = pair.open.start === s && pair.close.end === e
+      if (!contentContains && !wholeSpan)
+        continue
+      // A larger open offset is a deeper (more recently opened) pair.
+      if (!target || pair.open.end > target.open.end)
+        target = pair
+    }
+
+    if (target) {
+      const inner = raw.substring(target.open.end, target.close.start)
+      const spanStart = target.open.start
+      const spanEnd = target.close.end
+      const next = raw.substring(0, spanStart) + open + inner + close
+                   + raw.substring(spanEnd)
+      commitEditorText(next, spanStart,
+                       spanStart + open.length + inner.length + close.length)
+      return
+    }
+
+    commitEditorText(raw.substring(0, s) + open + sel + close + raw.substring(e),
+                     s, e + open.length + close.length)
+  }
+
   function toggleFormat(type) {
     const raw = editor.text
     const s = Math.min(editor.selectionStart, editor.selectionEnd)
     const e = Math.max(editor.selectionStart, editor.selectionEnd)
+
+    // Inline code and links use a small dedicated path because their markers
+    // are not symmetric and links need a caret position inside the URL.
+    if (type === "code" || type === "link") {
+      if (s === e)
+        return
+
+      const sel = raw.substring(s, e)
+      let replacement = sel
+      let newStart = s
+      let newEnd = e
+
+      if (type === "code") {
+        if (s >= 1 && e + 1 <= raw.length &&
+            raw.charAt(s - 1) === "`" && raw.charAt(e) === "`") {
+          newStart = s - 1
+          newEnd = e - 1
+        } else {
+          replacement = "`" + sel + "`"
+          newStart = s
+          newEnd = e + 2
+        }
+      } else {
+        const linkMatch = /^\[([^\]]+)\]\(([^)]*)\)$/.exec(sel)
+        if (linkMatch) {
+          replacement = linkMatch[1]
+          newEnd = s + replacement.length
+        } else {
+          replacement = "[" + sel + "](url)"
+          newStart = s + 1 + sel.length + 2
+          newEnd = newStart + 3
+        }
+      }
+
+      commitEditorText(raw.substring(0, s) + replacement + raw.substring(e),
+                       newStart, newEnd)
+      return
+    }
 
     const sel = raw.substring(s, e)
     let openTag = "", closeTag = ""
@@ -934,10 +1353,17 @@ Item {
   signal commandMenuDismissed()
   signal commandMenuAccepted()
   signal commandMenuNavigated(int direction)
+  signal emojiPickerRequested(string blockId, string query, int queryStart,
+                              int queryEnd, real xPosition, real yPosition,
+                              real cursorHeight)
+  signal emojiPickerDismissed()
+  signal emojiPickerAccepted()
+  signal emojiPickerNavigated(int direction)
   signal caretMoved(int position, real cursorGlobalY, real cursorHeight)
   signal selectionChanged(bool hasSelection, real xPosition, real yPosition, real cursorHeight)
 
   property bool commandMenuActive: false
+  property bool emojiPickerActive: false
 
   // Search highlight ranges for this block: [{ start, length, active }].
   property var searchHighlights: []
@@ -1031,14 +1457,16 @@ Item {
   }
 
   onAlignmentChanged: {
-    const oldCaretX = renderedViewer ? renderedViewer.positionToRectangle(0).x : 0
+    const oldCaretX = root.alignmentStartX >= 0
+                      ? root.alignmentStartX : root.lastCaretX
+    root.alignmentStartX = -1
     root.updateCaretGeometry()
     caretGeometryTimer.restart()
     selectionCanvas.requestPaint()
     root.notifySelection()
 
     if (renderedViewer) {
-      const newCaretX = renderedViewer.positionToRectangle(0).x
+      const newCaretX = root.caretLocalX()
       const deltaX = oldCaretX - newCaretX
       if (Math.abs(deltaX) > 1) {
         slideAnimation.stop()
@@ -1150,6 +1578,7 @@ Item {
           text: ">"
           color: Theme.textMuted
           font.pixelSize: root.fontPixelSize
+          font.family: root.contentFontFamily
           font.weight: root.fontBold ? Font.Bold : Font.Normal
           height: root.firstLineHeight
           verticalAlignment: Text.AlignVCenter
@@ -1158,13 +1587,33 @@ Item {
 
       Item {
         id: bulletGutter
-        width: (root.showBullet || root.showNumbered || root.showTodo) ? 24 : 0
+        width: (root.showBlockMarker
+                ? Math.max(24, markerText.implicitWidth + 8)
+                : ((root.showBullet || root.showNumbered || root.showTodo) ? 24 : 0))
+               + root.listIndent * 16
         visible: width > 0
         height: root.firstLineHeight
 
         Text {
-          visible: root.showBullet
+          id: markerText
+          visible: root.showBlockMarker
           anchors.left: parent.left
+          anchors.leftMargin: root.listIndent * 16
+          anchors.verticalCenter: parent.verticalCenter
+          text: root.blockMarker
+          color: Theme.textMuted
+          font.pixelSize: root.fontPixelSize
+          font.family: root.contentFontFamily
+          font.weight: root.fontBold ? Font.Bold : Font.Normal
+
+          horizontalAlignment: Text.AlignLeft
+          verticalAlignment: Text.AlignVCenter
+        }
+
+        Text {
+          visible: root.showBullet && !root.showBlockMarker
+          anchors.left: parent.left
+          anchors.leftMargin: root.listIndent * 16
           anchors.verticalCenter: parent.verticalCenter
 
           text: "•"
@@ -1176,8 +1625,9 @@ Item {
         }
 
         Text {
-          visible: root.showNumbered
+          visible: root.showNumbered && !root.showBlockMarker
           anchors.left: parent.left
+          anchors.leftMargin: root.listIndent * 16
           anchors.verticalCenter: parent.verticalCenter
 
           text: root.numberPrefix
@@ -1190,8 +1640,9 @@ Item {
 
         Item {
           id: todoGutterItem
-          visible: root.showTodo
+          visible: root.showTodo && !root.showBlockMarker
           anchors.left: parent.left
+          anchors.leftMargin: root.listIndent * 16
           anchors.verticalCenter: parent.verticalCenter
           width: 18
           height: 18
@@ -1244,6 +1695,7 @@ Item {
           text: ""
           horizontalAlignment: root.textAlignment
           font.pixelSize: root.fontPixelSize
+          font.family: root.contentFontFamily
           font.weight: root.fontBold ? Font.Bold : Font.Normal
         }
 
@@ -1384,6 +1836,7 @@ Item {
           horizontalAlignment: root.textAlignment
           color: (root.showTodo && root.isChecked) ? Theme.textMuted : Theme.text
           font.pixelSize: root.fontPixelSize
+          font.family: root.contentFontFamily
           font.weight: root.fontBold ? Font.Bold : Font.Normal
           readOnly: true
           selectByMouse: false
@@ -1399,6 +1852,20 @@ Item {
           z: 2
 
           onContentHeightChanged: root.updateCaretGeometry()
+
+          onLinkActivated: function(url) {
+            // While focused the user is editing the raw markdown; only the
+            // rendered (unfocused) view behaves like a browser link.
+            if (!url || url.length === 0)
+              return
+            if (url.indexOf("#fn-") === 0) {
+              if (root.editorApi && root.editorApi.focusFootnote)
+                root.editorApi.focusFootnote(url.substring(4))
+              return
+            }
+            if (!editor.activeFocus)
+              Qt.openUrlExternally(url)
+          }
         }
 
         // The caret belongs to the invisible TextArea, so draw our own at the
@@ -1510,6 +1977,29 @@ Item {
           }
 
           onPressed: function(mouse) {
+            // Resolve a rendered link before doing anything that changes
+            // focus. textMouseArea covers the viewer, so this is the only
+            // place that sees the click.
+            const viewerIndex = renderedViewer
+                ? renderedViewer.positionAt(mouse.x - renderedViewer.x,
+                                            mouse.y - renderedViewer.y)
+                : 0
+            const linkUrl = root.linkUrlAtViewerPosition(viewerIndex)
+
+            if (linkUrl.indexOf("#fn-") === 0) {
+              anchorPosition = -1
+              if (root.editorApi && root.editorApi.focusFootnote)
+                root.editorApi.focusFootnote(linkUrl.substring(4))
+              return
+            }
+            // External links are only active in the rendered view. While the
+            // block is being edited, clicks inside a link still place the caret.
+            if (linkUrl.length > 0 && !editor.activeFocus) {
+              anchorPosition = -1
+              Qt.openUrlExternally(linkUrl)
+              return
+            }
+
             editor.forceActiveFocus()
             editor.cursorVisible = true
 
@@ -1564,6 +2054,7 @@ Item {
           }
 
           font.pixelSize: root.fontPixelSize
+          font.family: root.contentFontFamily
           font.weight: root.fontBold ? Font.Bold : Font.Normal
 
           background: null
@@ -1637,17 +2128,65 @@ Item {
             } else if (root.commandMenuActive)
               root.commandMenuDismissed()
 
-            // paragraph -> bullet
-            if (root.blockType === 0 && text.startsWith("- ")) {
+            // Colon-triggered emoji picker. Like the slash-command menu it is
+            // a paragraph-only shortcut: headings, lists and quotes contain
+            // colons as ordinary text and must not open the picker.
+            // The query is the text between the last colon and the caret;
+            // whitespace or a second colon closes it.
+            const caret = Math.min(editor.cursorPosition, text.length)
+            const beforeCaret = text.substring(0, caret)
+            const colonIndex = beforeCaret.lastIndexOf(":")
+            const emojiQuery = colonIndex >= 0
+                ? beforeCaret.substring(colonIndex + 1) : ""
+            const colonAtWordStart = colonIndex === 0 ||
+                /\s/.test(beforeCaret.charAt(colonIndex - 1))
+            if (root.blockType === 0 && colonIndex >= 0 && colonAtWordStart &&
+                emojiQuery.length <= 32 && !/[\s:]/.test(emojiQuery)) {
+              const emojiRect = root.viewerCaretRect(caret)
+              const emojiPos = slideLayer.mapToItem(root,
+                  emojiRect.x, emojiRect.y)
+              root.emojiPickerRequested(root.blockId, emojiQuery,
+                                        colonIndex, caret,
+                                        emojiPos.x, emojiPos.y,
+                                        emojiRect.height)
+            } else if (root.emojiPickerActive) {
+              root.emojiPickerDismissed()
+            }
+
+            // paragraph -> setext heading (Title\n=== or Title\n---)
+            // Checked before the divider trigger so `Title\n---` becomes a
+            // level-2 heading instead of a horizontal rule.
+            const setextMatch = root.blockType === 0
+                ? /^(.+)\n(=+|-+)[ \t]*$/.exec(text) : null
+            if (setextMatch) {
+              root.transformingShortcut = true
+              const headingText = setextMatch[1]
+              const level = setextMatch[2].charAt(0) === "=" ? 1 : 2
+              root.model.changeBlockType(root.blockId, 1, level)
+              root.model.updateBlockText(root.blockId, headingText)
+              root.transformingShortcut = false
+              root.focusRequested(headingText.length)
+              return
+            }
+
+            // paragraph -> bullet (`- `, `* ` or `+ `), with 2-space nesting
+            const bulletMatch = root.blockType === 0
+                ? /^((?: {2})*)([-*+])\s/.exec(text) : null
+            if (bulletMatch) {
               root.transformingShortcut = true
 
-              const bulletText = text.substring(2)
+              const indentLevel = bulletMatch[1].length / 2
+              const bulletText = text.substring(bulletMatch[0].length)
 
               root.model.changeBlockType(
                 root.blockId,
                 2,
                 0
               )
+
+              const bulletMeta = Object.assign({}, root.blockMetadata || {})
+              bulletMeta.listIndent = indentLevel
+              root.model.setBlockMetadata(root.blockId, bulletMeta)
 
               root.model.updateBlockText(
                 root.blockId,
@@ -1719,12 +2258,16 @@ Item {
               return
             }
 
-            // paragraph -> code block (``` or ```language)
-            const codeFenceMatch = /^```([a-zA-Z0-9_+#.-]*)(?:\s|\n|$)/.exec(text)
-            if (root.blockType === 0 && codeFenceMatch && (text.endsWith(" ") || text.endsWith("\n") || text === "```")) {
+            // paragraph -> code block (``` or ~~~, with optional info string)
+            const codeFenceMatch = root.blockType === 0
+                ? /^(`{3,}|~{3,})([a-zA-Z0-9_+#.-]*)(?:\s|\n|$)/.exec(text)
+                : null
+            if (codeFenceMatch && (text.endsWith(" ") || text.endsWith("\n")
+                                   || text === codeFenceMatch[1])) {
               root.transformingShortcut = true
 
-              const lang = codeFenceMatch[1].trim()
+              const fence = codeFenceMatch[1]
+              const lang = codeFenceMatch[2].trim()
               const remaining = text.substring(codeFenceMatch[0].length)
 
               root.model.changeBlockType(
@@ -1732,6 +2275,10 @@ Item {
                 6, // BlockType::Code
                 0
               )
+
+              const codeMeta = Object.assign({}, root.blockMetadata || {})
+              codeMeta.codeFence = fence
+              root.model.setBlockMetadata(root.blockId, codeMeta)
 
               if (root.model.setBlockCodeLanguage && lang.length > 0) {
                 root.model.setBlockCodeLanguage(root.blockId, lang)
@@ -1772,8 +2319,8 @@ Item {
               return
             }
 
-            // paragraph -> divider (--- or ***)
-            if (root.blockType === 0 && (text === "---" || text === "***")) {
+            // paragraph -> divider (---, *** or ___)
+            if (root.blockType === 0 && (text === "---" || text === "***" || text === "___")) {
               root.transformingShortcut = true
 
               root.model.updateBlockText(root.blockId, "")
@@ -1797,13 +2344,17 @@ Item {
               return
             }
 
-            // paragraph -> todo list ([] or [ ])
-            const todoMatch = /^\[ ?\]\s/.exec(text)
-            if (root.blockType === 0 && todoMatch) {
+            // paragraph -> todo list ([], [ ], - [ ], - [x])
+            const todoMatch = root.blockType === 0
+                ? /^((?: {2})*)(?:-\s+\[([ xX])\]|\[ ?\])\s/.exec(text) : null
+            if (todoMatch) {
               root.transformingShortcut = true
 
               const prefixLen = todoMatch[0].length
               const todoText = text.substring(prefixLen)
+              const indentLevel = todoMatch[1].length / 2
+              const checked = !!todoMatch[2]
+                              && todoMatch[2].toLowerCase() === "x"
 
               root.model.changeBlockType(
                 root.blockId,
@@ -1811,10 +2362,17 @@ Item {
                 0
               )
 
+              const todoMeta = Object.assign({}, root.blockMetadata || {})
+              todoMeta.listIndent = indentLevel
+              root.model.setBlockMetadata(root.blockId, todoMeta)
+
               root.model.updateBlockText(
                 root.blockId,
                 todoText
               )
+
+              if (checked && root.model.setBlockChecked)
+                root.model.setBlockChecked(root.blockId, true)
 
               root.transformingShortcut = false
 
@@ -1822,19 +2380,27 @@ Item {
               return
             }
 
-            // paragraph -> numbered list
-            const numberedMatch = /^(\d+)\.\s/.exec(text)
-            if (root.blockType === 0 && numberedMatch) {
+            // paragraph -> numbered list (1. or 1), with preserved start)
+            const numberedMatch = root.blockType === 0
+                ? /^((?: {2})*)(\d+)[.)]\s/.exec(text) : null
+            if (numberedMatch) {
               root.transformingShortcut = true
 
               const prefixLen = numberedMatch[0].length
               const numberedText = text.substring(prefixLen)
+              const indentLevel = numberedMatch[1].length / 2
+              const start = parseInt(numberedMatch[2], 10)
 
               root.model.changeBlockType(
                 root.blockId,
                 3,
                 0
               )
+
+              const listMeta = Object.assign({}, root.blockMetadata || {})
+              listMeta.listStart = start
+              listMeta.listIndent = indentLevel
+              root.model.setBlockMetadata(root.blockId, listMeta)
 
               root.model.updateBlockText(
                 root.blockId,
@@ -1844,6 +2410,19 @@ Item {
               root.transformingShortcut = false
 
               root.focusRequested(numberedText.length)
+              return
+            }
+
+            // paragraph -> indented code block (four leading spaces that are
+            // not a nested list marker)
+            if (root.blockType === 0 &&
+                /^ {4}(?![ \t]*[-*+]\s|(?:\d+[.)]\s)|\[)/.test(text)) {
+              root.transformingShortcut = true
+              const codeText = text.substring(4)
+              root.model.changeBlockType(root.blockId, 6, 0)
+              root.model.updateBlockText(root.blockId, codeText)
+              root.transformingShortcut = false
+              root.focusRequested(0)
               return
             }
 
@@ -1902,6 +2481,25 @@ Item {
                 return
               }
             }
+            if (root.emojiPickerActive) {
+              if (event.key === Qt.Key_Escape) {
+                event.accepted = true
+                root.emojiPickerDismissed()
+                return
+              }
+              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                event.accepted = true
+                root.emojiPickerAccepted()
+                return
+              }
+              if (event.key === Qt.Key_Up || event.key === Qt.Key_Down ||
+                  event.key === Qt.Key_Left || event.key === Qt.Key_Right) {
+                event.accepted = true
+                root.emojiPickerNavigated(
+                  (event.key === Qt.Key_Up || event.key === Qt.Key_Left) ? -1 : 1)
+                return
+              }
+            }
             // Global-search navigation keeps focus in the document, so the
             // block itself has to own the match navigation keys.
             if (root.searchNavigationActive) {
@@ -1942,6 +2540,16 @@ Item {
               if ((event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_X) {
                 event.accepted = true
                 root.toggleFormat("strike")
+                return
+              }
+              if (event.key === Qt.Key_E) {
+                event.accepted = true
+                root.toggleFormat("code")
+                return
+              }
+              if (event.key === Qt.Key_K) {
+                event.accepted = true
+                root.toggleFormat("link")
                 return
               }
               if (event.key === Qt.Key_Comma) {
@@ -2002,8 +2610,19 @@ Item {
             // application shortcut handle it instead of moving focus.
             if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down)
                 && !(event.modifiers & Qt.AltModifier)) {
+              const movingUp = event.key === Qt.Key_Up
+
+              // Let TextArea handle vertical caret motion inside a wrapped
+              // block, and let it extend an active selection normally.
+              if (editor.selectionStart !== editor.selectionEnd)
+                return
+
+              if (movingUp ? !root.isCursorOnFirstVisualLine()
+                           : !root.isCursorOnLastVisualLine())
+                return
+
               const cursorRect = root.viewerCaretRect(editor.cursorPosition)
-              const direction = event.key === Qt.Key_Up ? -1 : 1
+              const direction = movingUp ? -1 : 1
 
               event.accepted = true
               root.moveFocusRequested(direction, cursorRect.x)

@@ -174,9 +174,10 @@ ApplicationWindow {
       documentList.refresh()
 
       // Remember the exact document so session restore does not have to guess
-      // from modification times (and can find files inside subfolders).
-      if (path.length > 0)
-        Preferences.lastDocumentPath = path
+      // from modification times (and can find files inside subfolders). Clear
+      // it on close too, otherwise "restore last session" reopens a document
+      // the user intentionally closed.
+      Preferences.lastDocumentPath = path
     }
 
     function onDocumentLoaded() {
@@ -278,6 +279,7 @@ ApplicationWindow {
 
     documentModel: blockModel
     documentList: documentList
+    modalOpen: window.modalOpen
 
     anchors {
       top: parent.top
@@ -342,8 +344,9 @@ ApplicationWindow {
       id: editor
       anchors.fill: parent
       contentWidth: workspace.contentWidth
-      bottomReservedSpace: promptPanel.height
+      bottomReservedSpace: promptPanelLoader.item ? promptPanelLoader.item.height : 0
       model: blockModel
+      modalOpen: window.modalOpen
       visible: window.hasDocument
 
       // Full-window surfaces sit above the editor; wheel events must not move
@@ -387,13 +390,57 @@ ApplicationWindow {
       }
     }
 
-    PromptPanel {
-      id: promptPanel
+    Loader {
+      id: promptPanelLoader
       z: 1
-      visible: window.hasDocument
+      visible: window.hasDocument && status === Loader.Ready
       anchors {
         horizontalCenter: parent.horizontalCenter
         bottom: parent.bottom
+      }
+
+      // Changing the URL forces a fresh component instance without ever
+      // assigning to `source`, so the binding below stays intact. Only the
+      // prompt-panel being enabled or disabled bumps it; unrelated plugin
+      // state changes must not throw away typed text, and a prompt-panel
+      // setting edit updates the panel directly via its own Connections block.
+      property int reloadNonce: 0
+
+      source: {
+        let component = ""
+        if (typeof pluginManager !== "undefined" && pluginManager) {
+          const decs = pluginManager.decorationsForSlot("prompt-panel")
+          if (decs && decs.length > 0 && decs[0].component)
+            component = String(decs[0].component)
+        }
+        if (component.length === 0)
+          return ""
+        const separator = component.indexOf("?") >= 0 ? "&" : "?"
+        return component + separator + "tnReload=" + reloadNonce
+      }
+
+      Connections {
+        target: typeof pluginManager !== "undefined" ? pluginManager : null
+
+        // Recreate the panel only when the prompt-panel itself comes or goes
+        // online. Listening to the generic stateRevision signal rebuilt it on
+        // every unrelated plugin enable/disable and discarded typed text.
+        // settingsRevision is deliberately ignored: the panel's own setting
+        // handler updates its state in place.
+        // PluginManager emits these signals BEFORE rebuildActiveState(), so
+        // decorationsForSlot("prompt-panel") is still stale when the signal
+        // arrives. Defer the bump to the next event-loop turn so the `source`
+        // binding above reads fresh decorations. The id filter and the
+        // nonce-in-URL approach are intentionally unchanged.
+        function onPluginEnabled(id) {
+          if (id === "prompt-panel")
+            Qt.callLater(function() { ++promptPanelLoader.reloadNonce })
+        }
+
+        function onPluginDisabled(id) {
+          if (id === "prompt-panel")
+            Qt.callLater(function() { ++promptPanelLoader.reloadNonce })
+        }
       }
     }
 
@@ -485,6 +532,11 @@ ApplicationWindow {
     editor: editor
     resultsModel: searchResults
     searchIndex: searchIndex
+
+    // While a modal is on top, Escape belongs to that modal; the search panel
+    // keeps its own focus and result state until the modal is dismissed.
+    modalActive: saveConfirmationModal.visible || settingsWindow.visible
+                 || shortcutsSheet.visible
 
     // Documents opened from search share the same unsaved-edits policy as
     // the explorer and window close.
@@ -715,6 +767,14 @@ ApplicationWindow {
     property string errorText: ""
     // Callback run after Save or Don't Save; cleared on cancel/dismiss.
     property var resolveAction: null
+
+    // Dismissing the prompt must also unfreeze global search results: the
+    // action passed to confirmUnsavedChanges() is deliberately not invoked on
+    // Cancel, so SearchWindow cannot clear its own guard in that path.
+    onVisibleChanged: {
+      if (!visible && searchWindow)
+        searchWindow.freezeResults = false
+    }
 
     ModalFocusGuard { id: saveFocusGuard }
 

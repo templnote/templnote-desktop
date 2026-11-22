@@ -15,6 +15,30 @@ Rectangle {
   readonly property int bottomPadding: 8
   readonly property int pickerHeight: 132
 
+  // The 17 commands are created once. rebuild() only rewrites the ListModel
+  // when the set of matching commands actually changes, so typing a character
+  // that leaves the same matches visible causes no model churn.
+  readonly property var allCommands: [
+    {label: "Paragraph", detail: "Plain text", shortcut: "Text", type: 0, level: 0},
+    {label: "Large header", detail: "Heading 1", shortcut: "# Space", type: 1, level: 1},
+    {label: "Medium header", detail: "Heading 2", shortcut: "## Space", type: 1, level: 2},
+    {label: "Small header", detail: "Heading 3", shortcut: "### Space", type: 1, level: 3},
+    {label: "Tiny header", detail: "Heading 4", shortcut: "#### Space", type: 1, level: 4},
+    {label: "Minor header", detail: "Heading 5", shortcut: "##### Space", type: 1, level: 5},
+    {label: "Micro header", detail: "Heading 6", shortcut: "###### Space", type: 1, level: 6},
+    {label: "Bulleted list", detail: "Unordered list", shortcut: "- Space", type: 2, level: 0},
+    {label: "Numbered list", detail: "Ordered list", shortcut: "1. Space", type: 3, level: 0},
+    {label: "To-do list", detail: "Checklist", shortcut: "[] Space", type: 4, level: 0},
+    {label: "Quote", detail: "Capture a quote", shortcut: "> Space", type: 5, level: 0},
+    {label: "Code block", detail: "Code with syntax highlighting", shortcut: "``` Space", type: 6, level: 0},
+    {label: "Divider", detail: "Visual divider line", shortcut: "---", type: 7, level: 0},
+    {label: "Image", detail: "Upload or embed with a link", shortcut: "/image", type: 8, level: 0},
+    {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0},
+    {label: "Table", detail: "Add a flexible table", shortcut: "/table", type: 11, level: 0},
+    {label: "Columns", detail: "Side-by-side columns", shortcut: "Layout", type: 12, level: 0}
+  ]
+  property string lastMatchKey: ""
+
   // 0 = formatting list, 1 = column count stepper. Column layouts are only
   // created here; there is deliberately no markdown/typed trigger.
   property int mode: 0
@@ -88,32 +112,27 @@ Rectangle {
   }
 
   function rebuild() {
-    filtered.clear()
     const q = root.query.toLowerCase()
-    const commands = [
-      {label: "Paragraph", detail: "Plain text", shortcut: "Text", type: 0, level: 0},
-      {label: "Large header", detail: "Heading 1", shortcut: "# Space", type: 1, level: 1},
-      {label: "Medium header", detail: "Heading 2", shortcut: "## Space", type: 1, level: 2},
-      {label: "Small header", detail: "Heading 3", shortcut: "### Space", type: 1, level: 3},
-      {label: "Bulleted list", detail: "Unordered list", shortcut: "- Space", type: 2, level: 0},
-      {label: "Numbered list", detail: "Ordered list", shortcut: "1. Space", type: 3, level: 0},
-      {label: "To-do list", detail: "Checklist", shortcut: "[] Space", type: 4, level: 0},
-      {label: "Quote", detail: "Capture a quote", shortcut: "> Space", type: 5, level: 0},
-      {label: "Code block", detail: "Code with syntax highlighting", shortcut: "``` Space", type: 6, level: 0},
-      {label: "Divider", detail: "Visual divider line", shortcut: "---", type: 7, level: 0},
-      {label: "Image", detail: "Upload or embed with a link", shortcut: "/image", type: 8, level: 0},
-      {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0},
-      {label: "Table", detail: "Add a flexible table", shortcut: "/table", type: 11, level: 0},
-      {label: "Columns", detail: "Side-by-side columns", shortcut: "Layout", type: 12, level: 0}
-    ]
-    for (let i = 0; i < commands.length; ++i) {
-      const command = commands[i]
+    const matches = []
+
+    for (let i = 0; i < root.allCommands.length; ++i) {
+      const command = root.allCommands[i]
       if (q.length === 0 || command.label.toLowerCase().indexOf(q) >= 0 ||
           command.detail.toLowerCase().indexOf(q) >= 0)
-        filtered.append(command)
+        matches.push(i)
     }
-    // Height is a binding on mode/filtered.count; assigning it here used to
-    // leave the picker at the one-row list height and overlap its controls.
+
+    // Skip the model rewrite when the query still matches the same commands.
+    // Height is a binding on mode/filtered.count, so no manual assignment is
+    // needed (assigning it here used to overlap the picker's controls).
+    const key = matches.join(",")
+    if (key === root.lastMatchKey)
+      return
+    root.lastMatchKey = key
+
+    filtered.clear()
+    for (let m = 0; m < matches.length; ++m)
+      filtered.append(root.allCommands[matches[m]])
   }
 
   function selectFirst() {

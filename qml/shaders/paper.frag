@@ -120,5 +120,12 @@ void main() {
     float edgeShadow = mix(1.0 - ubuf.vignetteIntensity, 1.0, vignette);
     col *= edgeShadow;
 
+    // 4. Dither before the 8-bit framebuffer quantisation. A wide, low-contrast
+    // gradient otherwise lands on only a handful of colour levels and shows
+    // hard bands; a sub-LSB per-pixel jitter turns those steps into a smooth
+    // ramp. It is applied to every mode so solid and wallpaper substrates stay
+    // free of banding too.
+    col = clamp(col + (hash(gl_FragCoord.xy) - 0.5) / 255.0, 0.0, 1.0);
+
     fragColor = vec4(col, ubuf.paperColor.a * alpha) * ubuf.qt_Opacity;
 }

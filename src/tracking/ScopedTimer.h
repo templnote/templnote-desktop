@@ -14,6 +14,11 @@ public:
                          std::function<void(double elapsedMs)> onFinish = nullptr);
     ~ScopedTimer();
 
+    // A copy would run two destructors over one timer and log twice (and the
+    // copy would report the original's captured duration).
+    ScopedTimer(const ScopedTimer &) = delete;
+    ScopedTimer &operator=(const ScopedTimer &) = delete;
+
     // Stops the timer early and returns elapsed milliseconds
     double elapsedMs();
 
@@ -22,6 +27,8 @@ private:
     QElapsedTimer m_timer;
     std::function<void(double elapsedMs)> m_onFinish;
     bool m_finished = false;
+    // Duration captured on completion; returned by every elapsedMs() call.
+    double m_elapsedMs = 0.0;
 };
 
 // Benchmark helper for tracking operation execution duration

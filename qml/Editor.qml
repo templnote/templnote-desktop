@@ -7,10 +7,180 @@ Item {
 
   required property var model
 
+  // Bound by the host window: suppresses mutating shortcuts while a modal
+  // surface (settings, search, confirmations) covers the editor.
+  property bool modalOpen: false
+
+  // Context property provided by the C++ plugin manager (guarded with typeof
+  // so the editor also loads in test harnesses that do not install it).
+  readonly property var plugins: typeof pluginManager !== "undefined"
+                                 ? pluginManager : null
+
+  // True only while the single paper-background plugin is enabled. The
+  // revisions are read unconditionally so toggling it from Settings refreshes
+  // this binding even when the manager was unavailable at first evaluation.
+  readonly property bool paperEnabled: {
+    const manager = root.plugins
+    const revision = manager
+        ? manager.stateRevision + manager.settingsRevision : 0
+    return !!(manager && manager.isEnabled("paper-background"))
+  }
+
+  // Document-scoped reference link definitions. Reference-style links can be
+  // defined in any block, so the editor collects them from the whole model.
+  property var linkDefinitions: ({})
+  property var footnoteDefinitions: ({})
+  property var footnoteEntries: []
+
+  // A rebuild produces brand-new objects every time. Without a value-aware
+  // comparison, assigning them on every content change notifies every binding
+  // and re-renders every TextBlock, even though ordinary prose cannot change
+  // any definition. Compare first and assign only real changes.
+  function shallowEqual(a, b) {
+    if (a === b)
+      return true
+    if (!a || !b || typeof a !== "object" || typeof b !== "object")
+      return false
+    const ak = Object.keys(a)
+    const bk = Object.keys(b)
+    if (ak.length !== bk.length)
+      return false
+    for (let i = 0; i < ak.length; ++i) {
+      if (a[ak[i]] !== b[ak[i]])
+        return false
+    }
+    return true
+  }
+
+  function sameValueMap(a, b) {
+    if (a === b)
+      return true
+    if (!a || !b)
+      return false
+    const ak = Object.keys(a)
+    const bk = Object.keys(b)
+    if (ak.length !== bk.length)
+      return false
+    for (let i = 0; i < ak.length; ++i) {
+      const key = ak[i]
+      if (!Object.prototype.hasOwnProperty.call(b, key)
+          || !root.shallowEqual(a[key], b[key]))
+        return false
+    }
+    return true
+  }
+
+  function sameEntries(a, b) {
+    if (a === b)
+      return true
+    if (!a || !b || a.length !== b.length)
+      return false
+    for (let i = 0; i < a.length; ++i) {
+      if (!root.shallowEqual(a[i], b[i]))
+        return false
+    }
+    return true
+  }
+
+  function rebuildLinkDefinitions() {
+    if (!model)
+      return
+
+    // Labels come straight from user-authored markdown and are used as keys.
+    // Null-prototype maps keep labels like "__proto__" / "constructor" from
+    // mutating the map's prototype or tripping truthiness checks below.
+    const definitions = Object.create(null)
+    const footnotes = Object.create(null)
+    const entries = []
+    let nextIndex = 1
+
+    for (let row = 0; row < model.rowCount(); ++row) {
+      const text = model.data(model.index(row, 0), Qt.DisplayRole) || ""
+
+      const found = MarkdownSyntax.definitionsFrom(text)
+      for (const key in found)
+        definitions[key] = found[key]
+
+      const notes = MarkdownSyntax.footnotesFrom(text)
+      for (const label in notes) {
+        if (footnotes[label])
+          continue
+        const note = {
+          label: label,
+          text: notes[label].text,
+          index: nextIndex++
+        }
+        footnotes[label] = note
+        entries.push(note)
+      }
+    }
+
+    if (!root.sameValueMap(root.linkDefinitions, definitions))
+      root.linkDefinitions = definitions
+    if (!root.sameValueMap(root.footnoteDefinitions, footnotes))
+      root.footnoteDefinitions = footnotes
+    if (!root.sameEntries(root.footnoteEntries, entries))
+      root.footnoteEntries = entries
+  }
+
+  // Definitions can change on every keystroke. The document-wide scan is
+  // relatively expensive, so coalesce content edits into one pass per burst.
+  // Document loads/replacements call rebuildLinkDefinitions() directly.
+  Timer {
+    id: linkDefinitionsTimer
+    interval: 200
+    repeat: false
+    onTriggered: root.rebuildLinkDefinitions()
+  }
+
+  function focusFootnote(label) {
+    const item = documentView.footerItem && documentView.footerItem.footnoteFor
+                 ? documentView.footerItem.footnoteFor(label)
+                 : null
+    if (!item)
+      return
+    // mapToItem(documentView, ...) is viewport-relative, while contentY is a
+    // content-space coordinate. Fold in the current scroll offset (the same
+    // way ensureCursorVisible does), otherwise the target drifts when scrolled.
+    const y = item.mapToItem(documentView, 0, 0).y
+    documentView.contentY = documentView.clampY(
+      documentView.contentY + y - documentView.height * 0.3)
+  }
+
+  // The picker's search field owns focus while it is open. On dismissal, put
+  // focus and the caret back where the user was typing. Prefer the original
+  // delegate's renderer directly (synchronous, so tests see it immediately),
+  // and fall back to the id-based intent if the delegate was recycled meanwhile.
+  function restoreEmojiPickerFocus() {
+    const delegate = root.emojiOriginDelegate
+    const position = root.emojiOriginPosition
+    const blockId = root.emojiOriginBlockId
+
+    root.emojiOriginDelegate = null
+    root.emojiOriginBlockId = ""
+    root.emojiOriginPosition = 0
+
+    if (delegate && delegate.rendererItem
+        && delegate.blockId === blockId) {
+      delegate.rendererItem.focusEditor(position)
+    } else if (blockId.length > 0) {
+      root.requestFocusBlock(blockId, position)
+    }
+  }
+
+  Component.onCompleted: root.rebuildLinkDefinitions()
+
   // for a centrally content
   property real contentWidth: 800
   property real bottomReservedSpace: 0
   property var activeCommandDelegate: null
+  property var activeEmojiDelegate: null
+  // Where the emoji picker was opened from. The picker takes focus into its
+  // search field, so dismissing it has to hand focus (and the caret) back to
+  // the block that triggered it.
+  property string emojiOriginBlockId: ""
+  property int emojiOriginPosition: 0
+  property var emojiOriginDelegate: null
   property bool commandMenuAbove: false
   property real commandMenuAnchorY: 0
   property real commandMenuGap: 2
@@ -259,8 +429,12 @@ Item {
   }
 
   function caretContext() {
+    // LocalSearchService reports source-model rows, so the caret must use the
+    // same coordinate space. Column children collapse to their parent's
+    // visible row, which made caret-relative match selection pick the wrong
+    // occurrence in documents with columns.
     const row = root.caretBlockId.length > 0
-                ? root.model.visibleRowOf(root.caretBlockId)
+                ? root.model.sourceRowOfBlock(root.caretBlockId)
                 : -1
 
     if (row < 0)
@@ -732,6 +906,9 @@ Item {
                                : root.resolveBlockDropIntoColumn(globalX, globalY)
   }
 
+  // `row` must be a visible row of documentView. Callers holding a delegate
+  // from a column pane must pass its block id and use requestFocusBlock()
+  // instead: delegateRoot.index is local to that pane's ListView.
   function focusDelegateAt(row, position) {
     if (row < 0 || row >= root.model.visibleCount())
       return
@@ -768,10 +945,48 @@ Item {
     }
   }
 
+  // Shared wheel scrolling for the document's WheelHandler and the emoji
+  // picker's click-away overlay. The overlay sits above documentView and would
+  // otherwise swallow wheel events while the picker is open.
+  function scrollDocumentFromWheel(pixelDelta, angleDelta, modifiers) {
+    // Shift+wheel is reserved for horizontal scrolling inside table blocks.
+    if (modifiers & Qt.ShiftModifier)
+      return false
+    if (!root.scrollingEnabled || root.activeCommandDelegate !== null
+        || root.isDraggingBlock || selectionToolbar.showToolbar)
+      return false
+
+    let velocity
+    if (pixelDelta.y !== 0) {
+      // Trackpad: fixed px/s conversion (Qt's flick velocity is positive
+      // when scrolling up), symmetric for both directions.
+      velocity = pixelDelta.y / documentView.wheelFrameSeconds
+    } else {
+      // Mouse: each notch glides wheelScrollPx under Flickable's deceleration.
+      const notches = -(angleDelta.y / 120.0)
+      velocity = -Math.sign(notches) * Math.sqrt(
+        2 * documentView.flickDeceleration * documentView.wheelScrollPx
+        * Math.abs(notches))
+    }
+
+    velocity = Math.max(-documentView.maximumFlickVelocity,
+                        Math.min(documentView.maximumFlickVelocity, velocity))
+    documentView.flick(0, velocity)
+    return true
+  }
+
   Connections {
     target: root.model
 
+    function onContentRevisionChanged() {
+      linkDefinitionsTimer.restart()
+    }
+
     function onDocumentCreated() {
+      // A new document replaces every block, so rebuild immediately instead
+      // of waiting for the debounce and then scanning a stale model.
+      linkDefinitionsTimer.stop()
+      root.rebuildLinkDefinitions()
       // The model has finished its reset and save; wait for ListView to
       // materialize the first delegate, then place the caret at its start.
       Qt.callLater(function() {
@@ -780,20 +995,45 @@ Item {
     }
 
     function onDocumentLoaded() {
+      linkDefinitionsTimer.stop()
+      root.rebuildLinkDefinitions()
       Qt.callLater(function() {
         root.focusFirstBlock()
       })
     }
   }
 
-  function restoreFocusAfterHistory(blockId, oldRow, undo, cursorPosition) {
+  // oldSourceRow is a row of the source model, never a delegate's ListView
+  // index: a column child's local index identifies an unrelated top-level
+  // block once converted through blockIdAtVisibleRow().
+  function restoreFocusAfterHistory(blockId, oldSourceRow, undo, cursorPosition) {
     let row = root.model.visibleRowOf(blockId)
 
     // The undo/redo may have removed the focused block (for example when
-    // undoing a split). Move to the nearest surviving block in that case.
+    // undoing a split). Walk the source rows around it for the nearest
+    // surviving id, then translate that id to a visible row.
     if (row < 0) {
-      const fallback = undo ? oldRow - 1 : oldRow
-      row = Math.max(0, Math.min(fallback, root.model.visibleCount() - 1))
+      const count = root.model.count
+      let sourceRow = Math.max(0, Math.min(
+        undo ? oldSourceRow - 1 : oldSourceRow, count - 1))
+      let fallbackId = ""
+
+      for (let r = sourceRow; r >= 0 && fallbackId.length === 0; --r) {
+        const id = root.model.blockIdAt(r)
+        if (id.length > 0 && root.model.visibleRowOf(id) >= 0)
+          fallbackId = id
+      }
+      for (let r = sourceRow + 1;
+           fallbackId.length === 0 && r < count; ++r) {
+        const id = root.model.blockIdAt(r)
+        if (id.length > 0 && root.model.visibleRowOf(id) >= 0)
+          fallbackId = id
+      }
+
+      if (fallbackId.length === 0)
+        return
+
+      row = root.model.visibleRowOf(fallbackId)
     }
 
     if (row < 0)
@@ -807,21 +1047,23 @@ Item {
     }
   }
 
-  function undoFrom(blockId, row) {
+  function undoFrom(blockId) {
+    const sourceRow = root.model.sourceRowOfBlock(blockId)
     root.model.undo()
 
     const targetId = root.model.lastHistoryBlockId()
     restoreFocusAfterHistory(targetId.length > 0 ? targetId : blockId,
-                             row, true,
+                             sourceRow, true,
                              root.model.lastHistoryCursorPosition())
   }
 
-  function redoFrom(blockId, row) {
+  function redoFrom(blockId) {
+    const sourceRow = root.model.sourceRowOfBlock(blockId)
     root.model.redo()
 
     const targetId = root.model.lastHistoryBlockId()
     restoreFocusAfterHistory(targetId.length > 0 ? targetId : blockId,
-                             row, false,
+                             sourceRow, false,
                              root.model.lastHistoryCursorPosition())
   }
 
@@ -837,8 +1079,8 @@ Item {
     const targetId = root.model.lastHistoryBlockId()
 
     if (targetId.length > 0)
-      restoreFocusAfterHistory(targetId, 0, true,
-                               root.model.lastHistoryCursorPosition())
+      restoreFocusAfterHistory(targetId, root.model.sourceRowOfBlock(targetId),
+                               true, root.model.lastHistoryCursorPosition())
   }
 
   function redo() {
@@ -850,8 +1092,8 @@ Item {
     const targetId = root.model.lastHistoryBlockId()
 
     if (targetId.length > 0)
-      restoreFocusAfterHistory(targetId, 0, false,
-                               root.model.lastHistoryCursorPosition())
+      restoreFocusAfterHistory(targetId, root.model.sourceRowOfBlock(targetId),
+                               false, root.model.lastHistoryCursorPosition())
   }
 
   // Alt+Up / Alt+Down move the focused block, mirroring drag reordering from
@@ -882,7 +1124,27 @@ Item {
     if (target === row)
       return
 
-    const position = root.caretPosition
+    let position = root.caretPosition
+
+    // caretPosition is a raw editor offset. Code and callout blocks keep their
+    // body after a fence / `> [!TYPE]` header, and their focusEditor() expects
+    // a body-relative position. Convert here so moving the block does not add
+    // the header offset a second time. For a block inside a column the visible
+    // delegate is the ColumnsBlock, so ask it to resolve the concrete child
+    // renderer by block id.
+    const delegate = documentView.itemAtIndex(row)
+    if (delegate) {
+      if (delegate.blockId === root.caretBlockId) {
+        if (delegate.rendererItem
+            && typeof delegate.rendererItem.rawToBodyPosition === "function")
+          position = delegate.rendererItem.rawToBodyPosition(position)
+      } else if (delegate.rendererItem
+                 && typeof delegate.rendererItem.rawToBodyPositionForBlock
+                    === "function") {
+        position = delegate.rendererItem.rawToBodyPositionForBlock(
+          root.caretBlockId, position)
+      }
+    }
 
     // The view's move transitions are enabled only for this short window so
     // drag-and-drop keeps its existing behaviour.
@@ -899,14 +1161,14 @@ Item {
   Shortcut {
     sequence: "Alt+Up"
     context: Qt.ApplicationShortcut
-    enabled: !root.isDraggingBlock && !root.keyboardMoveAnimating
+    enabled: !root.modalOpen && !root.isDraggingBlock && !root.keyboardMoveAnimating
     onActivated: root.moveFocusedBlock(-1)
   }
 
   Shortcut {
     sequence: "Alt+Down"
     context: Qt.ApplicationShortcut
-    enabled: !root.isDraggingBlock && !root.keyboardMoveAnimating
+    enabled: !root.modalOpen && !root.isDraggingBlock && !root.keyboardMoveAnimating
     onActivated: root.moveFocusedBlock(1)
   }
 
@@ -919,7 +1181,25 @@ Item {
   PaperSheet {
     id: paperCanvas
 
-    readonly property bool fullWorkspace: Preferences.paperOverWorkspace
+    // With the paper plugin off there must be no separate editor substrate at
+    // all — the plain Theme.background rectangle above is the only backdrop.
+    visible: root.paperEnabled
+
+    readonly property bool fullWorkspace: {
+      const manager = root.plugins
+      // isEnabled()/pluginSetting() are methods with no NOTIFY. Read the
+      // revisions unconditionally (before the guard) so this binding depends
+      // on them even while the plugin is disabled; otherwise re-enabling it
+      // would leave the cached value stale.
+      const revision = manager
+          ? manager.stateRevision + manager.settingsRevision : 0
+      if (manager && manager.isEnabled("paper-background")) {
+        const setting = manager.pluginSetting("paper-background", "paperOverWorkspace")
+        if (setting !== undefined && setting !== null)
+          return Boolean(setting)
+      }
+      return false
+    }
 
     radius: fullWorkspace ? 0 : 12
     showShadow: !fullWorkspace
@@ -1135,6 +1415,7 @@ Item {
       }
 
       root.gutterPressBlockId = blockIdAt(mouse.y)
+      root.gutterPressGlobalX = global.x
       root.gutterPressGlobalY = global.y
 
       if (root.gutterPressBlockId.length > 0)
@@ -1280,28 +1561,8 @@ Item {
       target: null
       acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
       onWheel: (event) => {
-        // Shift+wheel is reserved for horizontal scrolling inside table blocks.
-        if (event.modifiers & Qt.ShiftModifier)
-          return
-        if (!root.scrollingEnabled || root.activeCommandDelegate !== null || root.isDraggingBlock || selectionToolbar.showToolbar)
-          return
-
-        let velocity
-        if (event.pixelDelta.y !== 0) {
-          // Trackpad: fixed px/s conversion (Qt's flick velocity is positive
-          // when scrolling up), symmetric for both directions.
-          velocity = event.pixelDelta.y / documentView.wheelFrameSeconds
-        } else {
-          // Mouse: each notch glides wheelScrollPx under Flickable's deceleration.
-          const notches = -(event.angleDelta.y / 120.0)
-          velocity = -Math.sign(notches) * Math.sqrt(
-            2 * documentView.flickDeceleration * documentView.wheelScrollPx * Math.abs(notches))
-        }
-
-        velocity = Math.max(-documentView.maximumFlickVelocity,
-                            Math.min(documentView.maximumFlickVelocity, velocity))
-        documentView.flick(0, velocity)
-        event.accepted = true
+        event.accepted = root.scrollDocumentFromWheel(
+          event.pixelDelta, event.angleDelta, event.modifiers)
       }
     }
 
@@ -1416,15 +1677,22 @@ Item {
           const position = editorRoot.pendingFocusPosition
           const rangeStart = editorRoot.pendingFocusRangeStart
           const rangeEnd = editorRoot.pendingFocusRangeEnd
+          const focusX = editorRoot.pendingFocusX
 
           editorRoot.pendingFocusBlockId = ""
           editorRoot.pendingFocusAttempts = 0
           editorRoot.pendingFocusRangeStart = -1
           editorRoot.pendingFocusRangeEnd = -1
+          editorRoot.pendingFocusX = -1
 
           refreshBlock()
 
-          if (rangeStart >= 0)
+          // Keep this slow path in sync with applyPendingFocus(): vertical
+          // navigation must preserve the requested column even when the
+          // delegate only materializes after the first attempt.
+          if (focusX >= 0)
+            focusBlockAtX(focusX)
+          else if (rangeStart >= 0)
             focusBlockAtRange(rangeStart, rangeEnd)
           else
             focusBlock(position)
@@ -1587,7 +1855,7 @@ Item {
           Text {
             id: typeBadgeText
             anchors.centerIn: parent
-            text: "#" + delegateRoot.index + " [" + delegateRoot.blockType + (delegateRoot.blockType === "heading" ? " h" + delegateRoot.headingLevel : "") + "] id:" + delegateRoot.blockId.substring(0, 6)
+            text: "#" + delegateRoot.index + " [" + delegateRoot.blockType + (delegateRoot.blockType === 1 /* Heading */ ? " h" + delegateRoot.headingLevel : "") + "] id:" + delegateRoot.blockId.substring(0, 6)
             color: "#38bdf8"
             font.pixelSize: 9
             font.family: "monospace"
@@ -1717,6 +1985,8 @@ Item {
           imageSource: delegateRoot.imageSource || ""
           imageWidthRatio: delegateRoot.imageWidthRatio !== undefined ? delegateRoot.imageWidthRatio : 1.0
           blockMetadata: delegateRoot.metadata
+          linkDefinitions: root.linkDefinitions
+          footnoteDefinitions: root.footnoteDefinitions
           isBlockHovered: delegateRoot.isHovered
           hoverX: delegateRoot.hoverX
           hoverY: delegateRoot.hoverY
@@ -1892,6 +2162,62 @@ Item {
               commandMenu.moveSelection(direction)
           }
 
+          onEmojiPickerRequested: function(blockId, query, queryStart, queryEnd,
+                                           xPosition, yPosition, cursorHeight) {
+            const wasActiveForThis = root.activeEmojiDelegate === delegateRoot
+            root.activeEmojiDelegate = delegateRoot
+            // Remember where the picker was opened so Escape / click-away can
+            // hand focus back to this exact block and caret position.
+            root.emojiOriginDelegate = delegateRoot
+            root.emojiOriginBlockId = delegateRoot.blockId
+            root.emojiOriginPosition = queryEnd
+            emojiPicker.queryStart = queryStart
+            emojiPicker.queryEnd = queryEnd
+
+            const menuPosition = renderer.mapToItem(root, xPosition, yPosition)
+            const gap = 6
+            const cursorHeightPx = cursorHeight > 0 ? cursorHeight : 20
+            const availableBottom = root.height - root.bottomReservedSpace - 1
+            const belowY = menuPosition.y + cursorHeightPx + gap
+            const aboveY = menuPosition.y - gap - emojiPicker.height
+
+            let menuY = belowY
+            emojiPicker.flippedAbove = false
+            if (belowY + emojiPicker.height > availableBottom && aboveY >= 0) {
+              menuY = aboveY
+              emojiPicker.flippedAbove = true
+            }
+
+            emojiPicker.anchorY = menuPosition.y
+            emojiPicker.x = Math.max(
+              8, Math.min(root.width - emojiPicker.width - 8, menuPosition.x))
+            emojiPicker.y = menuY
+            if (emojiPicker.visible && wasActiveForThis)
+              emojiPicker.setQuery(query)
+            else
+              emojiPicker.openFor(query)
+            renderer.emojiPickerActive = true
+          }
+
+          onEmojiPickerDismissed: {
+            if (root.activeEmojiDelegate === delegateRoot) {
+              renderer.emojiPickerActive = false
+              emojiPicker.visible = false
+              root.restoreEmojiPickerFocus()
+              root.activeEmojiDelegate = null
+            }
+          }
+
+          onEmojiPickerAccepted: {
+            if (root.activeEmojiDelegate === delegateRoot)
+              emojiPicker.activateSelection()
+          }
+
+          onEmojiPickerNavigated: function(direction) {
+            if (root.activeEmojiDelegate === delegateRoot)
+              emojiPicker.moveSelection(direction)
+          }
+
           onSelectionChanged: function(hasSelection, xPosition, yPosition, cursorHeight) {
             if (!hasSelection) {
               selectionTimer.stop()
@@ -2020,11 +2346,11 @@ Item {
           }
 
           onUndoRequested: {
-            root.undoFrom(delegateRoot.blockId, delegateRoot.index)
+            root.undoFrom(delegateRoot.blockId)
           }
 
           onRedoRequested: {
-            root.redoFrom(delegateRoot.blockId, delegateRoot.index)
+            root.redoFrom(delegateRoot.blockId)
           }
         }
 
@@ -2239,10 +2565,54 @@ Item {
 
     delegate: blockDelegateComponent
 
-    // Fixed breathing room after the final block (top stays flush).
+    // Fixed breathing room after the final block (top stays flush), plus the
+    // rendered footnote list gathered from the whole document.
     footer: Item {
+      id: editorFooter
       width: documentView.width
-      height: 200
+
+      // Footnote rows wrap, so a fixed per-row height overlaps wrapped text and
+      // breaks focusFootnote()'s scroll target. Measure each rendered row's
+      // implicitHeight (which accounts for Text.Wrap) and fall back to a
+      // deterministic per-line estimate until the delegates are laid out.
+      function footnoteRowHeight(note, rowItem) {
+        if (rowItem && rowItem.implicitHeight > 0)
+          return rowItem.implicitHeight
+
+        const charsPerLine = Math.max(16, Math.floor((documentView.width - 28) / 6.5))
+        let lines = 0
+        const parts = (note.text || "").split("\n")
+        for (let p = 0; p < parts.length; ++p)
+          lines += Math.max(1, Math.ceil(parts[p].length / charsPerLine))
+        return Math.max(20, lines * 16)
+      }
+
+      readonly property real notesHeight: {
+        if (root.footnoteEntries.length === 0)
+          return 0
+
+        // Reading count keeps this binding in sync as delegates are created
+        // and their wrapped heights are measured.
+        const rowCount = notesRepeater.count
+        let total = 44  // top margin, divider, heading and their spacing
+
+        for (let i = 0; i < root.footnoteEntries.length; ++i) {
+          const note = root.footnoteEntries[i]
+          const rowItem = i < rowCount ? notesRepeater.itemAt(i) : null
+          total += Math.max(28, footnoteRowHeight(note, rowItem)) + 6  // 6px spacing
+        }
+        return total
+      }
+      height: 200 + notesHeight
+
+      function footnoteFor(label) {
+        for (let i = 0; i < notesRepeater.count; ++i) {
+          const item = notesRepeater.itemAt(i)
+          if (item && item.noteLabel === label)
+            return item
+        }
+        return null
+      }
 
       MouseArea {
         anchors.fill: parent
@@ -2250,6 +2620,57 @@ Item {
           const id = root.model.appendBlock(0, "")
           if (id.length > 0)
             root.requestFocusBlock(id, 0)
+        }
+      }
+
+      Column {
+        anchors {
+          top: parent.top
+          left: parent.left
+          right: parent.right
+          topMargin: 12
+        }
+        visible: notesHeight > 0
+        spacing: 6
+
+        Rectangle {
+          width: parent.width
+          height: 1
+          color: Theme.border
+        }
+
+        Text {
+          text: "Footnotes"
+          color: Theme.textMuted
+          font.pixelSize: 12
+          font.bold: true
+        }
+
+        Repeater {
+          id: notesRepeater
+          model: root.footnoteEntries
+
+          delegate: Row {
+            property string noteLabel: modelData.label
+            property int noteIndex: modelData.index
+
+            width: parent ? parent.width : 0
+            spacing: 8
+
+            Text {
+              text: noteIndex + "."
+              color: Theme.accent
+              font.pixelSize: 12
+            }
+
+            Text {
+              width: parent ? parent.width - 28 : 0
+              text: modelData.text
+              color: Theme.textMuted
+              font.pixelSize: 12
+              wrapMode: Text.Wrap
+            }
+          }
         }
       }
     }
@@ -2377,6 +2798,67 @@ Item {
     }
   }
 
+  EmojiPicker {
+    id: emojiPicker
+
+    property int queryStart: 0
+    property int queryEnd: 0
+    property bool flippedAbove: false
+    property real anchorY: 0
+
+    onEmojiSelected: function(emoji, shortcode) {
+      const delegate = root.activeEmojiDelegate
+      // A ListView may have recycled the origin delegate while the picker was
+      // open (scrolling is explicitly forwarded). Never insert into whichever
+      // block the delegate happens to be bound to now.
+      const stillOrigin = delegate && delegate.blockId === root.emojiOriginBlockId
+      if (delegate && delegate.rendererItem) {
+        // Leave picker key handling even if the insertion fails.
+        delegate.rendererItem.emojiPickerActive = false
+        if (stillOrigin && typeof delegate.rendererItem.insertEmoji === "function")
+          delegate.rendererItem.insertEmoji(queryStart, queryEnd, emoji)
+      }
+      root.emojiOriginDelegate = null
+      root.emojiOriginBlockId = ""
+      root.activeEmojiDelegate = null
+      visible = false
+    }
+
+    onDismissed: {
+      root.restoreEmojiPickerFocus()
+      if (root.activeEmojiDelegate && root.activeEmojiDelegate.rendererItem)
+        root.activeEmojiDelegate.rendererItem.emojiPickerActive = false
+      root.activeEmojiDelegate = null
+      visible = false
+    }
+  }
+
+  // Transparent click-away layer for the picker. It must sit above the
+  // document (delegates use z 1) but below the floating toolbars and menus
+  // (CommandMenu z 20, SelectionToolbar z 25, image menu z 29/30) so clicking
+  // a formatting control still activates it instead of just dismissing the
+  // picker. The picker itself (z 40) stays above this layer.
+  MouseArea {
+    id: emojiPickerClickAway
+
+    visible: emojiPicker.visible
+    anchors.fill: parent
+    z: 18
+    // Let a press reach the block below after the picker is dismissed;
+    // otherwise the first click on another block is swallowed by this layer.
+    propagateComposedEvents: true
+    onPressed: function(mouse) {
+      emojiPicker.dismissed()
+      mouse.accepted = false
+    }
+    // The overlay sits above documentView, so forward wheel input to the same
+    // scrolling path the document's WheelHandler uses.
+    onWheel: function(wheel) {
+      wheel.accepted = root.scrollDocumentFromWheel(
+        wheel.pixelDelta, wheel.angleDelta, wheel.modifiers)
+    }
+  }
+
   SelectionToolbar {
     id: selectionToolbar
 
@@ -2442,12 +2924,27 @@ Item {
       }
     }
 
+    onColorSelected: function(color) {
+      const renderer = root.activeSelectionDelegate
+                       ? root.activeSelectionDelegate.rendererItem : null
+      if (renderer && typeof renderer.applyColor === "function")
+        renderer.applyColor(color)
+    }
+
+    onFontSizeChanged: function(size) {
+      const renderer = root.activeSelectionDelegate
+                       ? root.activeSelectionDelegate.rendererItem : null
+      if (renderer && typeof renderer.applyFontSize === "function")
+        renderer.applyFontSize(size)
+    }
+
     onBlockTypeSelected: function(type, level) {
       if (root.activeSelectionDelegate) {
         const id = root.activeSelectionDelegate.blockId
-        const idx = root.activeSelectionDelegate.index
+        // A column child's `index` is local to its pane, not a visible row.
+        // Request focus by id so the layout can route it to the right child.
         if (root.model.changeBlockType(id, type, level)) {
-          root.focusDelegateAt(idx, -1)
+          root.requestFocusBlock(id, -1)
         }
       }
     }
@@ -2455,10 +2952,15 @@ Item {
     onAlignmentSelected: function(align) {
       if (root.activeSelectionDelegate) {
         const id = root.activeSelectionDelegate.blockId
+        const renderer = root.activeSelectionDelegate.rendererItem
+        // Capture the caret position before the model role changes; TextBlock
+        // uses it as the starting point of the alignment slide animation.
+        if (renderer && typeof renderer.captureAlignmentStart === "function")
+          renderer.captureAlignmentStart()
         root.model.setBlockAlignment(id, align)
         selectionToolbar.alignment = align
-        if (root.activeSelectionDelegate.rendererItem) {
-          root.activeSelectionDelegate.rendererItem.notifySelection()
+        if (renderer) {
+          renderer.notifySelection()
         }
       }
     }

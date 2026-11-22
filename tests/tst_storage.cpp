@@ -28,6 +28,11 @@ private slots:
     QCOMPARE(AppPaths::sanitizeFileName("../escape"), QString("escape"));
     QCOMPARE(AppPaths::sanitizeFileName("a/b\\c:d"), QString("a b c d"));
     QCOMPARE(AppPaths::sanitizeFileName("..."), QString());
+
+    // Windows device names are neutralized even when an extension is present.
+    QCOMPARE(AppPaths::sanitizeFileName("CON"), QString("_CON"));
+    QCOMPARE(AppPaths::sanitizeFileName("com1.txt"), QString("_com1.txt"));
+    QCOMPARE(AppPaths::sanitizeFileName("LPT9"), QString("_LPT9"));
   }
 
   void uniqueDocumentPathIncrements() {
@@ -322,7 +327,8 @@ private slots:
     const QString config = AppPaths::configDirectory();
     const QString cache = AppPaths::cacheDirectory();
 
-    QVERIFY(documents.endsWith(QStringLiteral("/Templnote")));
+    // QDir::filePath uses the platform separator ('\\' on Windows).
+    QCOMPARE(QFileInfo(documents).fileName(), QStringLiteral("Templnote"));
     QVERIFY(!config.isEmpty());
     QVERIFY(!cache.isEmpty());
     QVERIFY(documents != config);

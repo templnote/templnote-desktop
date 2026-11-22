@@ -90,9 +90,12 @@ QVariant DocumentListModel::data(const QModelIndex &index, int role) const {
   case ModifiedRole:
     return entry.modified;
   case CurrentRole:
+    // m_currentFilePath is already an absolute, normalized path (see
+    // setCurrentFilePath) and entry.filePath comes straight from
+    // QFileInfo::absoluteFilePath(), so a string compare is equivalent to
+    // resolving both paths again for every delegate query.
     return !entry.isFolder && !m_currentFilePath.isEmpty() &&
-           QFileInfo(entry.filePath).absoluteFilePath() ==
-               QFileInfo(m_currentFilePath).absoluteFilePath();
+           entry.filePath == m_currentFilePath;
   case Qt::DisplayRole:
     return entry.name;
   default:

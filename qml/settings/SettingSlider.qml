@@ -17,6 +17,10 @@ Item {
   width: parent ? parent.width : 0
   implicitHeight: Math.max(labels.implicitHeight, controls.implicitHeight) + 16
 
+  // No accessibility node on the root: the Slider Control below is the real
+  // focusable, and already exposes role/value/minimum/maximum. Giving the
+  // row a second Slider node made screen readers announce a phantom control.
+
   Column {
     id: labels
 
@@ -64,9 +68,14 @@ Item {
       to: root.to
       stepSize: root.stepSize
       value: root.value
+      activeFocusOnTab: true
+
+      Accessible.name: root.title
+      Accessible.description: root.description
 
       onMoved: {
-        root.value = slider.value
+        // value is bound to a preference in the page; report the new value and
+        // let the page persist it rather than overwriting the binding.
         root.moved(slider.value)
       }
 
@@ -96,7 +105,20 @@ Item {
         radius: 8
         color: slider.pressed ? Theme.accent : Theme.surface
         border.color: Theme.accent
-        border.width: 2
+        border.width: slider.activeFocus ? 3 : 2
+      }
+
+      Rectangle {
+        anchors {
+          fill: parent
+          margins: -3
+        }
+
+        visible: slider.activeFocus
+        radius: 8
+        color: "transparent"
+        border.width: 1
+        border.color: Theme.accent
       }
     }
 

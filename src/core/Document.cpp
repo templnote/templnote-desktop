@@ -346,6 +346,9 @@ bool Document::fromJson(const QJsonObject &json, QString *error) {
 
   const int version = json.value(QStringLiteral("version")).toInt(1);
 
+  if (version < 1)
+    return fail(QStringLiteral("Document has an invalid format version."));
+
   if (version > 1)
     return fail(QStringLiteral("Document was created by a newer version of "
                                "Templnote."));

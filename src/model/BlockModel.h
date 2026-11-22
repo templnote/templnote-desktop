@@ -113,6 +113,13 @@ public:
 
   Q_INVOKABLE bool setBlockMetadata(const QString &id, const QVariantMap &metadata);
 
+  // Updates metadata and block text as one undoable edit: a single history
+  // entry, dataChanged signal and contentRevision bump. Undo/redo restores
+  // both fields atomically via the same PatchOp.
+  Q_INVOKABLE bool setBlockMetadataWithText(const QString &id,
+                                            const QVariantMap &metadata,
+                                            const QString &plainText);
+
   // Column layouts. Every operation below is one atomic undo step.
   // Returns the id of the first content block, which should receive focus.
   // availableWidth is the total width the new columns should share (already
@@ -339,6 +346,9 @@ private:
 
   void invalidateStructureCaches();
   void cleanupOrphanedAttachments();
+  void loadKnownAttachmentPaths();
+  void saveKnownAttachmentPaths();
+  void rememberAttachmentDocumentPath(const QString &path);
   void rebuildNumberIndices() const;
 
   Document m_document;
@@ -362,6 +372,12 @@ private:
   bool m_savedHasFullWidth = false;
 
   QString m_currentFilePath;
+
+  // Documents the app has ever opened or saved. Attachment collection must
+  // consider all of them, not just the default folder and the open file, or a
+  // Save As outside the documents root silently deletes that file's images.
+  QSet<QString> m_knownAttachmentPaths;
+
   QString m_createdAt;
   QString m_documentFolder;
   QDateTime m_lastModified;

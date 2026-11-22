@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Window
 
 // Centrally floating settings surface. It lives inside the main window so it
 // can dim the editor and keep the app feeling like a single window.
@@ -11,7 +12,30 @@ Item {
   z: 1000
   focus: true
 
-  property string activeSection: "appearance"
+  // Read-only view of the persisted preference. Selecting a section must use
+  // setActiveSection(); assigning here would destroy this binding.
+  readonly property string activeSection: Preferences.settingsActiveSection
+
+  // Safe internal value: always a known section key, even when the persisted
+  // preference is empty or stale.
+  property string currentSectionKey: {
+    const key = root.activeSection
+    for (let i = 0; i < root.sections.length; ++i) {
+      if (root.sections[i].key === key)
+        return key
+    }
+    return root.sections[0].key
+  }
+
+  function setActiveSection(section) {
+    if (typeof section !== "string" || section.length === 0)
+      return
+    if (Preferences.settingsActiveSection !== section)
+      Preferences.settingsActiveSection = section
+  }
+
+  // Focus to hand back to when the settings surface closes.
+  property var previousFocus: null
 
   readonly property var sections: [
     {
@@ -54,7 +78,7 @@ Item {
 
   readonly property var currentSection: {
     for (let i = 0; i < sections.length; ++i) {
-      if (sections[i].key === activeSection)
+      if (sections[i].key === currentSectionKey)
         return sections[i]
     }
     return sections[0]
@@ -62,34 +86,99 @@ Item {
 
   ModalFocusGuard { id: settingsFocusGuard }
 
+  // The tab ring is rebuilt from the close button, the section rows and every
+  // focusable control inside the currently loaded page. It is refreshed on
+  // each Tab as well, because pages such as Plugins swap their whole view when
+  // a plugin detail is opened or the search filter changes.
+  function refreshFocusTargets() {
+    const targets = [closeButton]
+
+    for (let i = 0; i < sectionRepeater.count; ++i) {
+      const row = sectionRepeater.itemAt(i)
+      if (row && row.visible && row.enabled)
+        targets.push(row)
+    }
+
+    if (pageLoader.item)
+      settingsFocusGuard.collectFocusables(pageLoader.item, targets)
+
+    settingsFocusGuard.setTargets(targets)
+  }
+
+  // A focus cycle can land on a control in the loaded page that is scrolled
+  // out of view. Map the focused item into the scroller's content coordinates
+  // and scroll just enough to reveal it. Flickable has no ensureVisible()
+  // method in Qt 6 (that is only a custom helper in Qt examples), so adjust
+  // contentY directly and clamp it to the scrollable range.
+  function ensureFocusVisible() {
+    const item = Window.window ? Window.window.activeFocusItem : null
+    const content = scroller ? scroller.contentItem : null
+    if (!item || !content || !item.visible || !content.isAncestorOf(item))
+      return
+    const rect = content.mapFromItem(item, 0, 0, item.width, item.height)
+    const margin = 12
+    const maxContentY = Math.max(0, scroller.contentHeight - scroller.height)
+    let y = scroller.contentY
+
+    if (rect.y - margin < y)
+      y = rect.y - margin
+    else if (rect.y + rect.height + margin > y + scroller.height)
+      y = rect.y + rect.height + margin - scroller.height
+
+    scroller.contentY = Math.max(0, Math.min(y, maxContentY))
+  }
+
+  Connections {
+    target: pageLoader
+
+    function onItemChanged() {
+      Qt.callLater(refreshFocusTargets)
+    }
+  }
+
   Keys.onTabPressed: function(event) {
+    if (!root.visible)
+      return
     event.accepted = true
+    refreshFocusTargets()
     settingsFocusGuard.cycle(1)
+    Qt.callLater(root.ensureFocusVisible)
   }
   Keys.onBacktabPressed: function(event) {
+    if (!root.visible)
+      return
     event.accepted = true
+    refreshFocusTargets()
     settingsFocusGuard.cycle(-1)
+    Qt.callLater(root.ensureFocusVisible)
   }
 
   function open(section) {
+    // Opening again while already visible must not overwrite the original
+    // focus target with a control inside the settings panel.
+    if (!root.visible)
+      root.previousFocus = Window.window ? Window.window.activeFocusItem : null
     if (section !== undefined)
-      activeSection = section
+      root.setActiveSection(section)
     visible = true
 
     Qt.callLater(function() {
-      const targets = [closeButton]
-      for (let i = 0; i < sectionRepeater.count; ++i) {
-        const row = sectionRepeater.itemAt(i)
-        if (row)
-          targets.push(row)
-      }
-      settingsFocusGuard.setTargets(targets)
+      refreshFocusTargets()
       closeButton.forceActiveFocus()
     })
   }
 
   function close() {
+    if (!root.visible)
+      return
+
+    const focusTarget = root.previousFocus
     visible = false
+    root.previousFocus = null
+    settingsFocusGuard.setTargets([])
+
+    if (focusTarget)
+      focusTarget.forceActiveFocus()
   }
 
   Shortcut {
@@ -184,13 +273,21 @@ Item {
 
             required property var modelData
 
-            readonly property bool selected: root.activeSection === modelData.key
+            readonly property bool selected: root.currentSectionKey === modelData.key
 
             focus: sectionRow.selected
             activeFocusOnTab: true
 
-            Keys.onReturnPressed: root.activeSection = sectionRow.modelData.key
-            Keys.onSpacePressed: root.activeSection = sectionRow.modelData.key
+            Accessible.name: sectionRow.modelData.title
+            Accessible.description: sectionRow.modelData.description
+            Accessible.role: Accessible.Button
+            Accessible.selected: sectionRow.selected
+            Accessible.checked: sectionRow.selected
+            Accessible.focusable: true
+            Accessible.onPressAction: root.setActiveSection(sectionRow.modelData.key)
+
+            Keys.onReturnPressed: root.setActiveSection(sectionRow.modelData.key)
+            Keys.onSpacePressed: root.setActiveSection(sectionRow.modelData.key)
 
             width: parent.width
             height: 38
@@ -234,7 +331,7 @@ Item {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.activeSection = sectionRow.modelData.key
+              onClicked: root.setActiveSection(sectionRow.modelData.key)
             }
           }
         }
@@ -315,6 +412,11 @@ Item {
 
           focus: true
           activeFocusOnTab: true
+
+          Accessible.name: "Close settings"
+          Accessible.role: Accessible.Button
+          Accessible.focusable: true
+          Accessible.onPressAction: root.close()
 
           Keys.onReturnPressed: root.close()
           Keys.onSpacePressed: root.close()

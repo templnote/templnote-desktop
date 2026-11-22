@@ -119,6 +119,15 @@ private slots:
     for (int i = 0; i < iterations; ++i) {
       SearchIndex index(m_temp->filePath("documents"),
                         m_temp->filePath("search.sqlite"));
+
+      // Startup indexing is queued with QTimer::singleShot(0). Without
+      // spinning the event loop the index stays empty and this measures a
+      // cold query against an empty database.
+      QSignalSpy indexed(&index, &SearchIndex::indexUpdated);
+
+      if (!indexed.wait(10000))
+        qWarning() << "COLD_QUERY: initial index did not finish";
+
       timer.start();
       (void)index.search(QStringLiteral("sample"));
       totalNs += timer.nsecsElapsed();

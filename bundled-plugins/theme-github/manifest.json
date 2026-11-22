@@ -1,0 +1,49 @@
+{
+  "id": "theme-github",
+  "name": "GitHub",
+  "version": "1.0.1",
+  "description": "GitHub dark and light theme, familiar and readable.",
+  "author": "Templnote",
+  "bundled": true,
+  "category": "theme",
+  "dependencies": [],
+  "capabilities": {
+    "theme": {
+      "schemeKey": "github",
+      "name": {
+        "dark": "GitHub Dark",
+        "light": "GitHub Light"
+      },
+      "dark": {
+        "background": "#0d1117",
+        "surface": "#161b22",
+        "surfaceAlt": "#21262d",
+        "surfaceHover": "#262c36",
+        "border": "#30363d",
+        "text": "#e6edf3",
+        "textMuted": "#8b949e",
+        "textFaint": "#828b95",
+        "accent": "#2f81f7",
+        "accentText": "#ffffff",
+        "danger": "#f85149"
+      },
+      "light": {
+        "background": "#ffffff",
+        "surface": "#f6f8fa",
+        "surfaceAlt": "#eaeef2",
+        "surfaceHover": "#e6eaef",
+        "border": "#d0d7de",
+        "text": "#1f2328",
+        "textMuted": "#656d76",
+        "textFaint": "#6e7781",
+        "accent": "#0969da",
+        "accentText": "#ffffff",
+        "danger": "#cf222e"
+      }
+    }
+  },
+  "settings": {
+    "component": "ThemeSettings.qml",
+    "defaults": {}
+  }
+}

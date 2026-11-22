@@ -46,21 +46,4 @@ Column {
     font.bold: true
   }
 
-  SettingToggle {
-    title: "Spell check"
-    description: "Highlight misspelled words while writing."
-    checked: Preferences.spellCheck
-    onToggled: function(value) {
-      Preferences.spellCheck = value
-    }
-  }
-
-  SettingToggle {
-    title: "Smart quotes"
-    description: "Replace straight quotes with typographic quotes as you type."
-    checked: Preferences.smartQuotes
-    onToggled: function(value) {
-      Preferences.smartQuotes = value
-    }
-  }
 }

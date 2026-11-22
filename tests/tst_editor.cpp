@@ -1,4 +1,5 @@
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QStandardPaths>
@@ -7,8 +8,10 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 
 #include "../src/core/CodeHighlighter.h"
+#include "../src/emoji/EmojiDatabase.h"
 #include "../src/model/BlockModel.h"
 
 using namespace Templnote;
@@ -29,6 +32,7 @@ class EditorQmlTests : public QObject {
 private:
   QQmlApplicationEngine *m_engine = nullptr;
   QQuickWindow *m_window = nullptr;
+  std::unique_ptr<Templnote::EmojiDatabase> m_emojiDatabase;
 
   static void collectEditors(QQuickItem *item, QList<QQuickItem *> &editors) {
     const QMetaObject *metaObject = item->metaObject();
@@ -188,10 +192,13 @@ private slots:
     QCoreApplication::setApplicationName("TemplnoteEditorTest");
     qmlRegisterType<BlockModel>("Templnote", 1, 0, "BlockModel");
     qmlRegisterType<CodeHighlighter>("Templnote", 1, 0, "CodeHighlighter");
+    m_emojiDatabase = std::make_unique<Templnote::EmojiDatabase>();
   }
 
   void init() {
     m_engine = new QQmlApplicationEngine;
+    m_engine->rootContext()->setContextProperty(
+        "EmojiDatabase", m_emojiDatabase.get());
     m_engine->loadFromModule("Templnote", "EditorTestWindow");
 
     QVERIFY2(!m_engine->rootObjects().isEmpty(),
@@ -2475,6 +2482,84 @@ private slots:
     QVERIFY(blockModel->undo());
     QCOMPARE(blockModel->count(), originalCount);
     QCOMPARE(blockModel->document().blockAt(0)->type, BlockType::Heading);
+  }
+
+  void markdownSyntaxRendersGfm() {
+    auto render = [this](const QString &text, bool focused) -> QString {
+      QVariant result;
+      if (!QMetaObject::invokeMethod(
+              m_window, "syntaxRender", Q_RETURN_ARG(QVariant, result),
+              Q_ARG(QVariant, text), Q_ARG(QVariant, focused),
+              Q_ARG(QVariant, QVariant()), Q_ARG(QVariant, QVariant())))
+        return QStringLiteral("<invoke-failed>");
+      return result.toString();
+    };
+
+    QString html = render(QStringLiteral("**bold** *italic* `code`"), false);
+    QVERIFY2(html.contains(QStringLiteral("<b>bold</b>")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("<i>italic</i>")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("monospace")), qPrintable(html));
+
+    html = render(QStringLiteral("**bold** `code`"), true);
+    QVERIFY2(html.contains(QStringLiteral("**")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("`")), qPrintable(html));
+
+    html = render(QStringLiteral("[Templnote](https://example.com)"), false);
+    QVERIFY2(html.contains(
+        QStringLiteral("<a href=\"https://example.com\">Templnote</a>")),
+        qPrintable(html));
+
+    html = render(QStringLiteral("<https://example.com>"), false);
+    QVERIFY2(html.contains(QStringLiteral("href=\"https://example.com\"")),
+             qPrintable(html));
+
+    html = render(QStringLiteral("![alt](file:///tmp/x.png)"), true);
+    QVERIFY2(html.contains(QStringLiteral("<img ")), qPrintable(html));
+    QVERIFY2(!html.contains(QStringLiteral("![")), qPrintable(html));
+
+    html = render(QStringLiteral("\\*literal\\*"), false);
+    QVERIFY2(html.contains(QStringLiteral("*literal*")), qPrintable(html));
+    QVERIFY2(!html.contains(QStringLiteral("<i>")), qPrintable(html));
+
+    html = render(QStringLiteral("> > nested quote"), false);
+    QVERIFY2(html.contains(QStringLiteral("│ │ ")), qPrintable(html));
+
+    html = render(QStringLiteral(":grinning:"), false);
+    QVERIFY2(html.contains(QString::fromUtf8("😀")), qPrintable(html));
+
+    html = render(QStringLiteral("@alice"), false);
+    QVERIFY2(html.contains(QStringLiteral("https://github.com/alice")),
+             qPrintable(html));
+
+    html = render(QStringLiteral("#123"), false);
+    QVERIFY2(html.contains(QStringLiteral("https://github.com/issues/123")),
+             qPrintable(html));
+
+    html = render(QStringLiteral("$x^2$"), false);
+    QVERIFY2(html.contains(QStringLiteral("x^2")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("monospace")), qPrintable(html));
+
+    QVariantMap note;
+    note.insert(QStringLiteral("label"), QStringLiteral("1"));
+    note.insert(QStringLiteral("text"), QStringLiteral("A note"));
+    note.insert(QStringLiteral("index"), 1);
+    QVariantMap notes;
+    notes.insert(QStringLiteral("1"), note);
+
+    QVariant footnoteHtml;
+    QVERIFY(QMetaObject::invokeMethod(
+        m_window, "syntaxRender", Q_RETURN_ARG(QVariant, footnoteHtml),
+        Q_ARG(QVariant, QStringLiteral("Text[^1]")), Q_ARG(QVariant, false),
+        Q_ARG(QVariant, QVariant()), Q_ARG(QVariant, notes)));
+    QVERIFY2(footnoteHtml.toString().contains(QStringLiteral("#fn-1")),
+             qPrintable(footnoteHtml.toString()));
+
+    QVariant rendered;
+    QVERIFY(QMetaObject::invokeMethod(
+        m_window, "syntaxRawToRendered", Q_RETURN_ARG(QVariant, rendered),
+        Q_ARG(QVariant, QStringLiteral("**bold**X")), Q_ARG(QVariant, 8),
+        Q_ARG(QVariant, QVariant())));
+    QCOMPARE(rendered.toInt(), 4);
   }
 
 };

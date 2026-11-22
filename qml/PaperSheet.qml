@@ -6,16 +6,9 @@ Item {
   // Surface colors from theme
   property color baseColor: Theme.surface
   property color grainColor: Theme.isDark ? Theme.tint(Theme.text, 0.08) : Theme.tint(Theme.text, 0.05)
-  property real grainIntensity: Preferences.paperGrain
-  property real vignetteIntensity: 0.03
   property real radius: 10
   property real elevation: 1.0
   property bool showShadow: true
-
-  // Mode: 0 = Solid, 1 = Gradient, 2 = Wallpaper
-  readonly property int bgMode: Preferences.paperBgMode === "Wallpaper" && Preferences.paperWallpaperPath.length > 0
-                                  ? 2
-                                  : (Preferences.paperBgMode === "Gradient" ? 1 : 0)
 
   // Ambient Drop Shadow for paper elevation off the desk
   Rectangle {
@@ -44,50 +37,62 @@ Item {
   Item {
     id: backing
     anchors.fill: parent
+    clip: root.radius > 0
 
-    // Wallpaper source image (cropped and scaled smoothly)
-    Image {
-      id: wallpaperImg
+    // Fallback solid color (visible if no background decoration is loaded)
+    Rectangle {
       anchors.fill: parent
-      visible: false
-      source: Preferences.paperWallpaperPath
-      fillMode: Image.PreserveAspectCrop
-      asynchronous: true
-      cache: true
-      mipmap: true
+      radius: root.radius
+      color: root.baseColor
     }
 
-    ShaderEffectSource {
-      id: wallpaperSourceItem
-      sourceItem: wallpaperImg
-      hideSource: true
-      visible: false
-      live: true
-    }
+    // Dynamic decoration layers from enabled plugins in slot "paper-background"
+    Repeater {
+      model: {
+        if (typeof pluginManager === "undefined" || !pluginManager)
+          return []
 
-    // GPU-accelerated paper fiber shader with built-in sub-pixel SDF rounded corners
-    ShaderEffect {
-      id: paperShader
-      anchors.fill: parent
+        // decorationsForSlot() is a plain invokable with no NOTIFY signal, so
+        // reading the revision properties is what makes this binding react to
+        // enable/disable and to per-plugin setting changes at runtime.
+        const revision =
+            pluginManager.stateRevision + pluginManager.settingsRevision
+        const decorations =
+            pluginManager.decorationsForSlot("paper-background") || []
+        const result = []
 
-      property color paperColor: root.baseColor
-      property color grainColor: root.grainColor
-      property color gradientColor1: Preferences.paperGradientColor1
-      property color gradientColor2: Preferences.paperGradientColor2
-      property vector2d resolution: Qt.vector2d(Math.max(1, width), Math.max(1, height))
-      property vector2d mousePos: Qt.vector2d(root.mouseX, root.mouseY)
-      property real grainIntensity: root.grainIntensity
-      property real vignetteIntensity: root.vignetteIntensity
-      property real shadowIntensity: 0.05
-      property real cornerRadius: root.radius
-      property int bgMode: root.bgMode
-      property real wallpaperDim: Preferences.paperWallpaperDim
-      property real gradientAngle: Preferences.paperGradientAngle
+        for (let i = 0; i < decorations.length; ++i) {
+          const dec = decorations[i]
+          result.push({
+            pluginId: dec.pluginId,
+            slot: dec.slot,
+            component: dec.component,
+            zOrder: dec.zOrder,
+            revision: revision
+          })
+        }
 
-      // Texture sampler for custom wallpaper
-      property var wallpaperSource: wallpaperSourceItem
+        return result
+      }
 
-      fragmentShader: "shaders/paper.frag.qsb"
+      delegate: Loader {
+        required property var modelData
+        anchors.fill: parent
+        source: modelData.component
+        z: modelData.zOrder
+
+        // Identity/static geometry only. Setting values are read by the
+        // decoration directly from pluginManager with a revision dependency:
+        // a Loader does not forward later changes to properties on itself.
+        property var pluginContext: ({
+          pluginId: modelData.pluginId,
+          getSetting: function(key) { return pluginManager.pluginSetting(modelData.pluginId, key) },
+          setSetting: function(key, val) { pluginManager.setPluginSetting(modelData.pluginId, key, val) },
+          theme: Theme,
+          radius: root.radius,
+          baseColor: root.baseColor
+        })
+      }
     }
 
     // Very subtle crisp sheet border (resembles cardstock trim)
@@ -101,4 +106,3 @@ Item {
     }
   }
 }
-

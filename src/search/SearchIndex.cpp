@@ -36,6 +36,96 @@ QString escapeLike(QString value) {
   return value;
 }
 
+// FTS5's unicode61 tokenizer removes diacritics ("cafe" matches "café"), but
+// QString::indexOf() on the original text does not. Fold both sides while
+// keeping a per-code-unit map back to the source so highlight offsets remain
+// correct even when a character expands or shrinks during normalization.
+QString foldForMatching(const QString &input, QVector<int> *offsetMap = nullptr) {
+  QString folded;
+  folded.reserve(input.size());
+
+  if (offsetMap) {
+    offsetMap->clear();
+    offsetMap->reserve(input.size());
+  }
+
+  // Normalising every code unit with QString::normalized(KD) allocates a
+  // temporary QString per character, and matchRanges() calls this for every
+  // result row. Search text is overwhelmingly ASCII, so detect that case once
+  // and copy the units straight through. The offset map stays one-to-one,
+  // which is what highlight ranges rely on.
+  bool allAscii = true;
+  for (int i = 0; i < input.size(); ++i) {
+    if (input.at(i).unicode() > 0x7F) {
+      allAscii = false;
+      break;
+    }
+  }
+
+  if (allAscii) {
+    for (int i = 0; i < input.size(); ++i) {
+      folded.append(input.at(i));
+
+      if (offsetMap)
+        offsetMap->append(i);
+    }
+
+    return folded;
+  }
+
+  // Non-ASCII fallback. Combining marks must be dropped regardless of their
+  // decomposition tag: NFD input already contains standalone marks such as
+  // U+0301/U+0308, which have NoDecomposition and would otherwise survive the
+  // fast path below. FTS5 folds them away, so keeping them here makes the
+  // folded text unmatchable and drops an otherwise valid result. A unit with no
+  // decomposition (and not an algorithmically decomposable Hangul syllable)
+  // normalises to itself and cannot produce a mark, so append it directly
+  // instead of paying for a temporary QString.
+  for (int i = 0; i < input.size(); ++i) {
+    const QChar character = input.at(i);
+    const QChar::Category category = character.category();
+
+    if (category == QChar::Mark_NonSpacing ||
+        category == QChar::Mark_SpacingCombining ||
+        category == QChar::Mark_Enclosing) {
+      continue;
+    }
+
+    const auto code = character.unicode();
+    const bool hangulSyllable = code >= 0xAC00 && code <= 0xD7A3;
+
+    if (!hangulSyllable &&
+        character.decompositionTag() == QChar::NoDecomposition) {
+      folded.append(character);
+
+      if (offsetMap)
+        offsetMap->append(i);
+
+      continue;
+    }
+
+    const QString decomposed =
+        QString(character).normalized(QString::NormalizationForm_KD);
+
+    for (const QChar &part : decomposed) {
+      const QChar::Category partCategory = part.category();
+
+      if (partCategory == QChar::Mark_NonSpacing ||
+          partCategory == QChar::Mark_SpacingCombining ||
+          partCategory == QChar::Mark_Enclosing) {
+        continue;
+      }
+
+      folded.append(part);
+
+      if (offsetMap)
+        offsetMap->append(i);
+    }
+  }
+
+  return folded;
+}
+
 // Self-contained description of one write, so a batch can be executed on a
 // worker thread without touching the model or the GUI connection.
 struct WriteBlock {
@@ -515,9 +605,49 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
     }
   }
 
+  // The document currently open can legitimately live outside documentsRoot
+  // (e.g. after Save As). It was never visited by the directory scan above,
+  // so add it explicitly before the removal pass; otherwise the live index
+  // entry for the open document is wiped on every incremental sync.
+  if (!currentDocumentPath.isEmpty() && !found.contains(currentDocumentPath)) {
+    found.insert(currentDocumentPath);
+    updates.append(
+        {currentDocumentPath, currentDocumentTitle, currentBlocks, false});
+  }
+
+  // Other out-of-root documents (previously opened via Save As) are likewise
+  // invisible to the directory scan. Keep any that still exist on disk and
+  // refresh them when their recorded metadata is stale; only remove entries
+  // whose file has actually disappeared.
   for (const QString &path : std::as_const(knownPaths)) {
-    if (!found.contains(path))
+    if (found.contains(path))
+      continue;
+
+    // The open document was handled above from the live in-memory blocks.
+    if (!currentDocumentPath.isEmpty() && path == currentDocumentPath)
+      continue;
+
+    QFileInfo info(path);
+    if (!info.exists()) {
       removals.insert(path);
+      continue;
+    }
+
+    found.insert(path);
+    const auto meta = metadata.constFind(path);
+    const bool stale =
+        meta == metadata.constEnd() ||
+        meta->first != info.lastModified().toMSecsSinceEpoch() ||
+        meta->second != info.size();
+
+    if (stale) {
+      Update update;
+      update.path = path;
+      if (parseDocumentFile(path, &update.title, &update.blocks))
+        updates.append(std::move(update));
+      // An unreadable file keeps its existing index entry until it can be
+      // parsed again, rather than being treated as deleted.
+    }
   }
 
   // Commit one document at a time. A single unreadable or malformed file can
@@ -586,7 +716,8 @@ void executeClearIndex(const QString &databasePath) {
 void executeIncrementalSync(const QString &databasePath, const QString &root,
                             const QString &currentDocumentPath,
                             const QString &currentDocumentTitle,
-                            const QVector<WriteBlock> &currentBlocks) {  static std::atomic<quint64> syncCounter{0};
+                            const QVector<WriteBlock> &currentBlocks) {
+  static std::atomic<quint64> syncCounter{0};
 
   const QString connectionName =
       QStringLiteral("templnote_search_sync_%1")
@@ -749,8 +880,12 @@ void SearchIndex::setBlockModel(BlockModel *model) {
   m_currentDocumentPath =
       model ? normalizedPath(model->currentFilePath()) : QString();
 
-  if (!m_currentDocumentPath.isEmpty())
+  if (!m_currentDocumentPath.isEmpty()) {
     queueFullDocument(m_currentDocumentPath);
+    // A document already loaded when the model is attached has no subsequent
+    // dataChanged signal to trigger the flush, so schedule it here.
+    scheduleFlush();
+  }
 
   emit blockModelChanged();
 }
@@ -1067,7 +1202,7 @@ void SearchIndex::onDocumentLoaded() {
   if (!path.isEmpty()) {
     queueFullDocument(path);
     invalidateSearchCache();
-  scheduleFlush();
+    scheduleFlush();
   }
 }
 
@@ -1080,7 +1215,7 @@ void SearchIndex::onDocumentCreated() {
   if (!path.isEmpty()) {
     queueFullDocument(path);
     invalidateSearchCache();
-  scheduleFlush();
+    scheduleFlush();
   }
 }
 
@@ -1207,8 +1342,20 @@ void SearchIndex::queueFullDocument(const QString &path) {
 }
 
 void SearchIndex::scheduleFlush() {
-  if (m_db.isOpen())
-    m_flushTimer.start();
+  if (!m_db.isOpen())
+    return;
+
+  if (m_flushRetryCount > 0) {
+    // A previous batch failed and is waiting on its backoff timer. Don't
+    // restart it: a steady stream of edits would otherwise keep cancelling
+    // the backoff and hammer the failing database. The timer's interval is
+    // the backoff delay in this state (set in flushPending's callback).
+    if (!m_flushTimer.isActive())
+      m_flushTimer.start();
+    return;
+  }
+
+  m_flushTimer.start();
 }
 
 void SearchIndex::watchWriteFuture(QFuture<void> future) {
@@ -1298,13 +1445,18 @@ void SearchIndex::flushPending() {
 
             if (ok) {
               m_flushRetryCount = 0;
+              m_flushTimer.setInterval(kFlushDelayMs);
             } else {
               requeuePending(pending);
               ++m_flushRetryCount;
 
               const int shift = qMin(m_flushRetryCount, 6);
-              m_flushTimer.start(
+              // Persist the backoff on the timer itself so scheduleFlush()
+              // can't silently restore the short debounce interval while a
+              // failure is still pending.
+              m_flushTimer.setInterval(
                   qMin(30000, kFlushDelayMs * (1 << shift)));
+              m_flushTimer.start();
             }
 
             invalidateSearchCache();
@@ -1322,25 +1474,49 @@ void SearchIndex::requeuePending(const QVector<PendingOp> &ops) {
     if (op.path.isEmpty())
       continue;
 
-    // Newer operations queued while the batch was in flight win. A full
-    // document refresh is superseded by any newer block op for the same path,
-    // because those ops describe the changes since that snapshot.
+    // Newer operations queued while the batch was in flight win, but a
+    // failed full reindex must not be dropped just because block edits
+    // arrived in the meantime: those edits are retried separately, while
+    // skipping the full pass would leave the document partially indexed.
+    // Whole-document removals are handled by discardPending() and never
+    // appear here, so only another full reindex supersedes this op.
     bool superseded = false;
 
     for (const PendingOp &current : std::as_const(m_pending)) {
       if (current.path != op.path)
         continue;
 
+      if (op.type == PendingOp::Type::FullDocument) {
+        if (current.type == PendingOp::Type::FullDocument) {
+          superseded = true;
+          break;
+        }
+        continue;
+      }
+
       if (current.type == PendingOp::Type::FullDocument ||
-          op.type == PendingOp::Type::FullDocument ||
           current.blockId == op.blockId) {
         superseded = true;
         break;
       }
     }
 
-    if (!superseded)
+    if (superseded)
+      continue;
+
+    if (op.type == PendingOp::Type::FullDocument) {
+      // A retried full reindex must run before block edits that arrived while
+      // the failed batch was in flight. Appending it would let a file-backed
+      // FileReplace rebuild from stale disk content and wipe those newer
+      // edits, so insert ahead of the first queued op for the same document.
+      auto insertAt = std::find_if(m_pending.begin(), m_pending.end(),
+                                   [&op](const PendingOp &current) {
+                                     return current.path == op.path;
+                                   });
+      m_pending.insert(insertAt, op);
+    } else {
       m_pending.append(op);
+    }
   }
 }
 
@@ -1570,7 +1746,10 @@ SearchIndex::SearchOutcome SearchIndex::executeSearch(const QSqlDatabase &db,
     return outcome;
   }
 
+  int sqlRowCount = 0;
   while (sql.next()) {
+    ++sqlRowCount;
+
     Result result;
     result.documentPath = sql.value(0).toString();
     result.documentTitle = sql.value(1).toString();
@@ -1588,10 +1767,13 @@ SearchIndex::SearchOutcome SearchIndex::executeSearch(const QSqlDatabase &db,
     outcome.results.append(std::move(result));
   }
 
-  if (outcome.results.size() > kMaxResults) {
+  // FTS returns at most kMaxResults + 1 rows. Count them before highlight
+  // filtering so an unhighlightable row cannot hide that there were more
+  // matches; still cap the visible results at kMaxResults.
+  outcome.truncated = sqlRowCount > kMaxResults;
+
+  if (outcome.results.size() > kMaxResults)
     outcome.results.resize(kMaxResults);
-    outcome.truncated = true;
-  }
 
   finalizeResults(outcome.results);
   return outcome;
@@ -1604,19 +1786,26 @@ SearchIndex::executeSearchInConnection(const QString &databasePath,
   const QString name = QStringLiteral("templnote_search_reader_%1")
                            .arg(connectionCounter.fetch_add(1));
 
-  QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
-  db.setDatabaseName(databasePath);
-  db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-
   SearchOutcome outcome;
 
-  if (db.open()) {
-    QSqlQuery pragma(db);
-    pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
-    outcome = executeSearch(db, query);
+  // Keep the QSqlDatabase handle in an inner scope. Qt refuses to remove a
+  // connection while any handle to it is alive, so leaving `db` in scope here
+  // leaked one SQLite connection per search (a warning on every keystroke).
+  {
+    QSqlDatabase db =
+        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+    db.setDatabaseName(databasePath);
+    db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+
+    if (db.open()) {
+      QSqlQuery pragma(db);
+      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
+      outcome = executeSearch(db, query);
+    }
+
+    db.close();
   }
 
-  db.close();
   QSqlDatabase::removeDatabase(name);
   return outcome;
 }
@@ -1692,63 +1881,11 @@ QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
     return cached->results;
   }
 
-  const QStringList terms = queryTerms(key);
-
-  if (terms.isEmpty())
-    return results;
-
-  // A longer query that starts with a cached query can be answered by
-  // filtering the cached rows; this makes backspacing/typing much cheaper.
-  // Only a complete (untruncated) result set may be used: a truncated cache
-  // would silently drop matches that were cut off by kMaxResults.
-  QString prefixKey;
-  for (const QString &candidate : std::as_const(m_searchCacheOrder)) {
-    if (!key.startsWith(candidate) || candidate.size() <= prefixKey.size())
-      continue;
-
-    const auto cached = m_searchCache.constFind(candidate);
-
-    if (cached == m_searchCache.constEnd() || cached->truncated)
-      continue;
-
-    prefixKey = candidate;
-  }
-
-  if (!prefixKey.isEmpty()) {
-    const CachedSearch base = m_searchCache.value(prefixKey);
-
-    for (const Result &row : std::as_const(base.results)) {
-      // FTS combines terms with AND, so every term must be present. matchRanges
-      // returns the union of term ranges, so check each term separately too.
-      bool allTermsMatch = true;
-
-      for (const QString &term : std::as_const(terms)) {
-        if (matchRanges(row.blockText, {term}).isEmpty()) {
-          allTermsMatch = false;
-          break;
-        }
-      }
-
-      if (!allTermsMatch)
-        continue;
-
-      const QVector<MatchRange> ranges = matchRanges(row.blockText, terms);
-      if (ranges.isEmpty())
-        continue;
-
-      Result result = row;
-      result.ranges = ranges;
-      result.matchCount = ranges.size();
-      result.snippet =
-          makeSnippet(result.blockText, result.ranges, &result.snippetRanges);
-      results.append(std::move(result));
-    }
-
-    finalizeResults(results);
-    cacheSearchResult(key, CachedSearch{results, false});
-    return results;
-  }
-
+  // Only the exact-key cache is used. A previous optimisation refined a longer
+  // query by filtering the rows of a cached prefix and inventing a surrogate
+  // rank, but bm25 scores are query-specific: the surrogate cannot reproduce
+  // fresh ranking, so results differed depending on which queries had been
+  // typed first. Always execute the search for a non-exact query instead.
   const SearchOutcome outcome = executeSearch(m_db, key);
 
   if (truncated)
@@ -1806,11 +1943,11 @@ SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
   if (text.isEmpty())
     return ranges;
 
-  // Match against the original text, not a lowercased copy: Unicode case
-  // folding can change the number of code units (e.g. "İ" folds to "i" plus a
-  // combining dot), which would shift every offset after it and highlight the
-  // wrong characters. Case-insensitive indexOf() maps matches back to positions
-  // in `text`.
+  // Match a diacritic-folded copy (FTS5 folds accents) while keeping an offset
+  // map so the resulting ranges still address the original text exactly.
+  QVector<int> offsetMap;
+  const QString foldedText = foldForMatching(text, &offsetMap);
+
   for (const QString &term : terms) {
     // The FTS query tokenizes terms and matches token prefixes. Split the
     // term the same way so punctuation-containing queries still highlight the
@@ -1831,19 +1968,32 @@ SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
       needles.append(token);
 
     for (const QString &needle : needles) {
+      const QString foldedNeedle = foldForMatching(needle);
+
+      if (foldedNeedle.isEmpty())
+        continue;
+
       int from = 0;
 
-      while (from <= text.length() - needle.length()) {
-        const int start = text.indexOf(needle, from, Qt::CaseInsensitive);
+      while (from <= foldedText.length() - foldedNeedle.length()) {
+        const int start =
+            foldedText.indexOf(foldedNeedle, from, Qt::CaseInsensitive);
 
         if (start < 0)
           break;
 
+        const int originalStart = offsetMap.value(start, start);
+        const int lastFolded = start + foldedNeedle.length() - 1;
+        const int originalEnd = offsetMap.value(lastFolded, lastFolded) + 1;
+        const int length = originalEnd - originalStart;
+
         // Only a match at the beginning of a token is a real FTS prefix
         // match; "edit" must not highlight the middle of "credit".
-        if (start == 0 || !isTokenCharacter(text.at(start - 1))) {
-          ranges.append({start, static_cast<int>(needle.length())});
-          from = start + needle.length();
+        if (length > 0 &&
+            (originalStart == 0 ||
+             !isTokenCharacter(text.at(originalStart - 1)))) {
+          ranges.append({originalStart, length});
+          from = start + foldedNeedle.length();
         } else {
           from = start + 1;
         }

@@ -1,0 +1,49 @@
+{
+  "id": "theme-tokyo-night",
+  "name": "Tokyo Night",
+  "version": "1.0.1",
+  "description": "A clean, dark/light theme that celebrates the lights of Downtown Tokyo at night.",
+  "author": "Templnote",
+  "bundled": true,
+  "category": "theme",
+  "dependencies": [],
+  "capabilities": {
+    "theme": {
+      "schemeKey": "tokyo-night",
+      "name": {
+        "dark": "Tokyo Night",
+        "light": "Tokyo Night Day"
+      },
+      "dark": {
+        "background": "#1a1b26",
+        "surface": "#16161e",
+        "surfaceAlt": "#24283b",
+        "surfaceHover": "#2a2f45",
+        "border": "#292e42",
+        "text": "#c0caf5",
+        "textMuted": "#9aa5ce",
+        "textFaint": "#737da8",
+        "accent": "#7aa2f7",
+        "accentText": "#1a1b26",
+        "danger": "#f7768e"
+      },
+      "light": {
+        "background": "#e1e2e7",
+        "surface": "#d5d9e8",
+        "surfaceAlt": "#c9d0e5",
+        "surfaceHover": "#bfc8e2",
+        "border": "#b4bdd6",
+        "text": "#3760bf",
+        "textMuted": "#6172b0",
+        "textFaint": "#6b76a5",
+        "accent": "#2e7de9",
+        "accentText": "#e1e2e7",
+        "danger": "#f52a65"
+      }
+    }
+  },
+  "settings": {
+    "component": "ThemeSettings.qml",
+    "defaults": {}
+  }
+}

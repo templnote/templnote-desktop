@@ -169,9 +169,12 @@ private:
   // silently dropped.
   int m_flushRetryCount = 0;
 
-  // Small LRU of recent queries. A longer query that starts with a cached
-  // query can be answered by filtering the cached results instead of hitting
-  // FTS5 again, which makes backspacing/typing feel immediate.
+  // Small LRU of recent queries, keyed by the exact simplified query string.
+  // Only an exact hit is served from the cache: prefix/refinement results used
+  // to be derived by filtering a cached query, but bm25 ranks are query-specific
+  // and a surrogate rank made ordering depend on typing history. Every other
+  // query runs against FTS5. The whole cache is dropped whenever the index
+  // changes or a write batch fails.
   mutable QHash<QString, CachedSearch> m_searchCache;
   mutable QStringList m_searchCacheOrder;
   mutable quint64 m_cacheGeneration = 0;

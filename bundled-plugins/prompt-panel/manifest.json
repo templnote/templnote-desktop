@@ -1,0 +1,25 @@
+{
+  "id": "prompt-panel",
+  "name": "AI Prompt Panel",
+  "version": "1.0.1",
+  "description": "AI prompt panel with a multi-model switcher and an inline prompt composer.",
+  "author": "Templnote",
+  "bundled": true,
+  "category": "ai",
+  "dependencies": [],
+  "capabilities": {
+    "decorations": [
+      {
+        "slot": "prompt-panel",
+        "component": "PromptPanelDecoration.qml",
+        "zOrder": 0
+      }
+    ]
+  },
+  "settings": {
+    "component": "PromptPanelSettings.qml",
+    "defaults": {
+      "defaultModel": "Claude 3.5 Sonnet"
+    }
+  }
+}

@@ -597,6 +597,37 @@ Item {
   function notifySelection() {}
   function refreshFromModel() { root.reload() }
 
+  // Converts a raw caret offset into a body-relative one for a child block.
+  // The editor's Alt+Up/Down handler only sees this layout's top-level
+  // delegate, so a nested code/callout child would otherwise skip the
+  // rawToBodyPosition() conversion and gain a second header offset when focus
+  // is restored. Resolve the concrete child renderer by block id and let it
+  // do the conversion.
+  function rawToBodyPositionForBlock(blockId, rawPosition) {
+    if (!root.model || !blockId || blockId.length === 0)
+      return rawPosition
+
+    const columnId = root.model.columnIdOfBlock(blockId)
+    if (!columnId || columnId.length === 0)
+      return rawPosition
+
+    const columnIndex = root.columnIds.indexOf(columnId)
+    const pane = columnIndex >= 0 ? columnRepeater.itemAt(columnIndex) : null
+    if (!pane || !pane.blockList)
+      return rawPosition
+
+    const row = root.model.blocksOfColumn(columnId).indexOf(blockId)
+    const delegate = row >= 0 ? pane.blockList.itemAtIndex(row) : null
+    if (!delegate || delegate.blockId !== blockId)
+      return rawPosition
+
+    if (delegate.rendererItem
+        && typeof delegate.rendererItem.rawToBodyPosition === "function")
+      return delegate.rendererItem.rawToBodyPosition(rawPosition)
+
+    return rawPosition
+  }
+
   // Routes a focus intent from the editor to a child delegate inside the
   // correct column. The child may not be materialized yet, so retry briefly.
   function focusChildBlock(blockId, position, rangeStart, rangeEnd, xPosition) {

@@ -16,7 +16,16 @@ Item {
   property string calloutType: "note"
   property bool showPlaceholder: false
   property var model: null
+  property var blockMetadata: null
   property var searchHighlights: []
+
+  readonly property string contentFontFamily: {
+    if (Preferences.fontFamily === "Mono")
+      return "monospace"
+    if (Preferences.fontFamily === "Serif")
+      return "Georgia, 'Times New Roman', serif"
+    return Qt.application.font.family
+  }
 
   readonly property int cursorPosition: editor.cursorPosition
   readonly property string editorText: editor.text
@@ -45,24 +54,38 @@ Item {
   // Internal flag to avoid syncing loops when setting editor.text
   property bool internalUpdating: false
 
-  // Map callout types to emoji, accent colors, and background tints
+  // Set while a recycled delegate is rebound to a different block. Model
+  // writes from focus/text handlers must be suppressed during that window so
+  // the outgoing block's text is never applied to the incoming block id.
+  property bool rebindingBlock: false
+  // The delegate may be recycled again before the deferred focus restore runs.
+  // Remember (across those rebinds) whether focus has to be handed back.
+  property bool rebindRestoreFocus: false
+
+  // Map callout types to emoji, accent colors, and background tints.
+  // `color` must be a real QML colour value: the tinted backgrounds use
+  // Qt.rgba(config.color.r, ...), which is undefined for plain hex strings
+  // (that made every non-note callout render black).
   function calloutConfig(type) {
     const t = (type || "note").toLowerCase()
     switch (t) {
     case "tip":
     case "idea":
-      return { emoji: "💡", color: "#e3b341", bgAlpha: 0.12, name: "Tip" }
+      return { emoji: "💡", color: Qt.color("#e3b341"), bgAlpha: 0.12, name: "Tip" }
     case "warning":
+      return { emoji: "⚠️", color: Qt.color("#f0883e"), bgAlpha: 0.13, name: "Warning" }
     case "caution":
-      return { emoji: "⚠️", color: "#f0883e", bgAlpha: 0.13, name: "Warning" }
+      return { emoji: "🟧", color: Qt.color("#e3b341"), bgAlpha: 0.13, name: "Caution" }
+    case "important":
+      return { emoji: "❗️", color: Qt.color("#f7768e"), bgAlpha: 0.14, name: "Important" }
     case "danger":
     case "error":
-      return { emoji: "🚨", color: "#f7768e", bgAlpha: 0.14, name: "Danger" }
+      return { emoji: "🚨", color: Qt.color("#f7768e"), bgAlpha: 0.14, name: "Danger" }
     case "success":
     case "done":
-      return { emoji: "✅", color: "#73daca", bgAlpha: 0.12, name: "Success" }
+      return { emoji: "✅", color: Qt.color("#73daca"), bgAlpha: 0.12, name: "Success" }
     case "info":
-      return { emoji: "ℹ️", color: "#7aa2f7", bgAlpha: 0.12, name: "Info" }
+      return { emoji: "ℹ️", color: Qt.color("#7aa2f7"), bgAlpha: 0.12, name: "Info" }
     case "note":
     default:
       return { emoji: "📝", color: Theme.accent, bgAlpha: 0.12, name: "Note" }
@@ -71,6 +94,172 @@ Item {
 
   readonly property var currentConfig: calloutConfig(root.calloutType)
   property string customTitle: ""
+
+  // Custom titles live in block metadata so they survive save/reload and do
+  // not leak into a different block when this delegate is recycled.
+  function loadCalloutMetadata() {
+    const meta = root.blockMetadata
+    const stored = (meta && meta.calloutTitle !== undefined)
+                   ? String(meta.calloutTitle) : ""
+    if (root.customTitle === stored)
+      return
+
+    root.customTitle = stored
+
+    if (!editor)
+      return
+
+    if (!editor.activeFocus) {
+      root.refreshFromModel()
+      return
+    }
+
+    // Metadata can arrive while this block is focused (an external change, a
+    // reload, or an undo). Rebuild only the header line so the new title is
+    // shown without discarding the body or the user's caret. Without this the
+    // stale header would be parsed on focus loss and write the old title back,
+    // erasing the new one.
+    const raw = editor.text
+    const newline = raw.indexOf("\n")
+    const body = newline >= 0 ? raw.substring(newline + 1) : raw
+    const parsed = root.parseRawMarkdown(raw)
+    const typeTag = (parsed.isValidCallout ? parsed.type : root.calloutType)
+                    .toUpperCase()
+    const titlePart = stored.length > 0 ? (" " + stored) : ""
+    const header = "> [!" + typeTag + "]" + titlePart
+    const next = header + (newline >= 0 ? ("\n" + body) : "")
+    if (next === raw)
+      return
+
+    const oldHeaderLength = newline >= 0 ? newline : 0
+    const oldHeaderEnd = newline >= 0 ? newline + 1 : 0
+    const delta = header.length - oldHeaderLength
+    let newCaret = editor.cursorPosition
+    newCaret = newCaret < oldHeaderEnd
+                ? header.length
+                : newCaret + delta
+    newCaret = Math.max(0, Math.min(newCaret, next.length))
+
+    root.internalUpdating = true
+    editor.text = next
+    editor.select(newCaret, newCaret)
+    root.internalUpdating = false
+  }
+
+  // Title persistence is debounced: writing metadata on every keystroke would
+  // create one un-coalesced history entry per character and would also break
+  // the model's text-edit grouping for the body. `immediate` flushes on focus
+  // loss and on structural edits (split/exit/conversion) so nothing is lost.
+  property bool calloutTitlePending: false
+  // A recycled delegate's blockId has already changed when onBlockIdChanged
+  // runs, so remember which block owns the pending write (and the metadata
+  // snapshot it was based on) to avoid flushing into the incoming block.
+  property string pendingTitleBlockId: ""
+  property var pendingTitleMetadata: null
+
+  Timer {
+    id: calloutTitleTimer
+    interval: 300
+    repeat: false
+    onTriggered: root.persistCalloutTitle()
+  }
+
+  function syncCalloutTitle(title, immediate) {
+    const value = title || ""
+    if (root.customTitle !== value)
+      root.customTitle = value
+
+    const meta = Object.assign({}, root.blockMetadata || {})
+    const stored = (meta.calloutTitle !== undefined)
+                   ? String(meta.calloutTitle) : ""
+    if (stored === value) {
+      calloutTitleTimer.stop()
+      root.calloutTitlePending = false
+      root.pendingTitleBlockId = ""
+      root.pendingTitleMetadata = null
+      return
+    }
+
+    root.calloutTitlePending = true
+    root.pendingTitleBlockId = root.blockId
+    root.pendingTitleMetadata = meta
+    if (immediate) {
+      calloutTitleTimer.stop()
+      root.persistCalloutTitle()
+    } else {
+      calloutTitleTimer.restart()
+    }
+  }
+
+  function persistCalloutTitle() {
+    if (!root.calloutTitlePending)
+      return
+    root.calloutTitlePending = false
+
+    const targetId = root.pendingTitleBlockId
+    const meta = Object.assign({}, root.pendingTitleMetadata
+                                   || root.blockMetadata || {})
+    root.pendingTitleBlockId = ""
+    root.pendingTitleMetadata = null
+
+    const value = root.customTitle || ""
+    const stored = (meta.calloutTitle !== undefined)
+                   ? String(meta.calloutTitle) : ""
+    if (stored === value)
+      return
+
+    meta.calloutTitle = value
+    if (root.model && targetId.length > 0)
+      root.model.setBlockMetadata(targetId, meta)
+  }
+
+  onBlockMetadataChanged: root.loadCalloutMetadata()
+  onBlockIdChanged: {
+    if (!root.rebindingBlock)
+      root.rebindRestoreFocus = editor.activeFocus
+    else if (editor.activeFocus)
+      root.rebindRestoreFocus = true
+    root.rebindingBlock = true
+
+    // Flush the outgoing block's pending title before clearing pending state.
+    // persistCalloutTitle() targets pendingTitleBlockId, which still refers to
+    // the block we are leaving even though blockId has already changed.
+    calloutTitleTimer.stop()
+    root.persistCalloutTitle()
+    root.calloutTitlePending = false
+    root.pendingTitleBlockId = ""
+    root.pendingTitleMetadata = null
+    root.customTitle = ""
+
+    // Required properties are assigned in declaration order: `blockId` arrives
+    // before `content`, `blockMetadata` and `calloutType`, so refreshing here
+    // can still read the outgoing block's values. Drop focus so the incoming
+    // bindings can rewrite the editor (onContentChanged refreshes
+    // unconditionally while a rebind is pending), and restore focus only after
+    // those bindings have been applied. The focus/text guards keep the outgoing
+    // body from ever being written to the new block id.
+    if (editor.activeFocus)
+      editor.focus = false
+    root.loadCalloutMetadata()
+    root.refreshFromModel()
+
+    const targetBlockId = root.blockId
+    Qt.callLater(function() {
+      // A second recycle may have superseded this one; its own callback owns
+      // the shared rebinding state in that case.
+      if (!root.rebindingBlock || root.blockId !== targetBlockId)
+        return
+      if (root.rebindRestoreFocus) {
+        editor.focus = true
+        editor.forceActiveFocus()
+      }
+      root.rebindRestoreFocus = false
+      root.rebindingBlock = false
+    })
+  }
+  // Flush a pending title if the delegate is torn down without a focus change
+  // (for example when the document is closed while the callout is focused).
+  Component.onDestruction: root.persistCalloutTitle()
 
   // Converts the internal stored content to the full markdown string shown while editing
   // e.g. "> [!NOTE] Optional Title\n> line 1\n> line 2"
@@ -125,7 +314,7 @@ Item {
       if (parsed.isValidCallout) {
         if (parsed.type !== root.calloutType)
           root.model.setBlockCalloutType(root.blockId, parsed.type)
-        root.customTitle = parsed.title
+        root.syncCalloutTitle(parsed.title)
         root.model.updateBlockText(root.blockId, parsed.cleanBody)
       } else {
         root.model.updateBlockText(root.blockId, newText)
@@ -403,6 +592,18 @@ Item {
     updateCaretGeometry()
   }
 
+  // The editor shows `> [!TYPE] Title\n> body...` while focused, but the
+  // model's caret coordinates are body-relative. Convert a raw editor offset
+  // back to the body before focusEditor() adds the header offset again.
+  function rawToBodyPosition(rawPosition) {
+    const text = editor ? editor.text : ""
+    const firstLineBreak = text.indexOf("\n")
+    const offset = firstLineBreak >= 0
+                   ? Math.min(firstLineBreak + 3, text.length)
+                   : text.length
+    return Math.max(0, rawPosition - offset)
+  }
+
   function focusEditorAtX(xPosition) {
     if (editor.text.length === 0) {
       internalUpdating = true
@@ -456,7 +657,10 @@ Item {
   }
 
   onContentChanged: {
-    if (!editor.activeFocus) {
+    // While a recycled delegate is rebound, `content` is applied after
+    // `blockId`. Refresh unconditionally so the new body cannot be skipped
+    // just because focus was still set when the binding arrived.
+    if (root.rebindingBlock || !editor.activeFocus) {
       internalUpdating = true
       editor.text = getRawMarkdownFromModel()
       internalUpdating = false
@@ -464,7 +668,8 @@ Item {
   }
 
   onCalloutTypeChanged: {
-    if (!editor.activeFocus) {
+    // Same ordering concern as `content` for a recycled delegate.
+    if (root.rebindingBlock || !editor.activeFocus) {
       internalUpdating = true
       editor.text = getRawMarkdownFromModel()
       internalUpdating = false
@@ -609,6 +814,7 @@ Item {
       wrapMode: TextArea.Wrap
       textFormat: TextArea.PlainText
       font.pixelSize: 15
+      font.family: root.contentFontFamily
       color: Theme.text
       cursorVisible: activeFocus
       selectionColor: Qt.rgba(root.currentConfig.color.r, root.currentConfig.color.g, root.currentConfig.color.b, 0.35)
@@ -637,6 +843,11 @@ Item {
       onSelectionEndChanged: notifySelection()
 
       onActiveFocusChanged: {
+        // While a recycled delegate is rebound, the editor still holds the
+        // outgoing block's text. Neither the focus-gain nor focus-loss branch
+        // may read or write it against the new block id.
+        if (root.rebindingBlock)
+          return
         root.updateCaretGeometry()
         if (activeFocus) {
           if (editor.text.length === 0) {
@@ -658,7 +869,7 @@ Item {
               if (parsed.type !== root.calloutType) {
                 root.model.setBlockCalloutType(root.blockId, parsed.type)
               }
-              root.customTitle = parsed.title
+              root.syncCalloutTitle(parsed.title, true)
               root.model.updateBlockText(root.blockId, parsed.cleanBody)
             }
           }
@@ -671,15 +882,23 @@ Item {
       }
 
       onTextChanged: {
-        if (!activeFocus || root.internalUpdating) return
+        if (root.rebindingBlock || !activeFocus || root.internalUpdating) return
 
         // Live check if callout type or title changed
         const parsed = root.parseRawMarkdown(editor.text)
         if (parsed.isValidCallout) {
-          root.customTitle = parsed.title
+          root.syncCalloutTitle(parsed.title)
           if (parsed.type !== root.calloutType && root.model && root.blockId.length > 0) {
             root.model.setBlockCalloutType(root.blockId, parsed.type)
           }
+        }
+
+        // Persist the body on every edit, not only on focus loss. Otherwise
+        // isModified() stays false and closing/switching documents silently
+        // discards the text the user just typed.
+        if (root.model && root.blockId.length > 0) {
+          root.model.updateBlockText(root.blockId,
+                                     parsed.isValidCallout ? parsed.cleanBody : editor.text)
         }
       }
 
@@ -694,7 +913,7 @@ Item {
             if (parsed.isValidCallout) {
               if (parsed.type !== root.calloutType)
                 root.model.setBlockCalloutType(root.blockId, parsed.type)
-              root.customTitle = parsed.title
+              root.syncCalloutTitle(parsed.title, true)
               root.model.updateBlockText(root.blockId, parsed.cleanBody)
             } else {
               root.model.updateBlockText(root.blockId, editor.text)
@@ -727,7 +946,7 @@ Item {
             const parsed = root.parseRawMarkdown(cleanText)
             if (root.model && root.blockId.length > 0) {
               if (parsed.isValidCallout) {
-                root.customTitle = parsed.title
+                root.syncCalloutTitle(parsed.title, true)
                 root.model.updateBlockText(root.blockId, parsed.cleanBody)
               } else {
                 root.model.updateBlockText(root.blockId, cleanText)

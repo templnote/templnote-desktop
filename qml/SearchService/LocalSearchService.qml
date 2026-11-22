@@ -26,6 +26,23 @@ Item {
   property int cacheId: 0
   property var cachedBlockIds: []
   property var cachedTexts: []
+  // Lazily built copy used only by the synchronous API kept for tests.
+  property var loweredTexts: []
+  property int loweredCacheId: -1
+
+  // Last async find-bar query. dataChanged patches the worker snapshot but
+  // produces no searchFinished of its own, so an open find bar would keep
+  // showing stale matches until the next keystroke without a re-run.
+  property string activeQuery: ""
+  property var activeToken: null
+  property var activeModel: null
+
+  Timer {
+    id: recheckTimer
+    interval: 120
+    repeat: false
+    onTriggered: root.recheckActiveQuery()
+  }
 
   WorkerScript {
     id: worker
@@ -38,6 +55,114 @@ Item {
       else if (message.kind === "terms")
         root.searchTermsFinished(message.token, message.matches)
     }
+  }
+
+  // Normal text edits emit dataChanged for a single row. Patch just that row
+  // in the worker snapshot instead of re-sending (and re-lowercasing) the
+  // whole corpus on every revision. Structural changes cannot be patched, so
+  // they mark the cache stale and the next query rebuilds it.
+  Connections {
+    target: root.cachedModel
+
+    function onDataChanged(topLeft, bottomRight, roles) {
+      root.updateCachedRows(root.cachedModel, topLeft.row, bottomRight.row,
+                            roles)
+    }
+    function onRowsInserted() { root.invalidateCache() }
+    function onRowsRemoved() { root.invalidateCache() }
+    function onModelReset() { root.invalidateCache() }
+  }
+
+  function invalidateCache() {
+    root.cachedModel = null
+    root.cachedRevision = -1
+    root.loweredCacheId = -1
+    // A structural change also invalidates what an open find bar is showing.
+    if (root.activeQuery.length > 0)
+      recheckTimer.restart()
+  }
+
+  function clearActiveQuery() {
+    recheckTimer.stop()
+    root.activeQuery = ""
+    root.activeToken = null
+    root.activeModel = null
+  }
+
+  // Re-runs the most recent find query after the worker snapshot changed.
+  // The caller's token is reused so its existing reply handler accepts the
+  // result; a newer query replaces activeToken and makes this one obsolete.
+  function recheckActiveQuery() {
+    if (root.activeQuery.length === 0 || root.activeToken === null ||
+        !root.activeModel)
+      return
+
+    // ensureCache() rebuilds (and re-sends) the snapshot when a structural
+    // change invalidated it. WorkerScript messages keep their send order, so
+    // the search below runs against the fresh cache.
+    root.ensureCache(root.activeModel)
+    worker.sendMessage({
+      kind: "search",
+      token: root.activeToken,
+      cacheId: root.cacheId,
+      needle: root.activeQuery.toLowerCase()
+    })
+  }
+
+  function updateCachedRows(model, first, last, roles) {
+    if (root.cachedModel !== model || root.cachedTexts.length === 0)
+      return
+
+    if (roles && roles.length > 0) {
+      let relevant = false
+      for (let r = 0; r < roles.length; ++r) {
+        if (roles[r] === root.contentRole || roles[r] === root.blockIdRole) {
+          relevant = true
+          break
+        }
+      }
+      if (!relevant)
+        return
+    }
+
+    last = Math.min(last, root.cachedTexts.length - 1)
+    if (first < 0 || last < first)
+      return
+
+    const ids = []
+    const texts = []
+
+    for (let row = first; row <= last; ++row) {
+      const index = model.index(row, 0)
+      const rawContent = model.data(index, root.contentRole)
+      const rawBlockId = model.data(index, root.blockIdRole)
+      const id = rawBlockId === undefined || rawBlockId === null
+                 ? "" : String(rawBlockId)
+      const text = rawContent === undefined || rawContent === null
+                   ? "" : String(rawContent)
+
+      root.cachedBlockIds[row] = id
+      root.cachedTexts[row] = text
+      ids.push(id)
+      texts.push(text)
+    }
+
+    // Keep the revision in step so ensureCache() does not rebuild the whole
+    // snapshot on the next keystroke, and invalidate the sync-only copy.
+    if (model.contentRevision !== undefined)
+      root.cachedRevision = model.contentRevision
+    root.loweredCacheId = -1
+
+    worker.sendMessage({
+      kind: "updateRows",
+      cacheId: root.cacheId,
+      first: first,
+      texts: texts,
+      ids: ids
+    })
+
+    // The snapshot changed; update the matches of a query that is still open.
+    recheckTimer.restart()
   }
 
   // Lowercasing every block on every keystroke used to dominate local search.
@@ -60,7 +185,9 @@ Item {
       const rawContent = model.data(index, root.contentRole)
       const rawBlockId = model.data(index, root.blockIdRole)
       ids[row] = rawBlockId === undefined || rawBlockId === null ? "" : String(rawBlockId)
-      texts[row] = rawContent === undefined || rawContent === null ? "" : String(rawContent).toLowerCase()
+      // Send raw text to the worker; it lowercases its own copy there. The GUI
+      // thread must not pay O(document) case folding on every revision.
+      texts[row] = rawContent === undefined || rawContent === null ? "" : String(rawContent)
     }
 
     root.cachedModel = model
@@ -68,6 +195,7 @@ Item {
     root.cachedBlockIds = ids
     root.cachedTexts = texts
     ++root.cacheId
+    root.loweredCacheId = -1
 
     worker.sendMessage({
       kind: "cache",
@@ -76,6 +204,19 @@ Item {
       ids: ids
     })
     return true
+  }
+
+  // Only the synchronous API (used by tests) needs lowercased text on this
+  // thread, and even then it is built at most once per document revision.
+  function loweredCache() {
+    if (root.loweredCacheId === root.cacheId)
+      return root.loweredTexts
+
+    root.loweredTexts = root.cachedTexts.map(function(text) {
+      return String(text).toLowerCase()
+    })
+    root.loweredCacheId = root.cacheId
+    return root.loweredTexts
   }
 
   function search(model, query) {
@@ -87,7 +228,7 @@ Item {
       return results
 
     const needle = String(query).toLowerCase()
-    const texts = root.cachedTexts
+    const texts = root.loweredCache()
     const ids = root.cachedBlockIds
 
     for (let row = 0; row < texts.length; ++row) {
@@ -117,12 +258,19 @@ Item {
   }
 
   function searchAsync(model, query, token) {
+    // Remember the live query so a later dataChanged patch can refresh it.
+    // Stop any re-run scheduled for an older query to avoid a duplicate reply.
+    recheckTimer.stop()
+    root.activeQuery = String(query === undefined || query === null ? "" : query)
+    root.activeToken = token
+    root.activeModel = model
+
     if (!model || !root.ensureCache(model)) {
       root.searchFinished(token, [])
       return
     }
 
-    const needle = String(query === undefined || query === null ? "" : query).toLowerCase()
+    const needle = root.activeQuery.toLowerCase()
 
     if (needle.length === 0) {
       root.searchFinished(token, [])
@@ -155,7 +303,7 @@ Item {
     if (terms.length === 0)
       return results
 
-    const texts = root.cachedTexts
+    const texts = root.loweredCache()
     const ids = root.cachedBlockIds
 
     for (let row = 0; row < texts.length; ++row) {

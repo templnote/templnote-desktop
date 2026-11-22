@@ -14,6 +14,9 @@ Item {
   width: parent ? parent.width : 0
   implicitHeight: Math.max(labels.implicitHeight, controls.implicitHeight) + 20
 
+  Accessible.name: root.title
+  Accessible.description: root.description
+
   Column {
     id: labels
 
@@ -58,16 +61,50 @@ Item {
       model: root.options
 
       delegate: Rectangle {
+        id: optionChoice
+
         required property string modelData
 
         readonly property bool active: root.value === modelData
 
+        activeFocusOnTab: true
+
+        Accessible.name: modelData
+        Accessible.description: root.title
+        Accessible.role: Accessible.RadioButton
+        Accessible.checked: optionChoice.active
+        Accessible.selected: optionChoice.active
+        Accessible.focusable: true
+        // RadioButton exposes a single press action; keeping onToggleAction
+        // as well double-fires select() on assistive technologies that emit
+        // both handlers for one gesture.
+        Accessible.onPressAction: optionChoice.select()
+
+        function select() {
+          // value is bound to a preference in the page; emit the choice and
+          // let the page persist it instead of breaking that binding.
+          root.selected(modelData)
+        }
+
+        Keys.onReturnPressed: function(event) {
+          event.accepted = true
+          optionChoice.select()
+        }
+        Keys.onEnterPressed: function(event) {
+          event.accepted = true
+          optionChoice.select()
+        }
+        Keys.onSpacePressed: function(event) {
+          event.accepted = true
+          optionChoice.select()
+        }
+
         width: Math.max(58, optionLabel.implicitWidth + 20)
         height: 30
         radius: 8
-        color: active ? Theme.tint(Theme.accent, 0.18) : "transparent"
-        border.width: 1
-        border.color: active ? Theme.accent : Theme.border
+        color: active || optionChoice.activeFocus ? Theme.tint(Theme.accent, 0.18) : "transparent"
+        border.width: optionChoice.activeFocus ? 2 : 1
+        border.color: active || optionChoice.activeFocus ? Theme.accent : Theme.border
 
         Text {
           id: optionLabel
@@ -81,10 +118,7 @@ Item {
         MouseArea {
           anchors.fill: parent
           cursorShape: Qt.PointingHandCursor
-          onClicked: {
-            root.value = modelData
-            root.selected(modelData)
-          }
+          onClicked: optionChoice.select()
         }
       }
     }
