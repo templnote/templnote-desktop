@@ -43,6 +43,22 @@ Item {
     const revision = pluginManager.stateRevision
     return pluginManager.canUninstall(root.selectedPluginId)
   }
+  // Agent-authored plugins cannot be enabled until the user explicitly
+  // approves them here. No agent tool or remote endpoint can set this flag.
+  property bool detailNeedsApproval: {
+    if (!pluginManager || root.selectedPluginId.length === 0) return false
+    const revision = pluginManager.stateRevision
+    return pluginManager.needsApproval(root.selectedPluginId)
+  }
+  property string detailAgentFilesText: {
+    if (!pluginManager || root.selectedPluginId.length === 0) return ""
+    const revision = pluginManager.stateRevision
+    const files = pluginManager.pluginFiles(root.selectedPluginId)
+    let out = ""
+    for (const key of Object.keys(files))
+      out += "── " + key + " ──\n" + files[key] + "\n\n"
+    return out
+  }
 
   function resetUninstallUi() {
     root.confirmingUninstall = false
@@ -228,10 +244,10 @@ Item {
           }
         }
 
-        Switch {
+        SettingSwitch {
           id: detailEnableSwitch
           anchors.verticalCenter: parent.verticalCenter
-          activeFocusOnTab: true
+          accessibleName: "Enable " + (root.selectedPluginId || "plugin")
           checked: {
             if (!pluginManager || root.selectedPluginId.length === 0)
               return false
@@ -240,13 +256,13 @@ Item {
             const revision = pluginManager.stateRevision
             return pluginManager.isEnabled(root.selectedPluginId)
           }
-          onClicked: {
+          onToggled: function(value) {
             if (!pluginManager || root.selectedPluginId.length === 0) return
             root.clearDependencyNotice()
-            // A click writes `checked` directly and removes the binding above.
+            // A toggle writes `checked` directly and removes the binding above.
             // Apply the user's intent, then install a fresh reactive binding so
-            // later enable/disable changes still refresh this Switch.
-            const wantsEnabled = checked
+            // later enable/disable changes still refresh this switch.
+            const wantsEnabled = value
             let ok = true
             if (wantsEnabled)
               ok = pluginManager.enablePlugin(root.selectedPluginId)
@@ -267,10 +283,6 @@ Item {
               return pluginManager.isEnabled(root.selectedPluginId)
             })
           }
-
-          Accessible.role: Accessible.Switch
-          Accessible.name: "Enable " + (root.selectedPluginId || "plugin")
-          Accessible.checked: checked
         }
       }
 
@@ -292,6 +304,65 @@ Item {
 
         Accessible.role: Accessible.StaticText
         Accessible.name: text
+      }
+
+      // User consent gate for AI-authored plugins. The model can create files
+      // but can never enable them; only this button grants approval.
+      Rectangle {
+        width: parent.width
+        visible: root.detailNeedsApproval
+        radius: 8
+        color: Theme.surfaceAlt
+        border.width: 1
+        border.color: Theme.border
+
+        Column {
+          anchors.margins: 12
+          anchors.fill: parent
+          spacing: 8
+
+          Text {
+            width: parent.width
+            text: "This plugin was written by an AI agent. Review its files before approving; approval allows it to load QML inside the app."
+            color: Theme.text
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+
+            Accessible.role: Accessible.StaticText
+            Accessible.name: text
+          }
+
+          Flickable {
+            width: parent.width
+            height: 120
+            clip: true
+            contentHeight: agentFileText.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+
+            Text {
+              id: agentFileText
+              width: parent.width
+              text: root.detailAgentFilesText
+              color: Theme.textMuted
+              font.pixelSize: 11
+              font.family: "monospace"
+              wrapMode: Text.WrapAnywhere
+
+              Accessible.role: Accessible.StaticText
+              Accessible.name: "Agent-written plugin source"
+            }
+          }
+
+          Button {
+            text: "Approve plugin"
+            height: 32
+            activeFocusOnTab: true
+            onClicked: pluginManager.approvePlugin(root.selectedPluginId)
+
+            Accessible.role: Accessible.Button
+            Accessible.name: text
+          }
+        }
       }
 
       // Non-modal, inline two-step uninstall confirmation. Only shown for
@@ -410,6 +481,27 @@ Item {
           },
           theme: Theme
         })
+      }
+
+      // Declarative settings from the manifest (no hand-written Settings QML).
+      Loader {
+        id: declarativeSettingsLoader
+        width: parent.width
+        visible: !settingsLoader.source || settingsLoader.source.length === 0
+        source: visible && pluginManager
+                ? Qt.resolvedUrl("DeclarativePluginSettings.qml") : ""
+
+        property string pluginId: root.selectedPluginId
+        property var fields: {
+          if (!pluginManager || root.selectedPluginId.length === 0) return []
+          const settings = pluginManager.declarativeSettings(root.selectedPluginId)
+          return settings && settings.fields ? settings.fields : []
+        }
+        property var defaults: {
+          if (!pluginManager || root.selectedPluginId.length === 0) return ({})
+          const d = pluginManager.pluginSettings(root.selectedPluginId)
+          return d && typeof d === "object" ? d : ({})
+        }
       }
     }
 
@@ -678,20 +770,20 @@ Item {
                 }
               }
 
-              // Toggle Switch
-              Switch {
+              // Themed toggle, matching the switches in Developer settings.
+              SettingSwitch {
                 id: enableSwitch
                 anchors.verticalCenter: parent.verticalCenter
-                activeFocusOnTab: true
+                accessibleName: "Enable " + pluginCard.name
                 // Model-driven binding: dataChanged() from updatePluginEnabled()
-                // (including dependency cascades) refreshes this Switch.
+                // (including dependency cascades) refreshes this switch.
                 checked: pluginCard.enabled
-                onClicked: {
+                onToggled: function(value) {
                   if (!pluginManager) return
                   root.clearDependencyNotice()
-                  // The click removed the model binding; restore it after the
+                  // The toggle removed the model binding; restore it after the
                   // C++ call so later model updates stay reactive.
-                  const wantsEnabled = checked
+                  const wantsEnabled = value
                   let ok = true
                   if (wantsEnabled)
                     ok = pluginManager.enablePlugin(pluginCard.id)
@@ -704,10 +796,6 @@ Item {
                   }
                   checked = Qt.binding(function() { return pluginCard.enabled })
                 }
-
-                Accessible.role: Accessible.Switch
-                Accessible.name: "Enable " + pluginCard.name
-                Accessible.checked: checked
               }
             }
           }

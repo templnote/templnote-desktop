@@ -23,51 +23,47 @@ Rectangle {
   })
 
   property bool expanded: true
-  // This is a UI-only placeholder plugin: there is no AI backend wired up, so
-  // it must stay idle rather than pretend a task is constantly running.
-  property bool agentRunning: false
-  property string currentTask: ""
+  // The desktop agent service is provided by the application, not the plugin.
+  readonly property var agent: typeof agentService !== "undefined" ? agentService : null
+  property bool agentRunning: agent ? agent.running : false
+  property string currentTask: agent ? agent.currentStage : ""
   property string noticeText: ""
-  property string statusText: agentRunning
-    ? (currentTask.length > 0 ? selectedModel + " • " + currentTask : selectedModel)
-    : "Idle (AI unavailable)"
+
+  readonly property var registry: typeof providerManager !== "undefined"
+                                  ? providerManager : null
+  readonly property int registryRevision: registry ? registry.revision : 0
+
+  // Only connected providers' enabled models are shown here. Reading the
+  // revision and connectivity properties keeps this binding live when the user
+  // connects a provider or toggles a model in Settings.
+  property var availableModels: {
+    const rev = root.registryRevision
+    const connected = registry ? registry.anyConnected : false
+    return connected ? registry.enabledModels() : []
+  }
+
+  property string selectedModelKey: {
+    const rev = root.registryRevision
+    return registry ? registry.defaultModelKey : ""
+  }
+
   property string selectedModel: {
-    const m = pluginContext && typeof pluginContext.getSetting === "function"
-      ? pluginContext.getSetting("defaultModel")
-      : undefined
-    return (m !== undefined && m !== null && m.toString().length > 0)
-      ? m.toString()
-      : "Claude 3.5 Sonnet"
-  }
-  // Keep these identifiers in sync with PromptPanelSettings.qml so the value
-  // persisted there is the one displayed and highlighted here.
-  property var availableModels: [
-    "Claude 3.5 Sonnet",
-    "GPT-4o",
-    "Gemini 1.5 Pro",
-    "Ollama (Local)"
-  ]
-
-  // Keep the displayed model in sync when PromptPanelSettings.qml writes a new
-  // "defaultModel". Updating the value in place means the host Loader never
-  // has to recreate this component (which would discard the user's draft).
-  Connections {
-    target: typeof pluginManager !== "undefined" ? pluginManager : null
-
-    function onPluginSettingChanged(pluginId, key) {
-      if (pluginId !== "prompt-panel")
-        return
-      // An empty key is the "all settings changed" signal from a reset.
-      if (key !== "defaultModel" && key !== "" && key !== undefined && key !== null)
-        return
-      const m = typeof pluginManager !== "undefined" && pluginManager
-        ? pluginManager.pluginSetting("prompt-panel", "defaultModel")
-        : undefined
-      root.selectedModel = (m !== undefined && m !== null && m.toString().length > 0)
-        ? m.toString()
-        : "Claude 3.5 Sonnet"
+    for (let i = 0; i < root.availableModels.length; ++i) {
+      if (root.availableModels[i].key === root.selectedModelKey)
+        return root.availableModels[i].label
     }
+    return root.availableModels.length > 0
+      ? root.availableModels[0].label : "No model connected"
   }
+
+  property bool aiReady: root.availableModels.length > 0
+  property string statusText: agent && agent.lastError.length > 0
+    ? agent.lastError
+    : aiReady
+      ? (agentRunning
+         ? (currentTask.length > 0 ? selectedModel + " • " + currentTask : selectedModel)
+         : selectedModel)
+      : "Connect a provider in Settings"
 
   property real defaultExpandedWidth: 600
   readonly property real responsiveExpandedWidth: parent ? Math.min(defaultExpandedWidth, parent.width - 48) : defaultExpandedWidth
@@ -365,13 +361,13 @@ Rectangle {
           model: root.availableModels
           delegate: MenuItem {
             id: menuItem
-            text: modelData
+            text: modelData.label
             height: 30
 
             contentItem: Text {
               text: menuItem.text
               font.pixelSize: 12
-              color: menuItem.text === root.selectedModel ? Theme.accent : Theme.text
+              color: modelData.key === root.selectedModelKey ? Theme.accent : Theme.text
               verticalAlignment: Text.AlignVCenter
               leftPadding: 10
             }
@@ -382,9 +378,10 @@ Rectangle {
             }
 
             onTriggered: {
-              root.selectedModel = modelData
+              if (registry)
+                registry.defaultModelKey = modelData.key
               if (pluginContext && typeof pluginContext.setSetting === "function")
-                pluginContext.setSetting("defaultModel", modelData)
+                pluginContext.setSetting("defaultModel", modelData.key)
             }
           }
           onObjectAdded: function(index, object) {
@@ -412,7 +409,8 @@ Rectangle {
       icon.source: "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_send_16_regular.svg"
       icon.width: 18
       icon.height: 18
-      icon.color: promptInput.text.trim().length > 0 ? Theme.accent : Theme.textMuted
+      icon.color: root.aiReady && promptInput.text.trim().length > 0
+                  ? Theme.accent : Theme.textMuted
 
       background: Rectangle {
         radius: 6
@@ -482,9 +480,20 @@ Rectangle {
     const text = promptInput.text.trim()
     if (text.length === 0)
       return
-
-    // Keep the user's text and say plainly that this stub cannot send it.
-    // No AI backend is configured, so nothing is actually submitted.
-    noticeText = "No AI backend configured — prompt was not sent."
+    if (!root.aiReady) {
+      noticeText = "Connect a provider in Settings → AI Providers, then choose a model."
+      return
+    }
+    if (!root.agent) {
+      noticeText = "AI service is unavailable in this build."
+      return
+    }
+    if (root.agent.running) {
+      noticeText = "An agent task is already running."
+      return
+    }
+    root.agent.sendPrompt(text)
+    promptInput.text = ""
+    noticeText = "Running " + selectedModel + "…"
   }
 }

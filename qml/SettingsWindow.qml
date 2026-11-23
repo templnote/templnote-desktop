@@ -63,6 +63,12 @@ Item {
       file: "settings/EditorSettings.qml"
     },
     {
+      key: "ai",
+      title: "AI Providers",
+      description: "Connect providers and choose which models are available",
+      file: "settings/AISettings.qml"
+    },
+    {
       key: "plugins",
       title: "Plugins",
       description: "Extend Templnote with plugins",

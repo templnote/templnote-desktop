@@ -32,18 +32,4 @@ Column {
       Preferences.lineWidth = value
     }
   }
-
-  Rectangle {
-    width: parent.width
-    height: 1
-    color: Theme.border
-  }
-
-  Text {
-    text: "Writing"
-    color: Theme.text
-    font.pixelSize: 15
-    font.bold: true
-  }
-
 }

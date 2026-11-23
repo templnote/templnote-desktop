@@ -90,6 +90,10 @@ QtObject {
            ? named[inner] : raw
   }
 
+  function mightHaveDefinition(text) {
+    return !!text && text.indexOf("[") >= 0
+  }
+
   function definitionsFrom(text) {
     // Labels are user-authored keys; a null prototype prevents "__proto__"
     // and friends from poisoning the map we hand back to the editor.

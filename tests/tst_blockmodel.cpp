@@ -14,6 +14,7 @@
 #include <QUrl>
 
 #include "../src/model/BlockModel.h"
+#include "../src/engine/ChangeFeed.h"
 #include "../src/storage/AppPaths.h"
 
 using namespace Templnote;
@@ -79,6 +80,50 @@ private slots:
 
     QCOMPARE(model.rowCount(), 2);
     QCOMPARE(model.count(), 2);
+  }
+
+  void engineSeesHumanEdits() {
+    BlockModel model;
+    auto *engine = model.engineSession();
+    QVERIFY(engine);
+    const int r0 = engine->revision();
+    Engine::ChangeFeed feed(engine, &model);
+
+    const QString id = model.blockIdAt(0);
+    QVERIFY(!id.isEmpty());
+    QVERIFY(model.updateBlockText(id, QStringLiteral("Human typed this")));
+    QCOMPARE(model.document().findBlock(id)->text,
+             QStringLiteral("Human typed this"));
+    QCOMPARE(engine->document().findBlock(id)->text,
+             QStringLiteral("Human typed this"));
+    QVERIFY(engine->revision() > r0);
+    QCOMPARE(feed.count(), 1);
+    QCOMPARE(feed.events().first().patch.actor.kind, Engine::Actor::Kind::Human);
+
+    QVERIFY(model.changeBlockType(id, static_cast<int>(BlockType::Heading), 2));
+    QCOMPARE(engine->document().findBlock(id)->type, BlockType::Heading);
+    QCOMPARE(feed.count(), 2);
+  }
+
+  void engineAndModelShareDocument() {
+    BlockModel model;
+    const QString id = model.blockIdAt(0);
+    model.updateBlockText(id, QStringLiteral("shared"));
+    QCOMPARE(&model.document(), &model.engineSession()->document());
+    QCOMPARE(model.engineSession()->document().findBlock(id)->text,
+             QStringLiteral("shared"));
+  }
+
+  void remoteEnginePatchReachesModel() {
+    BlockModel model;
+    auto *engine = model.engineSession();
+    const QString id = model.blockIdAt(0);
+    const auto result = engine->apply(Engine::Command::setText(
+        id, QStringLiteral("From agent")));
+    QVERIFY(result.ok());
+    // LiveBridge pushes engine patches via applyRemoteDocument; simulate it.
+    QVERIFY(model.applyRemoteDocument(engine->toJson(), result.value().toJson()));
+    QCOMPARE(model.document().findBlock(id)->text, QStringLiteral("From agent"));
   }
 
   void exposesQmlRoles() {

@@ -124,6 +124,31 @@ bool isValidThemeOverrides(const QVariant &value) {
   }
   return true;
 }
+
+QString agentManifestPath(const QString &pluginId) {
+  const QString dir = AppPaths::pluginsDirectory();
+  if (dir.isEmpty() || !PluginManifest::isValidId(pluginId))
+    return {};
+  return QDir(dir).filePath(pluginId + QStringLiteral("/manifest.json"));
+}
+
+bool isAgentCreated(const QString &manifestPath) {
+  if (manifestPath.isEmpty() || !QFileInfo::exists(manifestPath))
+    return false;
+  QFile f(manifestPath);
+  if (!f.open(QIODevice::ReadOnly))
+    return false;
+  return QJsonDocument::fromJson(f.readAll())
+      .object()
+      .value(QStringLiteral("agentCreated"))
+      .toBool(false);
+}
+
+QString approvalFilePath() {
+  const QString dir = AppPaths::configDirectory();
+  return dir.isEmpty() ? QString()
+                       : QDir(dir).filePath(QStringLiteral("plugin-approvals.json"));
+}
 } // namespace
 
 PluginManager::PluginManager(QObject *parent)
@@ -132,6 +157,19 @@ PluginManager::PluginManager(QObject *parent)
   discoverPlugins();
   loadEnabledState();
   rebuildActiveState();
+
+  // Load persisted approvals for agent-authored plugins.
+  const QString path = approvalFilePath();
+  if (!path.isEmpty() && QFileInfo::exists(path)) {
+    QFile f(path);
+    if (f.open(QIODevice::ReadOnly)) {
+      const QJsonObject approvals = QJsonDocument::fromJson(f.readAll()).object();
+      for (auto it = approvals.constBegin(); it != approvals.constEnd(); ++it) {
+        if (it.value().toBool())
+          m_approvedPlugins.insert(it.key());
+      }
+    }
+  }
 }
 
 QAbstractListModel *PluginManager::pluginsModel() const {
@@ -540,6 +578,18 @@ void PluginManager::saveEnabledState() {
 bool PluginManager::enablePlugin(const QString &id) {
   if (!m_manifests.contains(id))
     return false;
+
+  // Only agent-authored plugins require explicit approval. Ordinary user
+  // plugins keep the original opt-in behaviour.
+  const QString manifestPath =
+      agentManifestPath(id);
+  if (!manifestPath.isEmpty() && isAgentCreated(manifestPath) &&
+      !isPluginApproved(id)) {
+    m_lastPluginError = QStringLiteral("Plugin needs approval before enabling.");
+    emit pluginErrorChanged();
+    emit pluginNeedsApproval(id);
+    return false;
+  }
 
   // Resolve the whole dependency chain, not just the direct dependencies.
   const QStringList missing = missingDependencies(id);
@@ -1030,6 +1080,345 @@ void PluginManager::rebuildActiveState() {
     m_activeDecorations = newActiveDecorations;
     emit activeDecorationsChanged();
   }
+}
+
+// ---- agent plugin authoring ------------------------------------------------
+
+bool PluginManager::createPlugin(const QJsonObject &spec) {
+  m_lastPluginError.clear();
+  const QString id = spec.value(QStringLiteral("id")).toString();
+  if (!PluginManifest::isValidId(id)) {
+    m_lastPluginError = QStringLiteral("Invalid plugin id.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  const QString root = AppPaths::pluginsDirectory();
+  if (root.isEmpty()) {
+    m_lastPluginError = QStringLiteral("No plugins directory.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  const QString dir = QDir(root).filePath(id);
+  if (QFileInfo::exists(dir)) {
+    m_lastPluginError = QStringLiteral("A plugin with that id already exists.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  if (!QDir().mkpath(dir)) {
+    m_lastPluginError = QStringLiteral("Cannot create plugin directory.");
+    emit pluginErrorChanged();
+    return false;
+  }
+
+  // Snapshot for rollback before writing anything.
+  const QString backup = dir + QStringLiteral(".tnbak");
+  if (QFileInfo::exists(backup))
+    QDir(backup).removeRecursively();
+
+  QJsonObject manifest;
+  manifest.insert(QStringLiteral("id"), id);
+  manifest.insert(QStringLiteral("name"),
+                  spec.value(QStringLiteral("name")).toString(id));
+  manifest.insert(QStringLiteral("version"),
+                  spec.value(QStringLiteral("version")).toString(QStringLiteral("1.0.0")));
+  manifest.insert(QStringLiteral("description"),
+                  spec.value(QStringLiteral("description")).toString());
+  manifest.insert(QStringLiteral("author"),
+                  spec.value(QStringLiteral("author")).toString(QStringLiteral("Agent")));
+  manifest.insert(QStringLiteral("category"),
+                  spec.value(QStringLiteral("category")).toString(QStringLiteral("utility")));
+  manifest.insert(QStringLiteral("bundled"), false);
+  manifest.insert(QStringLiteral("agentCreated"), true);
+  manifest.insert(QStringLiteral("dependencies"), QJsonArray());
+
+  QJsonObject capabilities;
+  const QJsonArray decorations = spec.value(QStringLiteral("decorations")).toArray();
+  if (!decorations.isEmpty())
+    capabilities.insert(QStringLiteral("decorations"), decorations);
+  manifest.insert(QStringLiteral("capabilities"), capabilities);
+
+  QJsonObject settings;
+  const QJsonArray fields = spec.value(QStringLiteral("settingsFields")).toArray();
+  if (!fields.isEmpty())
+    settings.insert(QStringLiteral("fields"), fields);
+  if (!settings.isEmpty())
+    manifest.insert(QStringLiteral("settings"), settings);
+
+  if (spec.contains(QStringLiteral("permissions")))
+    manifest.insert(QStringLiteral("permissions"),
+                    spec.value(QStringLiteral("permissions")));
+
+  QFile file(QDir(dir).filePath(QStringLiteral("manifest.json")));
+  if (!file.open(QIODevice::WriteOnly) ||
+      file.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented)) < 0) {
+    m_lastPluginError = file.errorString();
+    emit pluginErrorChanged();
+    return false;
+  }
+  file.close();
+
+  rescanPlugins();
+  emit pluginNeedsApproval(id);
+  return true;
+}
+
+bool PluginManager::writePluginFile(const QString &pluginId,
+                                    const QString &relativePath,
+                                    const QString &contents) {
+  m_lastPluginError.clear();
+  if (!PluginManifest::isValidId(pluginId) || !m_pluginDirs.contains(pluginId)) {
+    m_lastPluginError = QStringLiteral("Unknown plugin.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  // Reject traversal and absolute paths; only files inside the plugin dir.
+  if (relativePath.isEmpty() || QDir::isAbsolutePath(relativePath) ||
+      relativePath.contains(QStringLiteral(".."))) {
+    m_lastPluginError = QStringLiteral("Invalid relative path.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  // Only unapproved AI-authored plugins may be modified through the agent
+  // tool. Overwriting a bundled or already-enabled plugin would let a model
+  // inject arbitrary QML into a component the user has already trusted.
+  const QString manifestPath = QDir(m_pluginDirs.value(pluginId).first())
+                                   .filePath(QStringLiteral("manifest.json"));
+  if (!isAgentCreated(manifestPath) || isPluginApproved(pluginId) ||
+      isEnabled(pluginId)) {
+    m_lastPluginError =
+        QStringLiteral("Only unapproved agent-authored plugins can be written.");
+    emit pluginErrorChanged();
+    return false;
+  }
+
+  const QString dir = m_pluginDirs.value(pluginId).first();
+  const QString target = QDir(dir).filePath(relativePath);
+  // Reject symlink escapes as well as lexical traversal.
+  const QString canonicalDir = QFileInfo(dir).canonicalFilePath();
+  const QString canonicalTarget = QFileInfo(target).canonicalFilePath();
+  if (canonicalDir.isEmpty() ||
+      (!canonicalTarget.isEmpty() &&
+       !canonicalTarget.startsWith(canonicalDir + QLatin1Char('/')))) {
+    m_lastPluginError = QStringLiteral("Invalid relative path.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  // Only QML/JSON/text assets are authorable — no executables and no
+  // extension-less files that could be interpreted as scripts.
+  const QString suffix = QFileInfo(target).suffix().toLower();
+  static const QSet<QString> allowed{"qml", "json", "js", "mjs", "txt", "svg", "frag"};
+  if (!allowed.contains(suffix)) {
+    m_lastPluginError = QStringLiteral("File type not allowed.");
+    emit pluginErrorChanged();
+    return false;
+  }
+  QDir().mkpath(QFileInfo(target).absolutePath());
+  QFile file(target);
+  // Snapshot the single file before overwriting it.
+  const QString backupDir = dir + QStringLiteral(".tnbak");
+  const QString backupFile = QDir(backupDir).filePath(relativePath);
+  if (QFileInfo::exists(target)) {
+    QDir().mkpath(QFileInfo(backupFile).absolutePath());
+    QFile::copy(target, backupFile);
+  }
+  if (!file.open(QIODevice::WriteOnly) ||
+      file.write(contents.toUtf8()) < 0) {
+    m_lastPluginError = file.errorString();
+    emit pluginErrorChanged();
+    return false;
+  }
+  return true;
+}
+
+bool PluginManager::rescanPlugins() {
+  discoverPlugins();
+  ++m_stateRevision;
+  emit stateRevisionChanged();
+  emit pluginsChanged();
+  return true;
+}
+
+QString PluginManager::validatePlugin(const QString &pluginId) const {
+  QStringList errors;
+  if (!m_manifests.contains(pluginId))
+    return QStringLiteral("Unknown plugin.");
+  const PluginManifest &manifest = m_manifests.value(pluginId);
+  if (!manifest.isValid())
+    errors.append(QStringLiteral("Invalid manifest."));
+  for (const PluginDecorationDef &dec : manifest.decorations()) {
+    if (dec.slot.isEmpty())
+      errors.append(QStringLiteral("Decoration with empty slot."));
+    const QUrl url = QUrl::fromLocalFile(
+        QDir(manifest.pluginDirectory()).filePath(dec.component));
+    if (!QFileInfo::exists(url.toLocalFile()))
+      errors.append(QStringLiteral("Missing decoration QML: ") + dec.component);
+  }
+  if (manifest.hasSettings()) {
+    const QUrl url = manifest.settingsComponentUrl();
+    if (!QFileInfo::exists(url.toLocalFile()))
+      errors.append(QStringLiteral("Missing settings QML."));
+  }
+  return errors.isEmpty() ? QString() : errors.join(QStringLiteral("\n"));
+}
+
+bool PluginManager::approvePlugin(const QString &pluginId) {
+  if (!m_manifests.contains(pluginId))
+    return false;
+  m_approvedPlugins.insert(pluginId);
+  QJsonObject approvals;
+  const QString path = approvalFilePath();
+  if (!path.isEmpty() && QFileInfo::exists(path)) {
+    QFile f(path);
+    if (f.open(QIODevice::ReadOnly))
+      approvals = QJsonDocument::fromJson(f.readAll()).object();
+  }
+  approvals.insert(pluginId, true);
+  if (!path.isEmpty()) {
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly))
+      f.write(QJsonDocument(approvals).toJson(QJsonDocument::Compact));
+  }
+  emit pluginApproved(pluginId);
+  ++m_stateRevision;
+  emit stateRevisionChanged();
+  return true;
+}
+
+bool PluginManager::isPluginApproved(const QString &pluginId) const {
+  return m_approvedPlugins.contains(pluginId) || isBundled(pluginId);
+}
+
+bool PluginManager::needsApproval(const QString &pluginId) const {
+  if (!m_manifests.contains(pluginId) || isPluginApproved(pluginId))
+    return false;
+  const QString dir = m_pluginDirs.value(pluginId).value(0);
+  if (dir.isEmpty())
+    return false;
+  return isAgentCreated(QDir(dir).filePath(QStringLiteral("manifest.json")));
+}
+
+QStringList PluginManager::pendingApprovalPlugins() const {
+  QStringList pending;
+  for (auto it = m_manifests.constBegin(); it != m_manifests.constEnd(); ++it) {
+    if (needsApproval(it.key()))
+      pending.append(it.key());
+  }
+  return pending;
+}
+
+QJsonObject PluginManager::pluginFiles(const QString &pluginId) const {
+  QJsonObject files;
+  if (!needsApproval(pluginId))
+    return files;
+  const QString dir = m_pluginDirs.value(pluginId).value(0);
+  if (dir.isEmpty())
+    return files;
+  QDirIterator iterator(dir, QStringList{"*.qml", "*.js", "*.mjs", "*.json"},
+                        QDir::Files, QDirIterator::Subdirectories);
+  while (iterator.hasNext()) {
+    const QString path = iterator.next();
+    const QString relative = QDir(dir).relativeFilePath(path);
+    if (relative == QStringLiteral("manifest.json"))
+      continue;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+      continue;
+    files.insert(relative,
+                 QString::fromUtf8(file.read(64 * 1024)));
+  }
+  return files;
+}
+
+bool PluginManager::rollbackPlugin(const QString &pluginId) {
+  if (!m_pluginDirs.contains(pluginId))
+    return false;
+  const QString dir = m_pluginDirs.value(pluginId).first();
+  const QString backup = dir + QStringLiteral(".tnbak");
+  if (!QFileInfo::exists(backup))
+    return false;
+  QDir(dir).removeRecursively();
+  if (!QDir().rename(backup, dir))
+    return false;
+  rescanPlugins();
+  return true;
+}
+
+QJsonObject PluginManager::declarativeSettings(const QString &pluginId) const {
+  if (!m_manifests.contains(pluginId))
+    return {};
+  // Re-read the manifest to access declarative field descriptors.
+  const QString dir = m_pluginDirs.value(pluginId).value(0);
+  if (dir.isEmpty())
+    return {};
+  QFile f(QDir(dir).filePath(QStringLiteral("manifest.json")));
+  if (!f.open(QIODevice::ReadOnly))
+    return {};
+  const QJsonObject manifest = QJsonDocument::fromJson(f.readAll()).object();
+  QJsonObject result = manifest.value(QStringLiteral("settings")).toObject();
+  return result;
+}
+
+QJsonObject PluginManager::applyPluginTool(const QJsonObject &call) {
+  QJsonObject result;
+  QJsonObject fn = call.value(QStringLiteral("function")).toObject();
+  const QString name = call.value(QStringLiteral("name")).toString(
+      fn.value(QStringLiteral("name")).toString());
+  QJsonObject args = call.value(QStringLiteral("arguments")).toObject();
+  if (args.isEmpty()) {
+    const QJsonValue raw = call.value(QStringLiteral("arguments"));
+    if (raw.isString()) {
+      QJsonParseError error;
+      const QJsonDocument doc =
+          QJsonDocument::fromJson(raw.toString().toUtf8(), &error);
+      if (error.error == QJsonParseError::NoError && doc.isObject())
+        args = doc.object();
+    }
+  }
+
+  bool ok = false;
+  if (name == QLatin1String("createPlugin")) {
+    ok = createPlugin(args);
+  } else if (name == QLatin1String("writePluginFile")) {
+    ok = writePluginFile(args.value(QStringLiteral("pluginId")).toString(),
+                         args.value(QStringLiteral("path")).toString(),
+                         args.value(QStringLiteral("contents")).toString());
+  } else if (name == QLatin1String("approvePlugin") ||
+             name == QLatin1String("enablePlugin")) {
+    // Consent is a user action. It is never available as an agent tool or over
+    // the control API, regardless of who is asking.
+    result.insert(QStringLiteral("error"),
+                  QStringLiteral("Plugin approval requires explicit user consent."));
+    return result;
+  } else if (name == QLatin1String("validatePlugin")) {
+    const QString errors =
+        validatePlugin(args.value(QStringLiteral("pluginId")).toString());
+    result.insert(QStringLiteral("errors"), errors);
+    ok = errors.isEmpty();
+  } else if (name == QLatin1String("rescanPlugins")) {
+    ok = rescanPlugins();
+  } else {
+    result.insert(QStringLiteral("error"), QStringLiteral("Unknown plugin tool: ") + name);
+    return result;
+  }
+
+  result.insert(QStringLiteral("ok"), ok);
+  if (!ok && !m_lastPluginError.isEmpty())
+    result.insert(QStringLiteral("error"), m_lastPluginError);
+  return result;
+}
+
+QStringList PluginManager::pluginPermissions(const QString &pluginId) const {
+  const QString dir = m_pluginDirs.value(pluginId).value(0);
+  if (dir.isEmpty())
+    return {};
+  QFile f(QDir(dir).filePath(QStringLiteral("manifest.json")));
+  if (!f.open(QIODevice::ReadOnly))
+    return {};
+  const QJsonObject manifest = QJsonDocument::fromJson(f.readAll()).object();
+  QStringList result;
+  for (const QJsonValue &v : manifest.value(QStringLiteral("permissions")).toArray())
+    result.append(v.toString());
+  return result;
 }
 
 } // namespace Templnote

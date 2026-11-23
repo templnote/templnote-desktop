@@ -141,11 +141,9 @@ ApplicationWindow {
     })
   }
 
-  BlockModel {
-    id: blockModel
-
-    autosaveEnabled: true
-  }
+  // `blockModel` and `agentService` are C++ context objects. The agent works on
+  // a preview session and mirrors its result through applyAgentDocument(), so
+  // the editor sees AI edits through the same path as any remote change.
 
   DocumentListModel {
     id: documentList

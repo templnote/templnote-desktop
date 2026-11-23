@@ -22,6 +22,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
   Quick
   QuickControls2
   Sql
+  Network
+  HttpServer
   Test)
 
 qt_standard_project_setup(REQUIRES 6.5)
@@ -44,22 +46,120 @@ set_source_files_properties(qml/MarkdownSyntax.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
 )
 
-add_library(templnote_core STATIC
+# QtCore-only domain types. Kept separate from templnote_core so the headless
+# engine can be linked without pulling in Qt Gui / Quick / QML.
+add_library(templnote_domain STATIC
   src/core/Block.h
   src/core/Block.cpp
   src/core/BlockTypes.h
-  src/core/CodeHighlighter.h
-  src/core/CodeHighlighter.cpp
   src/core/Document.h
   src/core/Document.cpp
+
+  src/storage/AppPaths.h
+  src/storage/AppPaths.cpp
+)
+target_include_directories(templnote_domain PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(templnote_domain PUBLIC Qt6::Core)
+
+# Headless editor engine: commands, patches, sessions, state backends.
+# QtCore-only by design — usable from a QCoreApplication daemon.
+add_library(templnote_engine STATIC
+  src/engine/Types.h
+  src/engine/Types.cpp
+  src/engine/Commands.h
+  src/engine/Commands.cpp
+  src/engine/DocumentState.h
+  src/engine/DocumentState.cpp
+  src/engine/ExternalDocumentState.h
+  src/engine/ExternalDocumentState.cpp
+  src/engine/EditorSession.h
+  src/engine/EditorSession.cpp
+  src/engine/ChangeFeed.h
+  src/engine/ChangeFeed.cpp
+  src/engine/CrdtDocumentState.h
+  src/engine/CrdtDocumentState.cpp
+  src/engine/CapabilityGate.h
+  src/engine/CapabilityGate.cpp
+)
+target_include_directories(templnote_engine PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(templnote_engine PUBLIC
+  templnote_domain
+  Qt6::Core
+)
+
+# Revisioned document store: CAS writes, patch journal, snapshots.
+# QtCore + QtSql, still no GUI dependency.
+add_library(templnote_store STATIC
+  src/store/DocumentStore.h
+  src/store/DocumentStore.cpp
+)
+target_include_directories(templnote_store PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(templnote_store PUBLIC
+  templnote_engine
+  Qt6::Core
+  Qt6::Sql
+)
+
+# LAN sync for multi-user collaboration.
+add_library(templnote_sync STATIC
+  src/sync/SyncManager.h
+  src/sync/SyncManager.cpp
+)
+target_include_directories(templnote_sync PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(templnote_sync PUBLIC
+  templnote_engine
+  Qt6::Core
+  Qt6::Network
+)
+
+# AI layer: tool schemas, model routing, multi-agent pipelines.
+add_library(templnote_ai STATIC
+  src/ai/ToolSchema.h
+  src/ai/ToolSchema.cpp
+  src/ai/AgentService.h
+  src/ai/AgentService.cpp
+  src/ai/ModelRouter.h
+  src/ai/ModelRouter.cpp
+  src/ai/SecretStore.h
+  src/ai/SecretStore.cpp
+  src/ai/ProviderRegistry.h
+  src/ai/ProviderRegistry.cpp
+  src/ai/PipelineRunner.h
+  src/ai/PipelineRunner.cpp
+  src/ai/AgentHttpServer.h
+  src/ai/AgentHttpServer.cpp
+)
+target_include_directories(templnote_ai PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(templnote_ai PUBLIC
+  templnote_engine
+  templnote_core
+  Qt6::Core
+  Qt6::Network
+  Qt6::HttpServer
+)
+
+add_library(templnote_core STATIC
+  src/core/CodeHighlighter.h
+  src/core/CodeHighlighter.cpp
+
+  src/bridge/LiveBridge.h
+  src/bridge/LiveBridge.cpp
 
   src/model/BlockModel.cpp
   src/model/BlockModel.h
 
   src/emoji/EmojiDatabase.h
   src/emoji/EmojiDatabase.cpp
-  src/storage/AppPaths.h
-  src/storage/AppPaths.cpp
   src/storage/DocumentListModel.h
   src/storage/DocumentListModel.cpp
 
@@ -79,6 +179,8 @@ add_library(templnote_core STATIC
   src/plugins/PluginsModel.cpp
   src/plugins/PluginManager.h
   src/plugins/PluginManager.cpp
+  src/plugins/PluginHost.h
+  src/plugins/PluginHost.cpp
 )
 
 target_include_directories(templnote_core PUBLIC
@@ -86,6 +188,8 @@ target_include_directories(templnote_core PUBLIC
 )
 
 target_link_libraries(templnote_core PUBLIC
+  templnote_domain
+  templnote_engine
   Qt6::Core
   Qt6::Gui
   Qt6::Quick
@@ -95,6 +199,20 @@ target_link_libraries(templnote_core PUBLIC
 
 qt_add_executable(templnote
   src/main.cpp
+)
+
+# Headless agent daemon — QCoreApplication only, no GUI / QML.
+add_executable(templnote-headless
+  src/headless/main.cpp
+)
+target_link_libraries(templnote-headless PRIVATE
+  templnote_store
+  templnote_engine
+  templnote_sync
+  templnote_ai
+  Qt6::Core
+  Qt6::Network
+  Qt6::Sql
 )
 
 qt_add_qml_module(templnote
@@ -134,7 +252,11 @@ qt_add_qml_module(templnote
   qml/settings/EditorSettings.qml
   qml/settings/DeveloperSettings.qml
   qml/settings/PluginsSettings.qml
+  qml/settings/DeclarativePluginSettings.qml
+  qml/settings/AISettings.qml
   qml/settings/SettingToggle.qml
+  qml/settings/SettingSwitch.qml
+  qml/settings/SettingsButton.qml
   qml/settings/SettingChoice.qml
   qml/settings/SettingSlider.qml
 
@@ -234,6 +356,7 @@ qt_add_qml_module(templnote
 
 target_link_libraries(templnote PRIVATE
   templnote_core
+  templnote_ai
   Qt6::Core
   Qt6::QuickControls2
 )

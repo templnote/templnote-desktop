@@ -14,6 +14,8 @@
 #include <qtmetamacros.h>
 
 #include "../core/Document.h"
+#include "../engine/EditorSession.h"
+#include "../engine/ExternalDocumentState.h"
 
 namespace Templnote {
 class VisibleBlocksProxy;
@@ -181,6 +183,12 @@ public:
 
   const Document &document() const;
 
+  // The authoritative engine session (shares this model's Document). Exposed
+  // so agents, plugins and tests can observe/apply patches.
+  Engine::EditorSession *engineSession() const {
+    return const_cast<Engine::EditorSession *>(&m_engineSession);
+  }
+
   Q_INVOKABLE int indexOfBlock(const QString &id) const;
 
   // Id of the block at `row`, or an empty string when out of range.
@@ -228,6 +236,18 @@ public:
   // failure the open document and its undo history are left untouched.
   Q_INVOKABLE bool loadDocument(const QString &path);
 
+  // Headless engine bridge: apply a document snapshot produced by an
+  // EditorSession. The patch JSON is re-emitted so views can restore focus to
+  // the block that changed. Used by the live change feed (P3).
+  Q_INVOKABLE bool applyRemoteDocument(const QJsonObject &documentJson,
+                                       const QJsonObject &patchJson);
+
+  // Applies a document snapshot produced by an agent's preview session and
+  // marks the model dirty (so autosave persists it). Unlike applyRemoteDocument
+  // this is intended for AI-originated edits in the open document.
+  Q_INVOKABLE bool applyAgentDocument(const QJsonObject &documentJson,
+                                      const QJsonObject &patchJson);
+
   // Replaces the current document with a single empty paragraph and saves it
   // to `path`. Used by FileExplorer for "New document".
   Q_INVOKABLE bool createDocument(const QString &path);
@@ -262,6 +282,9 @@ signals:
   void documentCreated();
   void fullWidthChanged();
   void contentRevisionChanged();
+  // Emitted when a document snapshot arrived from the headless engine. The
+  // payload is the Patch JSON so Editor.qml can restore caret/focus.
+  void remotePatchApplied(const QJsonObject &patchJson);
   // Emitted when a column's stored width changes. QML uses it to refresh the
   // pane-width bindings instead of reacting to every dataChanged signal.
   void columnWidthsChanged();
@@ -409,5 +432,21 @@ private:
   // so a crash or a closed window never silently loses the document.
   QTimer m_autosaveTimer;
   bool m_autosaveEnabled = false;
+  // True while applying a patch from the headless engine: suppresses local
+  // undo entries and the dirty flag so remote edits don't become local ones.
+  bool m_applyingRemote = false;
+
+  // Headless engine: the single source of truth for all edits. The state
+  // operates on m_document directly, so the view and engine never diverge.
+  Engine::ExternalDocumentState m_engineState{&m_document};
+  Engine::EditorSession m_engineSession{nullptr};
+
+  bool applyEngineCommand(const Engine::Command &cmd);
+  void syncEngineAfterLocalChange();
+  void scheduleEngineSync();
+  void flushEngineSync();
+  bool m_engineSyncPending = false;
+  QTimer m_engineSyncTimer;
+  Engine::Patch m_lastEnginePatch;
 };
 } // namespace Templnote

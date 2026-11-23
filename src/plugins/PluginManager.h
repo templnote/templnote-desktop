@@ -26,6 +26,8 @@ class PluginManager : public QObject {
   // enable/disable and per-plugin setting changes refresh the UI at runtime.
   Q_PROPERTY(int stateRevision READ stateRevision NOTIFY stateRevisionChanged)
   Q_PROPERTY(int settingsRevision READ settingsRevision NOTIFY settingsRevisionChanged)
+  Q_PROPERTY(QString lastPluginError READ lastPluginError NOTIFY
+                 pluginErrorChanged)
 
 public:
   explicit PluginManager(QObject *parent = nullptr);
@@ -75,6 +77,28 @@ public:
   Q_INVOKABLE QUrl settingsComponent(const QString &id) const;
   Q_INVOKABLE QVariantList decorationsForSlot(const QString &slot) const;
 
+  // ---- agent plugin authoring ---------------------------------------------
+  Q_INVOKABLE bool createPlugin(const QJsonObject &spec);
+  Q_INVOKABLE bool writePluginFile(const QString &pluginId,
+                                   const QString &relativePath,
+                                   const QString &contents);
+  Q_INVOKABLE bool rescanPlugins();
+  Q_INVOKABLE QString validatePlugin(const QString &pluginId) const;
+  Q_INVOKABLE bool approvePlugin(const QString &pluginId);
+  Q_INVOKABLE bool isPluginApproved(const QString &pluginId) const;
+  // True when an AI-authored plugin exists that the user has not approved yet.
+  Q_INVOKABLE bool needsApproval(const QString &pluginId) const;
+  Q_INVOKABLE QStringList pendingApprovalPlugins() const;
+  // Source files an agent wrote, for informed user consent in Settings.
+  Q_INVOKABLE QJsonObject pluginFiles(const QString &pluginId) const;
+  Q_INVOKABLE bool rollbackPlugin(const QString &pluginId);
+  Q_INVOKABLE QJsonObject declarativeSettings(const QString &pluginId) const;
+  Q_INVOKABLE QStringList pluginPermissions(const QString &pluginId) const;
+
+  // Execute a plugin-authoring tool call. Returns {ok, error, result}.
+  Q_INVOKABLE QJsonObject applyPluginTool(const QJsonObject &call);
+  QString lastPluginError() const { return m_lastPluginError; }
+
 signals:
   void activeThemesChanged();
   void activeDecorationsChanged();
@@ -86,6 +110,9 @@ signals:
   void pluginDisabled(const QString &id);
   void dependenciesRequired(const QString &id, const QStringList &deps);
   void dependentsWillBreak(const QString &id, const QStringList &dependents);
+  void pluginErrorChanged();
+  void pluginNeedsApproval(const QString &id);
+  void pluginApproved(const QString &id);
 
 private:
   void loadPluginSettings(const QString &pluginId) const;
@@ -143,6 +170,9 @@ private:
   QVariantMap m_activeDecorations;
   int m_stateRevision = 0;
   int m_settingsRevision = 0;
+
+  QString m_lastPluginError;
+  QSet<QString> m_approvedPlugins;
 };
 
 } // namespace Templnote

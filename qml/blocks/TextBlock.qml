@@ -126,7 +126,7 @@ Item {
   // typing does not re-parse the whole block for every keystroke.
   Timer {
     id: renderTimer
-    interval: 0
+    interval: 16
     repeat: false
     onTriggered: root.refreshRenderedHtml()
   }
@@ -218,16 +218,20 @@ Item {
     refreshRenderedHtml()
   }
 
-  // A link/footnote definition can live in any other block. Editing it used
-  // to leave every other block rendering the old target/reference.
+  // A link/footnote definition can live in any other block. Only re-render
+  // blocks whose content actually contains brackets that could reference them.
   onLinkDefinitionsChanged: {
-    renderCacheValid = false
-    refreshRenderedHtml()
+    if (root.content && root.content.indexOf("[") >= 0) {
+      renderCacheValid = false
+      refreshRenderedHtml()
+    }
   }
 
   onFootnoteDefinitionsChanged: {
-    renderCacheValid = false
-    refreshRenderedHtml()
+    if (root.content && root.content.indexOf("[") >= 0) {
+      renderCacheValid = false
+      refreshRenderedHtml()
+    }
   }
 
   // Supported inline HTML tags. Subscript and superscript keep their real
@@ -1493,8 +1497,7 @@ Item {
   onSearchHighlightsChanged: searchHighlightsCanvas.requestPaint()
 
   onRenderedHtmlChanged: {
-    root.updateCaretGeometry()
-    // The viewer's text binding may settle after this notification.
+    // The viewer's text binding settles before the timer fires; drop the redundant immediate call.
     caretGeometryTimer.restart()
   }
 

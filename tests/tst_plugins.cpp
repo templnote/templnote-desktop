@@ -15,6 +15,7 @@
 #include <QVariantMap>
 
 #include "plugins/PluginManager.h"
+#include "storage/AppPaths.h"
 #include "plugins/PluginManifest.h"
 #include "plugins/PluginsModel.h"
 
@@ -58,6 +59,12 @@ private slots:
   void testEnableFailureReportsMissingDependencies();
   void testBundledThemeManifestVersions();
   void testBundledPaperManifestVersion();
+  void testAgentCreatePlugin();
+  void testAgentWritePluginFileAndValidate();
+  void testApprovalGate();
+  void testRollbackPlugin();
+  void testDeclarativeSettingsAndPermissions();
+  void testPathTraversalRejected();
 
 private:
   void writePlugin(const QString &dirPath, const QJsonObject &manifest);
@@ -91,6 +98,134 @@ void PluginTests::cleanup() {
   qunsetenv("TEMPLNOTE_CONFIG_DIR");
   qunsetenv("TEMPLNOTE_BUNDLED_PLUGINS_DIR");
   m_configDir.reset();
+}
+
+
+void PluginTests::testAgentCreatePlugin() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("frosted-glass"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Frosted Glass"));
+  spec.insert(QStringLiteral("description"), QStringLiteral("Frosted editor background"));
+  QJsonArray decorations;
+  QJsonObject dec;
+  dec.insert(QStringLiteral("slot"), QStringLiteral("paper-background"));
+  dec.insert(QStringLiteral("component"), QStringLiteral("Frosted.qml"));
+  dec.insert(QStringLiteral("zOrder"), 1);
+  decorations.append(dec);
+  spec.insert(QStringLiteral("decorations"), decorations);
+
+  QVERIFY(manager.createPlugin(spec));
+  QVERIFY(!manager.validatePlugin(QStringLiteral("frosted-glass")).isEmpty());
+  QVERIFY(manager.writePluginFile(
+      QStringLiteral("frosted-glass"), QStringLiteral("Frosted.qml"),
+      QStringLiteral("import QtQuick\nItem { anchors.fill: parent }")));
+  QVERIFY(manager.validatePlugin(QStringLiteral("frosted-glass")).isEmpty());
+  QVERIFY(manager.rescanPlugins());
+  QVERIFY(!manager.pluginInfo(QStringLiteral("frosted-glass")).isEmpty());
+}
+
+void PluginTests::testAgentWritePluginFileAndValidate() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("daily-verse"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Daily Verse"));
+  QVERIFY(manager.createPlugin(spec));
+
+  QVERIFY(manager.writePluginFile(
+      QStringLiteral("daily-verse"), QStringLiteral("Verse.qml"),
+      QStringLiteral("import QtQuick\nText { text: \"Verse\" }")));
+  const QString path = QDir(AppPaths::pluginsDirectory())
+                           .filePath(QStringLiteral("daily-verse/Verse.qml"));
+  QVERIFY(QFileInfo::exists(path));
+  QCOMPARE(manager.lastPluginError(), QString());
+}
+
+void PluginTests::testApprovalGate() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("weather-widget"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Weather"));
+  QVERIFY(manager.createPlugin(spec));
+  QVERIFY(!manager.isPluginApproved(QStringLiteral("weather-widget")));
+  QVERIFY(!manager.enablePlugin(QStringLiteral("weather-widget")));
+  QVERIFY(!manager.lastPluginError().isEmpty());
+
+  QVERIFY(manager.approvePlugin(QStringLiteral("weather-widget")));
+  QVERIFY(manager.isPluginApproved(QStringLiteral("weather-widget")));
+  QVERIFY(manager.enablePlugin(QStringLiteral("weather-widget")));
+  QVERIFY(manager.isEnabled(QStringLiteral("weather-widget")));
+
+  // Approval persists across instances.
+  PluginManager reloaded;
+  QVERIFY(reloaded.isPluginApproved(QStringLiteral("weather-widget")));
+}
+
+void PluginTests::testRollbackPlugin() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("rollback-test"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Rollback"));
+  QVERIFY(manager.createPlugin(spec));
+  QVERIFY(manager.writePluginFile(
+      QStringLiteral("rollback-test"), QStringLiteral("Widget.qml"),
+      QStringLiteral("import QtQuick\nItem {}")));
+  const QString path = QDir(AppPaths::pluginsDirectory())
+                           .filePath(QStringLiteral("rollback-test/Widget.qml"));
+  QVERIFY(QFileInfo::exists(path));
+
+  QVERIFY(manager.writePluginFile(
+      QStringLiteral("rollback-test"), QStringLiteral("Widget.qml"),
+      QStringLiteral("broken qml")));
+  QFile f(path);
+  QVERIFY(f.open(QIODevice::ReadOnly));
+  QCOMPARE(QString::fromUtf8(f.readAll()), QStringLiteral("broken qml"));
+
+  QVERIFY(manager.rollbackPlugin(QStringLiteral("rollback-test")));
+  QFile f2(path);
+  QVERIFY(f2.open(QIODevice::ReadOnly));
+  QCOMPARE(QString::fromUtf8(f2.readAll()),
+           QStringLiteral("import QtQuick\nItem {}"));
+}
+
+void PluginTests::testDeclarativeSettingsAndPermissions() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("clock-widget"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Clock"));
+
+  QJsonArray fields;
+  QJsonObject field;
+  field.insert(QStringLiteral("key"), QStringLiteral("showSeconds"));
+  field.insert(QStringLiteral("type"), QStringLiteral("boolean"));
+  field.insert(QStringLiteral("label"), QStringLiteral("Show seconds"));
+  field.insert(QStringLiteral("default"), true);
+  fields.append(field);
+  spec.insert(QStringLiteral("settingsFields"), fields);
+  spec.insert(QStringLiteral("permissions"),
+              QJsonArray{QStringLiteral("network")});
+
+  QVERIFY(manager.createPlugin(spec));
+  const QJsonObject settings = manager.declarativeSettings(QStringLiteral("clock-widget"));
+  QVERIFY(settings.contains(QStringLiteral("fields")));
+  QCOMPARE(settings.value(QStringLiteral("fields")).toArray().size(), 1);
+  QCOMPARE(manager.pluginPermissions(QStringLiteral("clock-widget")),
+           QStringList{QStringLiteral("network")});
+}
+
+void PluginTests::testPathTraversalRejected() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("safe-plugin"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Safe"));
+  QVERIFY(manager.createPlugin(spec));
+  QVERIFY(!manager.writePluginFile(
+      QStringLiteral("safe-plugin"), QStringLiteral("../escape.qml"),
+      QStringLiteral("bad")));
+  QVERIFY(!manager.writePluginFile(
+      QStringLiteral("safe-plugin"), QStringLiteral("evil.exe"),
+      QStringLiteral("bad")));
+  QVERIFY(!manager.lastPluginError().isEmpty());
 }
 
 void PluginTests::writePlugin(const QString &dirPath,

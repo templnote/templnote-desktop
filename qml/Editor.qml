@@ -96,6 +96,8 @@ Item {
 
     for (let row = 0; row < model.rowCount(); ++row) {
       const text = model.data(model.index(row, 0), Qt.DisplayRole) || ""
+      if (!MarkdownSyntax.mightHaveDefinition(text))
+        continue
 
       const found = MarkdownSyntax.definitionsFrom(text)
       for (const key in found)

@@ -219,6 +219,51 @@ BlockModel::BlockModel(QObject *parent) : QAbstractListModel(parent) {
 
   m_document.appendBlock(Block::create(BlockType::Paragraph,
                                        "Your local-first writing environment"));
+
+  // The engine operates on the same Document. Every edit now goes through a
+  // Command, so agents, journal, sync and undo all see the human's changes.
+  m_engineSession.setDocumentState(&m_engineState);
+  m_engineSession.setActor(Engine::Actor::human());
+  m_engineSession.setLightweightHistory(true);
+
+  m_engineSyncTimer.setSingleShot(true);
+  m_engineSyncTimer.setInterval(0);
+  connect(&m_engineSyncTimer, &QTimer::timeout, this, &BlockModel::flushEngineSync);
+}
+
+bool BlockModel::applyEngineCommand(const Engine::Command &cmd) {
+  const auto result = m_engineSession.apply(cmd);
+  if (!result.ok())
+    return false;
+  m_lastEnginePatch = result.value();
+  // The command mutated m_document through ExternalDocumentState. Record the
+  // resulting selection for focus restoration.
+  m_lastHistoryBlockId = result.value().after.blockId;
+  m_lastHistoryCursorPosition = result.value().after.head;
+  return true;
+}
+
+void BlockModel::syncEngineAfterLocalChange() {
+  // Complex structural edits keep their existing implementation, then record
+  // a full snapshot in the engine so the patch stream stays complete.
+  Engine::Command snapshot;
+  snapshot.type = Engine::Command::Type::ApplyJson;
+  snapshot.text = QString::fromUtf8(
+      QJsonDocument(m_document.toJson()).toJson(QJsonDocument::Compact));
+  snapshot.actor = Engine::Actor::human();
+  m_engineSession.apply(snapshot);
+}
+
+void BlockModel::scheduleEngineSync() {
+  if (!m_engineSyncPending) {
+    m_engineSyncPending = true;
+    m_engineSyncTimer.start();
+  }
+}
+
+void BlockModel::flushEngineSync() {
+  m_engineSyncPending = false;
+  syncEngineAfterLocalChange();
 }
 
 int BlockModel::rowCount(const QModelIndex &parent) const {
@@ -233,6 +278,8 @@ bool BlockModel::canRedo() const { return !m_redoStack.empty(); }
 void BlockModel::saveHistory(const QVector<PatchOp> &patch,
                              const QString &focusBeforeId,
                              const QString &focusAfterId) {
+  if (m_applyingRemote)
+    return;
   HistoryEntry entry;
   entry.kind = HistoryEntry::Kind::StructuralEdit;
   entry.focusBeforeId = focusBeforeId;
@@ -254,6 +301,8 @@ void BlockModel::saveHistory(const QVector<PatchOp> &patch,
 
 void BlockModel::saveTextHistory(const QString &id, const QString &before,
                                  const QString &after) {
+  if (m_applyingRemote)
+    return;
   const TextDiff diff = diffText(before, after);
   const int changedCharacters =
       diff.removed.size() + diff.inserted.size();
@@ -473,7 +522,9 @@ QString BlockModel::appendBlock(int type, const QString &text) {
 
   const QString id = block.id;
 
-  m_document.appendBlock(block);
+  Engine::Command appendCmd = Engine::Command::insertBlock({}, type, text);
+  appendCmd.blockId = id;
+  applyEngineCommand(appendCmd);
 
   endInsertRows();
 
@@ -511,7 +562,12 @@ QString BlockModel::insertBlockInternal(int row, int type, const QString &text,
   block.parentId = parentId;
   const QString id = block.id;
 
-  const bool success = m_document.insertBlock(row, block);
+  Engine::Command insertCmd = Engine::Command::insertBlock({}, type, text);
+  insertCmd.blockId = id;
+  insertCmd.position = row;
+  if (!parentId.isEmpty())
+    insertCmd.metadata[QStringLiteral("parentId")] = parentId;
+  const bool success = applyEngineCommand(insertCmd);
 
   endInsertRows();
 
@@ -648,6 +704,7 @@ bool BlockModel::removeBlock(const QString &id) {
 
   markModified();
   emit countChanged();
+  scheduleEngineSync();
 
   return true;
 }
@@ -730,6 +787,7 @@ QString BlockModel::duplicateBlock(const QString &id) {
   applyPatch(patch, false);
   saveHistory(patch, id, copies.first().id);
   markModified();
+  scheduleEngineSync();
 
   return copies.first().id;
 }
@@ -747,7 +805,7 @@ bool BlockModel::updateBlockText(const QString &id, const QString &text) {
 
   const QString before = block->text;
 
-  if (!m_document.updateBlockText(id, text))
+  if (!applyEngineCommand(Engine::Command::setText(id, text)))
     return false;
 
   saveTextHistory(id, before, text);
@@ -777,7 +835,7 @@ QString BlockModel::splitBlock(const QString &id, int position,
     return {};
 
   if (!editorText.isNull() &&
-      !m_document.updateBlockText(id, editorText)) {
+      !applyEngineCommand(Engine::Command::setText(id, editorText))) {
     return {};
   }
 
@@ -790,9 +848,22 @@ QString BlockModel::splitBlock(const QString &id, int position,
 
   beginInsertRows({}, row + 1, row + 1);
 
-  const QString newId = m_document.splitBlock(id, position);
+  Engine::Command splitCmd;
+  splitCmd.type = Engine::Command::Type::SplitBlock;
+  splitCmd.blockId = id;
+  splitCmd.position = position;
+  const bool splitOk = applyEngineCommand(splitCmd);
+  QString newId;
+  for (const Engine::Op &op : m_lastEnginePatch.ops) {
+    if (op.type == Engine::Op::Type::InsertBlock) {
+      newId = op.blockId;
+      break;
+    }
+  }
 
   endInsertRows();
+  if (!splitOk)
+    return {};
 
   if (newId.isEmpty())
     return {};
@@ -847,7 +918,7 @@ bool BlockModel::mergeWithPrevious(const QString &id,
   const Block beforePrevious = *previous;
 
   if (!editorText.isNull() &&
-      !m_document.updateBlockText(id, editorText)) {
+      !applyEngineCommand(Engine::Command::setText(id, editorText))) {
     return false;
   }
 
@@ -857,7 +928,10 @@ bool BlockModel::mergeWithPrevious(const QString &id,
 
   beginRemoveRows({}, row, row);
 
-  const bool success = m_document.mergeWithPrevious(id);
+  Engine::Command mergeCmd;
+  mergeCmd.type = Engine::Command::Type::MergeWithPrevious;
+  mergeCmd.blockId = id;
+  const bool success = applyEngineCommand(mergeCmd);
 
   endRemoveRows();
 
@@ -907,8 +981,8 @@ bool BlockModel::changeBlockType(const QString &id, int type,
 
   invalidateStructureCaches();
 
-  if (!m_document.updateBlockType(id, static_cast<BlockType>(type),
-                                  headingLevel)) {
+  if (!applyEngineCommand(Engine::Command::setBlockType(id, type,
+                                                        headingLevel))) {
     return false;
   }
 
@@ -953,7 +1027,11 @@ bool BlockModel::setBlockAlignment(const QString &id, const QString &align) {
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockAlignment(id, targetAlign))
+  Engine::Command alignCmd;
+  alignCmd.type = Engine::Command::Type::SetAlignment;
+  alignCmd.blockId = id;
+  alignCmd.alignment = targetAlign;
+  if (!applyEngineCommand(alignCmd))
     return false;
 
   PatchOp op;
@@ -983,7 +1061,11 @@ bool BlockModel::setBlockChecked(const QString &id, bool checked) {
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockChecked(id, checked))
+  Engine::Command checkedCmd;
+  checkedCmd.type = Engine::Command::Type::SetChecked;
+  checkedCmd.blockId = id;
+  checkedCmd.checked = checked;
+  if (!applyEngineCommand(checkedCmd))
     return false;
 
   PatchOp op;
@@ -1013,7 +1095,11 @@ bool BlockModel::setBlockCalloutType(const QString &id, const QString &calloutTy
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockCalloutType(id, calloutType))
+  Engine::Command calloutCmd;
+  calloutCmd.type = Engine::Command::Type::SetCalloutType;
+  calloutCmd.blockId = id;
+  calloutCmd.calloutType = calloutType;
+  if (!applyEngineCommand(calloutCmd))
     return false;
 
   PatchOp op;
@@ -1043,7 +1129,11 @@ bool BlockModel::setBlockCodeLanguage(const QString &id, const QString &language
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockCodeLanguage(id, language))
+  Engine::Command langCmd;
+  langCmd.type = Engine::Command::Type::SetCodeLanguage;
+  langCmd.blockId = id;
+  langCmd.language = language;
+  if (!applyEngineCommand(langCmd))
     return false;
 
   PatchOp op;
@@ -1072,7 +1162,11 @@ bool BlockModel::setBlockImageSource(const QString &id, const QString &source) {
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockImageSource(id, source))
+  Engine::Command imageCmd;
+  imageCmd.type = Engine::Command::Type::SetImageSource;
+  imageCmd.blockId = id;
+  imageCmd.imageSource = source;
+  if (!applyEngineCommand(imageCmd))
     return false;
 
   PatchOp op;
@@ -1105,7 +1199,11 @@ bool BlockModel::setBlockImageWidthRatio(const QString &id, double ratio) {
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockImageWidthRatio(id, clampedRatio))
+  Engine::Command ratioCmd;
+  ratioCmd.type = Engine::Command::Type::SetImageWidthRatio;
+  ratioCmd.blockId = id;
+  ratioCmd.imageWidthRatio = clampedRatio;
+  if (!applyEngineCommand(ratioCmd))
     return false;
 
   PatchOp op;
@@ -1135,11 +1233,16 @@ bool BlockModel::setBlockMetadata(const QString &id, const QVariantMap &metadata
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockMetadata(id, effective))
+  Engine::Command metaCmd = Engine::Command();
+  metaCmd.type = Engine::Command::Type::SetMetadata;
+  metaCmd.blockId = id;
+  metaCmd.metadata = effective;
+  if (!applyEngineCommand(metaCmd))
     return false;
 
   if (effective.contains(QStringLiteral("plainText"))) {
-    m_document.updateBlockText(id, effective.value(QStringLiteral("plainText")).toString());
+    applyEngineCommand(Engine::Command::setText(
+        id, effective.value(QStringLiteral("plainText")).toString()));
   }
 
   PatchOp op;
@@ -1176,14 +1279,19 @@ bool BlockModel::setBlockMetadataWithText(const QString &id,
 
   const Block beforeBlock = *block;
 
-  if (!m_document.updateBlockMetadata(id, effective))
+  Engine::Command metaCmd;
+  metaCmd.type = Engine::Command::Type::SetMetadata;
+  metaCmd.blockId = id;
+  metaCmd.metadata = effective;
+  if (!applyEngineCommand(metaCmd))
     return false;
 
   if (block->text != plainText &&
-      !m_document.updateBlockText(id, plainText)) {
+      !applyEngineCommand(Engine::Command::setText(id, plainText))) {
     // Keep the two fields atomic: don't leave metadata applied when the text
     // half of the operation was rejected.
     m_document.setBlock(row, beforeBlock);
+    scheduleEngineSync();
     return false;
   }
 
@@ -1434,7 +1542,11 @@ bool BlockModel::moveBlock(const QString &id, int destination) {
     return false;
   }
 
-  const bool success = m_document.moveBlock(id, destination);
+  Engine::Command moveCmd;
+  moveCmd.type = Engine::Command::Type::MoveBlock;
+  moveCmd.blockId = id;
+  moveCmd.destination = destination;
+  const bool success = applyEngineCommand(moveCmd);
 
   endMoveRows();
 
@@ -1534,7 +1646,11 @@ void BlockModel::syncModifiedState() {
     scheduleAutosave();
 }
 
-void BlockModel::markModified() { syncModifiedState(); }
+void BlockModel::markModified() {
+  if (m_applyingRemote)
+    return;
+  syncModifiedState();
+}
 
 void BlockModel::emitNumberIndexChanged(int firstRow) {
   // Renumbering is scoped to one contiguous numbered run. If the changed row
@@ -1848,6 +1964,85 @@ bool BlockModel::loadDocument(const QString &path) {
   emit documentLoaded();
 
   return true;
+}
+
+bool BlockModel::applyRemoteDocument(const QJsonObject &documentJson,
+                                     const QJsonObject &patchJson) {
+  Document document;
+  QString error;
+  if (!document.fromJson(documentJson, &error))
+    return setError(error);
+
+  const QString focusedId = m_lastHistoryBlockId;
+
+  // Fast path: when the block ids and their order are unchanged, apply only
+  // the fields that differ. This emits dataChanged (not a model reset), so
+  // QML delegates and the user's caret survive an AI/remote edit in progress.
+  bool sameStructure = document.count() == m_document.count();
+  if (sameStructure) {
+    for (int i = 0; i < document.count(); ++i) {
+      if (document.blockAt(i)->id != m_document.blockAt(i)->id) {
+        sameStructure = false;
+        break;
+      }
+    }
+  }
+
+  if (sameStructure) {
+    // Do not let these granular updates enter the local undo stack or mark the
+    // document dirty: the headless session already owns both.
+    m_applyingRemote = true;
+    for (int i = 0; i < document.count(); ++i) {
+      const Block *incoming = document.blockAt(i);
+      const Block *current = m_document.blockAt(i);
+      if (incoming->text != current->text)
+        updateBlockText(incoming->id, incoming->text);
+      if (incoming->type != current->type ||
+          incoming->headingLevel != current->headingLevel)
+        changeBlockType(incoming->id, static_cast<int>(incoming->type),
+                        incoming->headingLevel);
+      if (incoming->metadata != current->metadata)
+        setBlockMetadata(incoming->id, incoming->metadata);
+    }
+    m_applyingRemote = false;
+    setModified(false);
+    m_lastHistoryBlockId = focusedId;
+    emit remotePatchApplied(patchJson);
+    return true;
+  }
+
+  resetDocument(std::move(document));
+
+  // Keep the document marked clean: the snapshot came from the authoritative
+  // headless session, which has already persisted it.
+  setModified(false);
+  emit fullWidthChanged();
+
+  // Prefer the block named by the patch's "after" selection so the caret lands
+  // where the remote edit happened; fall back to the previously focused block
+  // when it still exists.
+  QString targetId;
+  const QJsonObject after = patchJson.value(QStringLiteral("after")).toObject();
+  targetId = after.value(QStringLiteral("blockId")).toString();
+  if (targetId.isEmpty() || !m_document.findBlock(targetId))
+    targetId = focusedId;
+  if (targetId.isEmpty() || !m_document.findBlock(targetId))
+    targetId = m_document.count() > 0 ? m_document.blockAt(0)->id : QString();
+  m_lastHistoryBlockId = targetId;
+  m_lastHistoryCursorPosition = -1;
+
+  emit remotePatchApplied(patchJson);
+  return true;
+}
+
+bool BlockModel::applyAgentDocument(const QJsonObject &documentJson,
+                                    const QJsonObject &patchJson) {
+  const bool ok = applyRemoteDocument(documentJson, patchJson);
+  if (ok) {
+    // Agent edits are real edits: mark dirty so autosave writes them back.
+    markModified();
+  }
+  return ok;
 }
 
 bool BlockModel::createDocument(const QString &path) {
@@ -2310,6 +2505,7 @@ QString BlockModel::createColumnsLayout(int row, int count,
   saveHistory(patch, original.id, children.first().id);
   markModified();
 
+  scheduleEngineSync();
   return children.first().id;
 }
 
@@ -2402,6 +2598,7 @@ bool BlockModel::insertColumn(const QString &containerId,
   saveHistory(patch, afterColumnId, child.id);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2474,6 +2671,7 @@ bool BlockModel::moveColumnToIndex(const QString &columnId, int targetIndex) {
   saveHistory(patch, columnId, columnId);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2502,6 +2700,7 @@ bool BlockModel::equalizeColumns(const QString &containerId) {
   saveHistory(patch, containerId, containerId);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2588,6 +2787,7 @@ bool BlockModel::removeColumn(const QString &columnId) {
   saveHistory(patch, columnId, focusAfter);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2725,6 +2925,7 @@ bool BlockModel::extractColumnToEditor(const QString &columnId,
   saveHistory(patch, columnId, focusAfter);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2796,6 +2997,7 @@ bool BlockModel::moveColumnToLayout(const QString &columnId,
   saveHistory(patch, columnId, columnId);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2856,6 +3058,7 @@ bool BlockModel::moveBlockToColumn(const QString &blockId,
   saveHistory(patch, blockId, blockId);
   markModified();
 
+  scheduleEngineSync();
   return true;
 }
 
@@ -2898,6 +3101,7 @@ QString BlockModel::appendBlockToColumn(const QString &columnId, int type,
   applyPatch({op}, false);
   saveHistory({op}, columnId, block.id);
   markModified();
+  scheduleEngineSync();
 
   return block.id;
 }
@@ -2922,6 +3126,7 @@ bool BlockModel::setColumnWidth(const QString &columnId, double width) {
     saveHistory(patch, columnId, columnId);
 
   markModified();
+  scheduleEngineSync();
   return true;
 }
 

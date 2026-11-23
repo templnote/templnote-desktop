@@ -21,6 +21,14 @@ add_test(
     COMMAND benchmark_search
 )
 
+add_executable(benchmark_engine
+    benchmark_engine.cpp
+)
+target_link_libraries(benchmark_engine PRIVATE
+    templnote_engine
+    Qt6::Test
+)
+
 add_executable(tst_document
     tst_document.cpp
 )
@@ -52,6 +60,88 @@ target_link_libraries(tst_blockmodel PRIVATE
 add_test(
     NAME BlockModelTests
     COMMAND tst_blockmodel
+)
+
+add_executable(tst_engine
+    tst_engine.cpp
+)
+
+target_link_libraries(tst_engine PRIVATE
+    templnote_engine
+    Qt6::Test
+)
+
+add_test(
+    NAME EngineTests
+    COMMAND tst_engine
+)
+
+add_executable(tst_providers
+    tst_providers.cpp
+)
+target_link_libraries(tst_providers PRIVATE
+    templnote_ai
+    Qt6::Test
+)
+add_test(
+    NAME ProviderTests
+    COMMAND tst_providers
+)
+
+add_executable(tst_ai
+    tst_ai.cpp
+)
+
+target_link_libraries(tst_ai PRIVATE
+    templnote_ai
+    templnote_sync
+    Qt6::Test
+)
+
+add_test(
+    NAME AiTests
+    COMMAND tst_ai
+)
+
+add_executable(tst_security
+    tst_security.cpp
+)
+target_link_libraries(tst_security PRIVATE
+    templnote_ai
+    templnote_core
+    Qt6::Test
+)
+add_test(
+    NAME SecurityTests
+    COMMAND tst_security
+)
+
+add_executable(tst_crdt
+    tst_crdt.cpp
+)
+
+target_link_libraries(tst_crdt PRIVATE
+    templnote_engine
+    Qt6::Test
+)
+
+add_test(
+    NAME CrdtTests
+    COMMAND tst_crdt
+)
+
+add_executable(tst_store
+    tst_store.cpp
+)
+
+target_link_libraries(tst_store PRIVATE
+    templnote_store
+    Qt6::Test
+)
+
+add_test(
+    NAME StoreTests
+    COMMAND tst_store
 )
 
 add_executable(tst_storage
@@ -189,6 +279,70 @@ set_source_files_properties(
     "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
     PROPERTIES QT_RESOURCE_ALIAS
     "assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg"
+)
+
+# AI settings smoke test: compile and instantiate the real AISettings.qml.
+set(AI_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/AISettings.qml")
+set(AI_SETTING_TOGGLE_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingToggle.qml")
+set(AI_SETTING_SWITCH_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingSwitch.qml")
+set(AI_SETTINGS_BUTTON_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingsButton.qml")
+set_source_files_properties(${AI_SETTINGS_QML} PROPERTIES
+    QT_RESOURCE_ALIAS "AISettings.qml")
+set_source_files_properties(${AI_SETTING_TOGGLE_QML} PROPERTIES
+    QT_RESOURCE_ALIAS "SettingToggle.qml")
+set_source_files_properties(${AI_SETTING_SWITCH_QML} PROPERTIES
+    QT_RESOURCE_ALIAS "SettingSwitch.qml")
+set_source_files_properties(${AI_SETTINGS_BUTTON_QML} PROPERTIES
+    QT_RESOURCE_ALIAS "SettingsButton.qml")
+set(PLUGINS_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/PluginsSettings.qml")
+set(DECLARATIVE_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/DeclarativePluginSettings.qml")
+set(SETTING_CHOICE_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingChoice.qml")
+set(SETTING_SLIDER_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingSlider.qml")
+foreach(alias_pair
+        "PluginsSettings.qml|${PLUGINS_SETTINGS_QML}"
+        "DeclarativePluginSettings.qml|${DECLARATIVE_SETTINGS_QML}"
+        "SettingChoice.qml|${SETTING_CHOICE_QML}"
+        "SettingSlider.qml|${SETTING_SLIDER_QML}")
+    string(REGEX REPLACE "^[^|]+\\|" "" qml_path "${alias_pair}")
+    string(REGEX REPLACE "\\|.*$" "" qml_alias "${alias_pair}")
+    set_source_files_properties("${qml_path}" PROPERTIES
+        QT_RESOURCE_ALIAS "${qml_alias}")
+endforeach()
+set_source_files_properties("${TEST_QML_DIR}/Theme.qml" PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE)
+
+qt_add_executable(tst_aisettings
+    tst_aisettings.cpp
+)
+qt_add_qml_module(tst_aisettings
+    URI TemplnoteAISettingsTest
+    VERSION 1.0
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/aisettings"
+    QML_FILES
+        AISettingsTest.qml
+        PluginsSettingsTest.qml
+        ${TEST_QML_DIR}/Theme.qml
+        ${AI_SETTING_TOGGLE_QML}
+        ${AI_SETTING_SWITCH_QML}
+        ${AI_SETTINGS_BUTTON_QML}
+        ${AI_SETTINGS_QML}
+        ${PLUGINS_SETTINGS_QML}
+        ${DECLARATIVE_SETTINGS_QML}
+        ${SETTING_CHOICE_QML}
+        ${SETTING_SLIDER_QML}
+)
+target_link_libraries(tst_aisettings PRIVATE
+    templnote_ai
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+)
+add_test(
+    NAME AISettingsQmlTests
+    COMMAND $<TARGET_FILE:tst_aisettings>
+)
+set_tests_properties(AISettingsQmlTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
 )
 
 qt_add_executable(tst_editor
