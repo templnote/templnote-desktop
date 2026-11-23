@@ -7,7 +7,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 
-#include "../src/storage/AppPaths.h"
+#include "storage/AppPaths.h"
 #include "../src/storage/DocumentListModel.h"
 
 using namespace Templnote;

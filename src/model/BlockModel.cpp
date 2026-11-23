@@ -22,8 +22,8 @@
 #include <qcontainerfwd.h>
 #include <qnamespace.h>
 
-#include "../core/BlockTypes.h"
-#include "../storage/AppPaths.h"
+#include "core/BlockTypes.h"
+#include "storage/AppPaths.h"
 
 namespace Templnote {
 namespace {

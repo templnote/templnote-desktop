@@ -1,6 +1,6 @@
 #include "DocumentListModel.h"
 
-#include "AppPaths.h"
+#include "storage/AppPaths.h"
 
 #include <QDateTime>
 #include <QDebug>

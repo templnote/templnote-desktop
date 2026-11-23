@@ -4,7 +4,7 @@
 #include <QFileInfo>
 #include <QVariantMap>
 
-#include "../storage/AppPaths.h"
+#include "storage/AppPaths.h"
 
 namespace Templnote {
 SearchResultsModel::SearchResultsModel(QObject *parent)

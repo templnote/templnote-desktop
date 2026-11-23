@@ -21,14 +21,6 @@ add_test(
     COMMAND benchmark_search
 )
 
-add_executable(benchmark_engine
-    benchmark_engine.cpp
-)
-target_link_libraries(benchmark_engine PRIVATE
-    templnote_engine
-    Qt6::Test
-)
-
 add_executable(tst_document
     tst_document.cpp
 )
@@ -62,20 +54,6 @@ add_test(
     COMMAND tst_blockmodel
 )
 
-add_executable(tst_engine
-    tst_engine.cpp
-)
-
-target_link_libraries(tst_engine PRIVATE
-    templnote_engine
-    Qt6::Test
-)
-
-add_test(
-    NAME EngineTests
-    COMMAND tst_engine
-)
-
 add_executable(tst_ai
     tst_ai.cpp
 )
@@ -104,20 +82,6 @@ target_link_libraries(tst_security PRIVATE
 add_test(
     NAME SecurityTests
     COMMAND tst_security
-)
-
-add_executable(tst_crdt
-    tst_crdt.cpp
-)
-
-target_link_libraries(tst_crdt PRIVATE
-    templnote_engine
-    Qt6::Test
-)
-
-add_test(
-    NAME CrdtTests
-    COMMAND tst_crdt
 )
 
 add_executable(tst_store

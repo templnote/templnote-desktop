@@ -11,7 +11,7 @@
 #include <QTextLayout>
 
 #include "../src/core/CodeHighlighter.h"
-#include "../src/core/Document.h"
+#include "core/Document.h"
 
 using namespace Templnote;
 

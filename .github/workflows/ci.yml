@@ -55,7 +55,9 @@ jobs:
             fi
           done
           if grep -r -n '#include "model/\|#include <QGui\|#include <QQuick\|#include <QJSValue' \
-              src/engine src/ai src/store src/sync \
+              src/store src/sync \
+              third_party/templnote-editor/src \
+              third_party/templnote-ai/src \
               third_party/templnote-plugins/sdk/src/core; then
             echo "ERROR: GUI include found in a reusable library"
             exit 1

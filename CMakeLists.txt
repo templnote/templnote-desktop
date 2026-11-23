@@ -34,6 +34,7 @@ qt_policy(SET QTP0004 NEW)
 # project so the same source can be consumed by other Qt frontends.
 add_subdirectory(third_party/templnote-plugins/sdk)
 add_subdirectory(third_party/templnote-ai)
+add_subdirectory(third_party/templnote-editor)
 
 set_source_files_properties(qml/Theme.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
@@ -49,51 +50,6 @@ set_source_files_properties(qml/Preferences.qml PROPERTIES
 
 set_source_files_properties(qml/MarkdownSyntax.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
-)
-
-# QtCore-only domain types. Kept separate from templnote_core so the headless
-# engine can be linked without pulling in Qt Gui / Quick / QML.
-add_library(templnote_domain STATIC
-  src/core/Block.h
-  src/core/Block.cpp
-  src/core/BlockTypes.h
-  src/core/Document.h
-  src/core/Document.cpp
-
-  src/storage/AppPaths.h
-  src/storage/AppPaths.cpp
-)
-target_include_directories(templnote_domain PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_link_libraries(templnote_domain PUBLIC Qt6::Core)
-
-# Headless editor engine: commands, patches, sessions, state backends.
-# QtCore-only by design — usable from a QCoreApplication daemon.
-add_library(templnote_engine STATIC
-  src/engine/Types.h
-  src/engine/Types.cpp
-  src/engine/Commands.h
-  src/engine/Commands.cpp
-  src/engine/DocumentState.h
-  src/engine/DocumentState.cpp
-  src/engine/ExternalDocumentState.h
-  src/engine/ExternalDocumentState.cpp
-  src/engine/EditorSession.h
-  src/engine/EditorSession.cpp
-  src/engine/ChangeFeed.h
-  src/engine/ChangeFeed.cpp
-  src/engine/CrdtDocumentState.h
-  src/engine/CrdtDocumentState.cpp
-  src/engine/CapabilityGate.h
-  src/engine/CapabilityGate.cpp
-)
-target_include_directories(templnote_engine PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_link_libraries(templnote_engine PUBLIC
-  templnote_domain
-  Qt6::Core
 )
 
 # Revisioned document store: CAS writes, patch journal, snapshots.

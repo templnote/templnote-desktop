@@ -13,9 +13,9 @@
 #include <qproperty.h>
 #include <qtmetamacros.h>
 
-#include "../core/Document.h"
-#include "../engine/EditorSession.h"
-#include "../engine/ExternalDocumentState.h"
+#include "core/Document.h"
+#include "engine/EditorSession.h"
+#include "engine/ExternalDocumentState.h"
 
 namespace Templnote {
 class VisibleBlocksProxy;

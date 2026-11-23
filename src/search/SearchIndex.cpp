@@ -1,8 +1,8 @@
 #include "SearchIndex.h"
 
-#include "../core/Document.h"
+#include "core/Document.h"
 #include "../model/BlockModel.h"
-#include "../storage/AppPaths.h"
+#include "storage/AppPaths.h"
 #include "../storage/DocumentListModel.h"
 
 #include <QDir>
