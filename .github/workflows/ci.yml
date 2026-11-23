@@ -38,6 +38,9 @@ jobs:
         with:
           version: "6.8.3"
           cache: true
+          # HttpServer is an add-on module, not part of the default Qt install.
+          # Required by this project and the templnote-ai submodule.
+          modules: 'qthttpserver'
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
