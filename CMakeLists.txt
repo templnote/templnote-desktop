@@ -15,7 +15,7 @@ set(CMAKE_AUTOMOC ON)
 
 include(CTest)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS
+find_package(Qt6 6.12 REQUIRED COMPONENTS
   Core
   Concurrent
   Gui
@@ -26,7 +26,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
   HttpServer
   Test)
 
-qt_standard_project_setup(REQUIRES 6.5)
+qt_standard_project_setup(REQUIRES 6.12)
 
 qt_policy(SET QTP0004 NEW)
 

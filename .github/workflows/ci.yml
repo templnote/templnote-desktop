@@ -36,11 +36,11 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.3"
+          version: "6.12.1"
           cache: true
-          # HttpServer is an add-on module, not part of the default Qt install.
-          # Required by this project and the templnote-ai submodule.
-          modules: 'qthttpserver'
+          # HttpServer (and its WebSockets dependency) are add-on modules
+          # required by this project and the templnote-ai submodule.
+          modules: 'qthttpserver qtwebsockets'
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
