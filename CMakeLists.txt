@@ -15,6 +15,7 @@ set(CMAKE_AUTOMOC ON)
 
 include(CTest)
 
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core
   Concurrent
@@ -29,6 +30,10 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_policy(SET QTP0004 NEW)
+
+# Reusable plugin SDK (git submodule pinned to an SDK tag). Kept as a separate
+# project so the same source can be consumed by other Qt frontends.
+add_subdirectory(third_party/templnote-plugins/sdk)
 
 set_source_files_properties(qml/Theme.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
@@ -124,8 +129,6 @@ target_link_libraries(templnote_sync PUBLIC
 add_library(templnote_ai STATIC
   src/ai/ToolSchema.h
   src/ai/ToolSchema.cpp
-  src/ai/AgentService.h
-  src/ai/AgentService.cpp
   src/ai/ModelRouter.h
   src/ai/ModelRouter.cpp
   src/ai/SecretStore.h
@@ -142,7 +145,7 @@ target_include_directories(templnote_ai PUBLIC
 )
 target_link_libraries(templnote_ai PUBLIC
   templnote_engine
-  templnote_core
+  templnote_plugin_core
   Qt6::Core
   Qt6::Network
   Qt6::HttpServer
@@ -173,14 +176,6 @@ add_library(templnote_core STATIC
   src/tracking/ScopedTimer.h
   src/tracking/ScopedTimer.cpp
 
-  src/plugins/PluginManifest.h
-  src/plugins/PluginManifest.cpp
-  src/plugins/PluginsModel.h
-  src/plugins/PluginsModel.cpp
-  src/plugins/PluginManager.h
-  src/plugins/PluginManager.cpp
-  src/plugins/PluginHost.h
-  src/plugins/PluginHost.cpp
 )
 
 target_include_directories(templnote_core PUBLIC
@@ -195,6 +190,23 @@ target_link_libraries(templnote_core PUBLIC
   Qt6::Quick
   Qt6::Concurrent
   Qt6::Sql
+)
+
+# Desktop-only adapter: the AI service mirrors pipeline results into the QML
+# BlockModel. This is the only AI code coupled to the GUI layer.
+add_library(templnote_desktop_adapter STATIC
+  src/adapter/AgentService.h
+  src/adapter/AgentService.cpp
+  src/adapter/PluginCatalogKey.h
+)
+target_include_directories(templnote_desktop_adapter PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
+)
+target_link_libraries(templnote_desktop_adapter PUBLIC
+  templnote_core
+  templnote_ai
+  templnote_plugin_core
+  Qt6::Core
 )
 
 qt_add_executable(templnote
@@ -252,6 +264,7 @@ qt_add_qml_module(templnote
   qml/settings/EditorSettings.qml
   qml/settings/DeveloperSettings.qml
   qml/settings/PluginsSettings.qml
+  qml/settings/PluginStoreSettings.qml
   qml/settings/DeclarativePluginSettings.qml
   qml/settings/AISettings.qml
   qml/settings/SettingToggle.qml
@@ -357,6 +370,9 @@ qt_add_qml_module(templnote
 target_link_libraries(templnote PRIVATE
   templnote_core
   templnote_ai
+  templnote_desktop_adapter
+  templnote_plugin_qml
+  templnote_storeclient
   Qt6::Core
   Qt6::QuickControls2
 )

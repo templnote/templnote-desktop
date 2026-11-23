@@ -181,7 +181,8 @@ target_compile_definitions(tst_plugins PRIVATE
 )
 
 target_link_libraries(tst_plugins PRIVATE
-    templnote_core
+    templnote_plugin_core
+    templnote_domain
     Qt6::Test
 )
 

@@ -1,0 +1,3 @@
+[submodule "third_party/templnote-plugins"]
+	path = third_party/templnote-plugins
+	url = https://github.com/templnote/templnote-plugins.git

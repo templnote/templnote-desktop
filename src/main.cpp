@@ -7,10 +7,12 @@
 #include <QClipboard>
 #include <QSettings>
 #include <QtQml>
+#include <QUrl>
 #include <qguiapplication.h>
 #include <qqmlapplicationengine.h>
 
-#include "ai/AgentService.h"
+#include "adapter/AgentService.h"
+#include "adapter/PluginCatalogKey.h"
 #include "ai/ProviderRegistry.h"
 #include "ai/SecretStore.h"
 #include "core/CodeHighlighter.h"
@@ -19,8 +21,10 @@
 #include "bridge/LiveBridge.h"
 #include "engine/ChangeFeed.h"
 #include "engine/EditorSession.h"
+#include "plugins/NetworkGuard.h"
 #include "plugins/PluginManager.h"
 #include "plugins/PluginHost.h"
+#include "plugins/PluginStoreClient.h"
 #include "search/SearchIndex.h"
 #include "search/SearchResultsModel.h"
 #include "storage/AppPaths.h"
@@ -28,60 +32,6 @@
 #include "tracking/MemoryTracker.h"
 
 namespace {
-
-// Plugin QML shares the application's QML engine. Its network calls must not
-// become an exfiltration or local-file-reading channel: only in-app resources
-// and loopback services are reachable from QML. Provider traffic uses C++
-// QNetworkAccessManager directly and is unaffected.
-class GuardedNetworkReply : public QNetworkReply {
-public:
-  GuardedNetworkReply(const QNetworkRequest &request, QObject *parent)
-      : QNetworkReply(parent) {
-    setRequest(request);
-    setUrl(request.url());
-    setOperation(QNetworkAccessManager::GetOperation);
-    setAttribute(QNetworkRequest::HttpStatusCodeAttribute, 403);
-    open(QIODevice::ReadOnly | QIODevice::Unbuffered);
-    setError(QNetworkReply::ContentAccessDenied,
-             QStringLiteral("Blocked by Templnote QML network policy"));
-    QTimer::singleShot(0, this, [this] {
-      emit errorOccurred(QNetworkReply::ContentAccessDenied);
-      emit finished();
-    });
-  }
-  void abort() override {}
-  qint64 bytesAvailable() const override { return 0; }
-protected:
-  qint64 readData(char *, qint64) override { return -1; }
-};
-
-class GuardedNetworkAccessManager : public QNetworkAccessManager {
-public:
-  using QNetworkAccessManager::QNetworkAccessManager;
-
-protected:
-  QNetworkReply *createRequest(Operation operation, const QNetworkRequest &request,
-                               QIODevice *outgoingData = nullptr) override {
-    const QUrl url = request.url();
-    const QString scheme = url.scheme().toLower();
-    const QString host = url.host().toLower();
-    const bool allowed =
-        scheme == QStringLiteral("qrc") || scheme == QStringLiteral("data") ||
-        ((scheme == QStringLiteral("http") || scheme == QStringLiteral("https")) &&
-         (host == QStringLiteral("127.0.0.1") || host == QStringLiteral("localhost") ||
-          host == QStringLiteral("::1")));
-    if (!allowed)
-      return new GuardedNetworkReply(request, this);
-    return QNetworkAccessManager::createRequest(operation, request, outgoingData);
-  }
-};
-
-class GuardedNetworkFactory : public QQmlNetworkAccessManagerFactory {
-public:
-  QNetworkAccessManager *create(QObject *parent) override {
-    return new GuardedNetworkAccessManager(parent);
-  }
-};
 
 class ClipboardHelper : public QObject {
   Q_OBJECT
@@ -145,7 +95,18 @@ int main(int argc, char *argv[]) {
   ClipboardHelper clipboardHelper;
   Templnote::EmojiDatabase emojiDatabase;
 
-  GuardedNetworkFactory networkGuard;
+  // The store client uses its own network manager, so it is unaffected by the
+  // plugin QML network guard.
+  Templnote::Plugins::PluginStoreClient pluginStore;
+  pluginStore.setManager(&pluginManager);
+  pluginStore.setCatalogUrl(QUrl(QStringLiteral(
+      "https://raw.githubusercontent.com/templnote/templnote-plugins/gh-pages/catalog.json")));
+  pluginStore.setPublicKeyPem(
+      QByteArray(Templnote::Adapter::kPluginCatalogPublicKey));
+  pluginStore.setHostTags({QStringLiteral("qml-desktop"), QStringLiteral("linux")});
+  pluginStore.setHostVersion(QStringLiteral("0.1.0"));
+
+  Templnote::Plugins::NetworkGuardFactory networkGuard;
   QQmlApplicationEngine engine;
   engine.setNetworkAccessManagerFactory(&networkGuard);
 
@@ -160,6 +121,7 @@ int main(int argc, char *argv[]) {
   engine.rootContext()->setContextProperty("EmojiDatabase", &emojiDatabase);
   engine.rootContext()->setContextProperty("pluginManager", &pluginManager);
   engine.rootContext()->setContextProperty("pluginHost", &pluginHost);
+  engine.rootContext()->setContextProperty("pluginStore", &pluginStore);
   engine.rootContext()->setContextProperty("providerManager", &providerRegistry);
   engine.rootContext()->setContextProperty("blockModel", blockModel);
   engine.rootContext()->setContextProperty("agentService", agentService);

@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Install build dependencies
         run: |
@@ -42,6 +44,22 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel 4
+
+      - name: Guard reusable libraries against GUI dependencies
+        run: |
+          link_line=$(grep 'build templnote-headless:' build/build.ninja | head -1)
+          for lib in Qt6Gui Qt6Quick Qt6Qml Qt6Widgets Qt6OpenGL; do
+            if echo "$link_line" | grep -q "lib$lib"; then
+              echo "ERROR: headless links $lib — reusable layers must stay GUI-free"
+              exit 1
+            fi
+          done
+          if grep -r -n '#include "model/\|#include <QGui\|#include <QQuick\|#include <QJSValue' \
+              src/engine src/ai src/store src/sync \
+              third_party/templnote-plugins/sdk/src/core; then
+            echo "ERROR: GUI include found in a reusable library"
+            exit 1
+          fi
 
       - name: Run tests
         run: >
