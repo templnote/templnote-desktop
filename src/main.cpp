@@ -99,8 +99,10 @@ int main(int argc, char *argv[]) {
   // plugin QML network guard.
   Templnote::Plugins::PluginStoreClient pluginStore;
   pluginStore.setManager(&pluginManager);
-  pluginStore.setCatalogUrl(QUrl(QStringLiteral(
-      "https://raw.githubusercontent.com/templnote/templnote-plugins/gh-pages/catalog.json")));
+  const QString catalogOverride = qEnvironmentVariable("TEMPLNOTE_PLUGIN_CATALOG_URL");
+  pluginStore.setCatalogUrl(QUrl(catalogOverride.isEmpty()
+      ? QStringLiteral("https://raw.githubusercontent.com/templnote/templnote-plugins/gh-pages/catalog.json")
+      : catalogOverride));
   pluginStore.setPublicKeyPem(
       QByteArray(Templnote::Adapter::kPluginCatalogPublicKey));
   pluginStore.setHostTags({QStringLiteral("qml-desktop"), QStringLiteral("linux")});
