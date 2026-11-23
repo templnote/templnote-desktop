@@ -299,14 +299,11 @@ set(PLUGINS_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/PluginsSet
 set(DECLARATIVE_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/DeclarativePluginSettings.qml")
 set(SETTING_CHOICE_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingChoice.qml")
 set(SETTING_SLIDER_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingSlider.qml")
-set(PLUGIN_STORE_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/PluginStoreSettings.qml")
-set(PLUGIN_STORE_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/templnote-plugins/sdk/tests/fixtures/store")
 foreach(alias_pair
         "PluginsSettings.qml|${PLUGINS_SETTINGS_QML}"
         "DeclarativePluginSettings.qml|${DECLARATIVE_SETTINGS_QML}"
         "SettingChoice.qml|${SETTING_CHOICE_QML}"
         "SettingSlider.qml|${SETTING_SLIDER_QML}"
-        "PluginStoreSettings.qml|${PLUGIN_STORE_QML}")
     string(REGEX REPLACE "^[^|]+\\|" "" qml_path "${alias_pair}")
     string(REGEX REPLACE "\\|.*$" "" qml_alias "${alias_pair}")
     set_source_files_properties("${qml_path}" PROPERTIES
@@ -325,7 +322,6 @@ qt_add_qml_module(tst_aisettings
     QML_FILES
         AISettingsTest.qml
         PluginsSettingsTest.qml
-        PluginStoreTest.qml
         ${TEST_QML_DIR}/Theme.qml
         ${AI_SETTING_TOGGLE_QML}
         ${AI_SETTING_SWITCH_QML}
@@ -335,13 +331,9 @@ qt_add_qml_module(tst_aisettings
         ${DECLARATIVE_SETTINGS_QML}
         ${SETTING_CHOICE_QML}
         ${SETTING_SLIDER_QML}
-        ${PLUGIN_STORE_QML}
 )
-target_compile_definitions(tst_aisettings PRIVATE
-    TEMPLNOTE_PLUGIN_STORE_FIXTURE="${PLUGIN_STORE_FIXTURE}")
 target_link_libraries(tst_aisettings PRIVATE
     templnote_ai
-    templnote_storeclient
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test

@@ -7,12 +7,10 @@
 #include <QClipboard>
 #include <QSettings>
 #include <QtQml>
-#include <QUrl>
 #include <qguiapplication.h>
 #include <qqmlapplicationengine.h>
 
 #include "adapter/AgentService.h"
-#include "adapter/PluginCatalogKey.h"
 #include "ai/ProviderRegistry.h"
 #include "ai/SecretStore.h"
 #include "core/CodeHighlighter.h"
@@ -24,7 +22,6 @@
 #include "plugins/NetworkGuard.h"
 #include "plugins/PluginManager.h"
 #include "plugins/PluginHost.h"
-#include "plugins/PluginStoreClient.h"
 #include "search/SearchIndex.h"
 #include "search/SearchResultsModel.h"
 #include "storage/AppPaths.h"
@@ -95,20 +92,6 @@ int main(int argc, char *argv[]) {
   ClipboardHelper clipboardHelper;
   Templnote::EmojiDatabase emojiDatabase;
 
-  // The store client uses its own network manager, so it is unaffected by the
-  // plugin QML network guard.
-  Templnote::Plugins::PluginStoreClient pluginStore;
-  pluginStore.setManager(&pluginManager);
-  const QString catalogOverride = qEnvironmentVariable("TEMPLNOTE_PLUGIN_CATALOG_URL");
-  pluginStore.setCatalogUrl(QUrl(catalogOverride.isEmpty()
-      ? QStringLiteral("https://raw.githubusercontent.com/templnote/templnote-plugins/gh-pages/catalog.json")
-      : catalogOverride));
-  pluginStore.setPublicKeyPem(
-      QByteArray(Templnote::Adapter::kPluginCatalogPublicKey));
-  pluginStore.setHostTags({QStringLiteral("qml-desktop"), QStringLiteral("linux")});
-  pluginStore.setHostVersion(QStringLiteral("0.1.0"));
-  pluginStore.setHostApiVersion(QStringLiteral("0.1"));
-
   Templnote::Plugins::NetworkGuardFactory networkGuard;
   QQmlApplicationEngine engine;
   engine.setNetworkAccessManagerFactory(&networkGuard);
@@ -124,7 +107,6 @@ int main(int argc, char *argv[]) {
   engine.rootContext()->setContextProperty("EmojiDatabase", &emojiDatabase);
   engine.rootContext()->setContextProperty("pluginManager", &pluginManager);
   engine.rootContext()->setContextProperty("pluginHost", &pluginHost);
-  engine.rootContext()->setContextProperty("pluginStore", &pluginStore);
   engine.rootContext()->setContextProperty("providerManager", &providerRegistry);
   engine.rootContext()->setContextProperty("blockModel", blockModel);
   engine.rootContext()->setContextProperty("agentService", agentService);

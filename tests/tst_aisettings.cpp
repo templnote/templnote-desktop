@@ -1,6 +1,5 @@
 #include "ai/ProviderRegistry.h"
 #include "plugins/PluginManager.h"
-#include "plugins/PluginStoreClient.h"
 
 #include <QEventLoop>
 #include <QFile>
@@ -125,39 +124,6 @@ private slots:
         qWarning() << error.toString();
     }
     QVERIFY2(errors.isEmpty(), "PluginsSettings.qml produced QML errors");
-  }
-  void testPluginStoreLoads() {
-    QTemporaryDir dir;
-    QVERIFY(dir.isValid());
-    qputenv("TEMPLNOTE_CONFIG_DIR", dir.path().toUtf8());
-
-    const QString fixture = QString::fromLatin1(TEMPLNOTE_PLUGIN_STORE_FIXTURE);
-    Templnote::PluginManager manager;
-    Templnote::Plugins::PluginStoreClient store;
-    store.setManager(&manager);
-    store.setCatalogUrl(QUrl::fromLocalFile(fixture + QStringLiteral("/catalog.json")));
-    QFile keyFile(fixture + QStringLiteral("/public.key"));
-    QVERIFY(keyFile.open(QIODevice::ReadOnly));
-    store.setPublicKeyPem(keyFile.readAll());
-    store.setHostTags({QStringLiteral("qml-desktop"), QStringLiteral("linux")});
-
-    QQmlApplicationEngine engine;
-    engine.rootContext()->setContextProperty(QStringLiteral("pluginManager"), &manager);
-    engine.rootContext()->setContextProperty(QStringLiteral("pluginStore"), &store);
-    QList<QQmlError> errors;
-    connect(&engine, &QQmlApplicationEngine::warnings, this,
-            [&errors](const QList<QQmlError> &list) { errors.append(list); });
-
-    engine.loadFromModule(QStringLiteral("TemplnoteAISettingsTest"),
-                          QStringLiteral("PluginStoreTest"));
-    QCOMPARE(engine.rootObjects().size(), 1);
-    QTest::qWait(500); // let the local catalog request finish
-    if (!errors.isEmpty()) {
-      for (const QQmlError &error : errors)
-        qWarning() << error.toString();
-    }
-    QVERIFY2(errors.isEmpty(), "PluginStoreSettings.qml produced QML errors");
-    QCOMPARE(store.model()->rowCount(), 1);
   }
 };
 

@@ -15,7 +15,6 @@ set(CMAKE_AUTOMOC ON)
 
 include(CTest)
 
-find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(Qt6 6.5 REQUIRED COMPONENTS
   Core
   Concurrent
@@ -197,7 +196,6 @@ target_link_libraries(templnote_core PUBLIC
 add_library(templnote_desktop_adapter STATIC
   src/adapter/AgentService.h
   src/adapter/AgentService.cpp
-  src/adapter/PluginCatalogKey.h
 )
 target_include_directories(templnote_desktop_adapter PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
@@ -264,7 +262,6 @@ qt_add_qml_module(templnote
   qml/settings/EditorSettings.qml
   qml/settings/DeveloperSettings.qml
   qml/settings/PluginsSettings.qml
-  qml/settings/PluginStoreSettings.qml
   qml/settings/DeclarativePluginSettings.qml
   qml/settings/AISettings.qml
   qml/settings/SettingToggle.qml
@@ -372,7 +369,6 @@ target_link_libraries(templnote PRIVATE
   templnote_ai
   templnote_desktop_adapter
   templnote_plugin_qml
-  templnote_storeclient
   Qt6::Core
   Qt6::QuickControls2
 )

@@ -75,12 +75,6 @@ Item {
       file: "settings/PluginsSettings.qml"
     },
     {
-      key: "plugin-store",
-      title: "Plugin Store",
-      description: "Browse and install signed community plugins",
-      file: "settings/PluginStoreSettings.qml"
-    },
-    {
       key: "developer",
       title: "Developer",
       description: "Inspection, diagnostics and debug visualizers",
