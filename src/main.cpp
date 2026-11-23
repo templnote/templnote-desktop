@@ -107,6 +107,7 @@ int main(int argc, char *argv[]) {
       QByteArray(Templnote::Adapter::kPluginCatalogPublicKey));
   pluginStore.setHostTags({QStringLiteral("qml-desktop"), QStringLiteral("linux")});
   pluginStore.setHostVersion(QStringLiteral("0.1.0"));
+  pluginStore.setHostApiVersion(QStringLiteral("0.1"));
 
   Templnote::Plugins::NetworkGuardFactory networkGuard;
   QQmlApplicationEngine engine;

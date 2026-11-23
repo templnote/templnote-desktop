@@ -2,13 +2,45 @@ import QtQuick
 import QtQuick.Controls
 
 // Browse and install signed plugins from the community catalog. The C++
-// client verifies each package's SHA-256 and maintainer signature before it
-// is written into the plugin directory; QML only renders the result.
+// client verifies catalog, revocation list, SHA-256 and maintainer signature
+// before anything is written; QML only renders the result and asks for consent.
 Item {
   id: root
 
   width: parent ? parent.width : 0
   implicitHeight: mainColumn.implicitHeight
+
+  property string searchText: ""
+  property string selectedId: ""
+  property string pendingInstallId: ""
+
+  function rebuild() {
+    filtered.clear()
+    const entries = pluginStore.entriesList()
+    for (const entry of entries) {
+      if (root.searchText.length > 0 &&
+          entry.name.toLowerCase().indexOf(root.searchText.toLowerCase()) < 0 &&
+          entry.description.toLowerCase().indexOf(root.searchText.toLowerCase()) < 0)
+        continue
+      filtered.append(entry)
+    }
+  }
+
+  function entryFor(id) {
+    const entries = pluginStore.entriesList()
+    for (const entry of entries)
+      if (entry.id === id) return entry
+    return null
+  }
+
+  ListModel { id: filtered }
+
+  Connections {
+    target: pluginStore
+    function onCatalogRefreshed(count) { root.rebuild() }
+    function onInstalled(id) { root.rebuild() }
+    function onUninstalled(id) { root.rebuild() }
+  }
 
   Column {
     id: mainColumn
@@ -26,11 +58,16 @@ Item {
         font.bold: true
         anchors.verticalCenter: parent.verticalCenter
       }
-
       Item { width: 20; height: 1 }
 
+      TextField {
+        id: searchField
+        width: Math.min(260, mainColumn.width / 3)
+        placeholderText: "Search plugins…"
+        onTextChanged: root.searchText = text
+      }
+
       Button {
-        id: refreshButton
         text: "Refresh"
         enabled: !pluginStore.busy
         onClicked: pluginStore.refresh()
@@ -39,7 +76,7 @@ Item {
 
     Text {
       width: parent.width
-      text: "Packages are signed by the maintainers and verified before installation."
+      text: "Packages are signed by maintainers and verified before installation."
       color: Theme.textMuted
       wrapMode: Text.WordWrap
       font.pixelSize: 12
@@ -54,14 +91,11 @@ Item {
       font.pixelSize: 12
     }
 
-    BusyIndicator {
-      visible: pluginStore.busy
-      running: visible
-    }
+    BusyIndicator { visible: pluginStore.busy; running: visible }
 
     Text {
       width: parent.width
-      visible: !pluginStore.busy && storeList.count === 0
+      visible: !pluginStore.busy && filtered.count === 0
       text: "No plugins available. Check your connection and refresh."
       color: Theme.textMuted
       wrapMode: Text.WordWrap
@@ -70,17 +104,22 @@ Item {
     ListView {
       id: storeList
       width: parent.width
-      height: Math.min(contentHeight, 560)
-      model: pluginStore.model
+      height: Math.min(contentHeight, 420)
+      model: filtered
       clip: true
       spacing: 8
 
       delegate: Rectangle {
         width: ListView.view.width
-        height: 92
+        height: 96
         radius: 6
-        color: Theme.surfaceAlt
-        border.color: Theme.border
+        color: selectedId === model.id ? Theme.tint(Theme.accent, 0.12) : Theme.surfaceAlt
+        border.color: selectedId === model.id ? Theme.accent : Theme.border
+
+        MouseArea {
+          anchors.fill: parent
+          onClicked: selectedId = model.id
+        }
 
         Column {
           anchors.fill: parent
@@ -88,7 +127,6 @@ Item {
           spacing: 4
 
           Row {
-            width: parent.width
             spacing: 8
             Text {
               text: model.name + "  " + model.version
@@ -102,6 +140,12 @@ Item {
               color: Theme.textMuted
               font.pixelSize: 11
             }
+            Text {
+              visible: model.updateAvailable
+              text: "update available"
+              color: Theme.accent
+              font.pixelSize: 11
+            }
           }
 
           Text {
@@ -113,7 +157,6 @@ Item {
           }
 
           Row {
-            width: parent.width
             spacing: 8
             Text {
               text: model.author
@@ -121,15 +164,99 @@ Item {
               font.pixelSize: 11
               anchors.verticalCenter: parent.verticalCenter
             }
-            Item { width: 1; height: 1 }
-
             Button {
-              anchors.verticalCenter: parent.verticalCenter
-              text: model.installed ? "Installed" : "Install"
-              enabled: !model.installed && !pluginStore.busy
+              visible: !model.installed
+              enabled: !pluginStore.busy
+              text: "Install"
+              onClicked: {
+                selectedId = model.id
+                const entry = root.entryFor(model.id)
+                pendingInstallId = (entry && entry.permissions.length > 0)
+                    ? model.id : ""
+                if (!pendingInstallId)
+                  pluginStore.install(model.id)
+              }
+            }
+            Button {
+              visible: model.installed && model.updateAvailable
+              enabled: !pluginStore.busy
+              text: "Update"
               onClicked: pluginStore.install(model.id)
             }
+            Button {
+              visible: model.installed
+              enabled: !pluginStore.busy
+              text: "Uninstall"
+              onClicked: pluginStore.uninstall(model.id)
+            }
           }
+        }
+      }
+    }
+
+    // Detail + consent panel for plugins that request permissions.
+    Rectangle {
+      width: parent.width
+      visible: selectedId.length > 0
+      radius: 6
+      color: Theme.surface
+      border.color: Theme.border
+      implicitHeight: detailColumn.implicitHeight + 20
+
+      Column {
+        id: detailColumn
+        width: parent.width - 20
+        x: 10
+        y: 10
+        spacing: 6
+
+        Text {
+          width: parent.width
+          text: {
+            const entry = root.entryFor(selectedId)
+            return entry ? entry.name + " — permissions" : ""
+          }
+          color: Theme.text
+          font.bold: true
+          font.pixelSize: 13
+        }
+        Text {
+          width: parent.width
+          text: {
+            const entry = root.entryFor(selectedId)
+            if (!entry) return ""
+            return entry.permissions.length > 0
+                ? "Requested: " + entry.permissions.join(", ")
+                : "No special permissions requested."
+          }
+          color: Theme.textMuted
+          wrapMode: Text.WordWrap
+          font.pixelSize: 12
+        }
+        Text {
+          width: parent.width
+          text: {
+            const entry = root.entryFor(selectedId)
+            return entry && entry.dependencies.length > 0
+                ? "Requires: " + entry.dependencies.join(", ") : ""
+          }
+          visible: text.length > 0
+          color: Theme.textMuted
+          font.pixelSize: 11
+        }
+
+        Button {
+          visible: pendingInstallId === selectedId
+          text: "Allow and install"
+          onClicked: {
+            pluginStore.install(pendingInstallId)
+            pendingInstallId = ""
+          }
+        }
+        Button {
+          visible: pendingInstallId === selectedId
+          text: "Cancel"
+          onClicked: pendingInstallId = ""
         }
       }
     }
