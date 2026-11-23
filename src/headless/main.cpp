@@ -12,6 +12,7 @@
 #include "engine/EditorSession.h"
 #include "engine/Types.h"
 #include "store/DocumentStore.h"
+#include "adapter/AIEngineAdapters.h"
 #include "ai/AgentHttpServer.h"
 #include "ai/ModelRouter.h"
 #include "ai/ProviderRegistry.h"
@@ -196,11 +197,14 @@ int main(int argc, char **argv) {
     AI::ModelRouter router(&app);
     router.setRegistry(&providers);
     Templnote::PluginManager pluginManager(&app);
+    Adapter::SessionDocumentPort document(&session, &app);
+    Adapter::FeedChangePort changes(&feed, &app);
+    Adapter::PluginManagerToolPort pluginTools(&pluginManager, &app);
     AI::PipelineRunner pipeline(&app);
-    pipeline.setSession(&session);
+    pipeline.setDocument(&document);
     pipeline.setRouter(&router);
-    pipeline.setPluginManager(&pluginManager);
-    pipeline.setChangeFeed(&feed);
+    pipeline.setPluginTools(&pluginTools);
+    pipeline.setChangeFeed(&changes);
     pipeline.setStages(AI::PipelineRunner::defaultStages());
 
     // Persist every committed patch with compare-and-swap so an AI edit is
@@ -222,10 +226,10 @@ int main(int argc, char **argv) {
                      commitPatch);
 
     AI::AgentHttpServer server(&app);
-    server.setDocumentProvider(&session);
-    server.setChangesProvider(&feed);
+    server.setDocumentProvider(&document);
+    server.setChangesProvider(&changes);
     server.setPipeline(&pipeline);
-    server.setPluginManager(&pluginManager);
+    server.setPluginTools(&pluginTools);
     server.setProviderRegistry(&providers);
     server.setAuthToken(token);
     // Pick up saves made by the desktop app between requests.

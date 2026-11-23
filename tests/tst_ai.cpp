@@ -1,3 +1,4 @@
+#include "adapter/AIEngineAdapters.h"
 #include "ai/ToolSchema.h"
 #include "ai/PipelineRunner.h"
 #include "engine/CapabilityGate.h"
@@ -61,17 +62,21 @@ private slots:
     call.insert(QStringLiteral("name"), QStringLiteral("setText"));
     call.insert(QStringLiteral("arguments"), arguments);
 
-    auto parsed = ToolSchema::fromToolCall(call);
-    QVERIFY(parsed.ok());
-    QCOMPARE(parsed.value().type, Command::Type::SetText);
+    const auto parsed = ToolSchema::fromToolCall(call);
+    QVERIFY(parsed.ok);
+    QCOMPARE(parsed.command.value(QStringLiteral("type")).toString(),
+             QStringLiteral("setText"));
 
     EditorSession session;
     QVERIFY(session.loadJson(doc()));
-    auto result = session.apply(parsed.value());
-    QVERIFY(result.ok());
+    Adapter::SessionDocumentPort port(&session);
+    QJsonObject patch;
+    QString error;
+    QVERIFY(port.applyCommand(parsed.value(), QStringLiteral("ai-agent"),
+                              &patch, &error));
     QCOMPARE(session.document().findBlock(QStringLiteral("b1"))->text,
              QStringLiteral("AI text"));
-    QCOMPARE(result.value().actor.kind, Actor::Kind::Agent);
+    QVERIFY(patch.value(QStringLiteral("ops")).isArray());
   }
 
   void testToolCallStringArguments() {
@@ -85,9 +90,10 @@ private slots:
     call.insert(QStringLiteral("arguments"),
                 QString::fromUtf8(QJsonDocument(args).toJson(
                     QJsonDocument::Compact)));
-    auto parsed = ToolSchema::fromToolCall(call);
-    QVERIFY(parsed.ok());
-    QCOMPARE(parsed.value().text, QStringLiteral("Bye"));
+    const auto parsed = ToolSchema::fromToolCall(call);
+    QVERIFY(parsed.ok);
+    QCOMPARE(parsed.command.value(QStringLiteral("text")).toString(),
+             QStringLiteral("Bye"));
   }
 
   void testCapabilityGate() {

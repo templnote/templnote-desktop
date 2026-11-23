@@ -76,24 +76,13 @@ add_test(
     COMMAND tst_engine
 )
 
-add_executable(tst_providers
-    tst_providers.cpp
-)
-target_link_libraries(tst_providers PRIVATE
-    templnote_ai
-    Qt6::Test
-)
-add_test(
-    NAME ProviderTests
-    COMMAND tst_providers
-)
-
 add_executable(tst_ai
     tst_ai.cpp
 )
 
 target_link_libraries(tst_ai PRIVATE
     templnote_ai
+    templnote_ai_adapters
     templnote_sync
     Qt6::Test
 )
@@ -108,6 +97,7 @@ add_executable(tst_security
 )
 target_link_libraries(tst_security PRIVATE
     templnote_ai
+    templnote_ai_adapters
     templnote_core
     Qt6::Test
 )
@@ -334,6 +324,7 @@ qt_add_qml_module(tst_aisettings
 )
 target_link_libraries(tst_aisettings PRIVATE
     templnote_ai
+    templnote_plugin_core
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test

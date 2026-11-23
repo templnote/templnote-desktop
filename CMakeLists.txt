@@ -33,6 +33,7 @@ qt_policy(SET QTP0004 NEW)
 # Reusable plugin SDK (git submodule pinned to an SDK tag). Kept as a separate
 # project so the same source can be consumed by other Qt frontends.
 add_subdirectory(third_party/templnote-plugins/sdk)
+add_subdirectory(third_party/templnote-ai)
 
 set_source_files_properties(qml/Theme.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
@@ -124,32 +125,6 @@ target_link_libraries(templnote_sync PUBLIC
   Qt6::Network
 )
 
-# AI layer: tool schemas, model routing, multi-agent pipelines.
-add_library(templnote_ai STATIC
-  src/ai/ToolSchema.h
-  src/ai/ToolSchema.cpp
-  src/ai/ModelRouter.h
-  src/ai/ModelRouter.cpp
-  src/ai/SecretStore.h
-  src/ai/SecretStore.cpp
-  src/ai/ProviderRegistry.h
-  src/ai/ProviderRegistry.cpp
-  src/ai/PipelineRunner.h
-  src/ai/PipelineRunner.cpp
-  src/ai/AgentHttpServer.h
-  src/ai/AgentHttpServer.cpp
-)
-target_include_directories(templnote_ai PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_link_libraries(templnote_ai PUBLIC
-  templnote_engine
-  templnote_plugin_core
-  Qt6::Core
-  Qt6::Network
-  Qt6::HttpServer
-)
-
 add_library(templnote_core STATIC
   src/core/CodeHighlighter.h
   src/core/CodeHighlighter.cpp
@@ -191,6 +166,22 @@ target_link_libraries(templnote_core PUBLIC
   Qt6::Sql
 )
 
+# Engine-side AI ports. Non-GUI: usable by the desktop app and the headless
+# daemon alike.
+add_library(templnote_ai_adapters STATIC
+  src/adapter/AIEngineAdapters.h
+  src/adapter/AIEngineAdapters.cpp
+)
+target_include_directories(templnote_ai_adapters PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(templnote_ai_adapters PUBLIC
+  templnote_ai
+  templnote_engine
+  templnote_plugin_core
+  Qt6::Core
+)
+
 # Desktop-only adapter: the AI service mirrors pipeline results into the QML
 # BlockModel. This is the only AI code coupled to the GUI layer.
 add_library(templnote_desktop_adapter STATIC
@@ -203,6 +194,7 @@ target_include_directories(templnote_desktop_adapter PUBLIC
 target_link_libraries(templnote_desktop_adapter PUBLIC
   templnote_core
   templnote_ai
+  templnote_ai_adapters
   templnote_plugin_core
   Qt6::Core
 )
@@ -220,6 +212,7 @@ target_link_libraries(templnote-headless PRIVATE
   templnote_engine
   templnote_sync
   templnote_ai
+  templnote_ai_adapters
   Qt6::Core
   Qt6::Network
   Qt6::Sql

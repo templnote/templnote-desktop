@@ -8,7 +8,8 @@
 // QML delegates, caret and autosave path unchanged while giving the agent a
 // real, gated session with full provenance.
 
-#include "PipelineRunner.h"
+#include "AIEngineAdapters.h"
+#include "ai/PipelineRunner.h"
 
 #include <QObject>
 #include <QString>
@@ -88,6 +89,9 @@ private:
   Engine::EditorSession *m_preview = nullptr;
   Engine::ChangeFeed *m_feed = nullptr;
   Engine::CapabilityGate *m_gate = nullptr;
+  Adapter::SessionDocumentPort *m_documentPort = nullptr;
+  Adapter::FeedChangePort *m_changePort = nullptr;
+  Adapter::PluginManagerToolPort *m_pluginPort = nullptr;
 
   int m_totalTokens = 0;
   double m_estimatedCost = 0.0;

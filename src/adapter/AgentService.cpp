@@ -5,9 +5,9 @@
 #include "engine/EditorSession.h"
 #include "model/BlockModel.h"
 #include "plugins/PluginManager.h"
-#include "ProviderRegistry.h"
-#include "SecretStore.h"
-#include "ToolSchema.h"
+#include "ai/ProviderRegistry.h"
+#include "ai/SecretStore.h"
+#include "ai/ToolSchema.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,13 +23,17 @@ AgentService::AgentService(::Templnote::BlockModel *model,
   m_router->setRegistry(m_registry);
   m_pipeline = new PipelineRunner(this);
   m_pipeline->setRouter(m_router);
-  m_pipeline->setPluginManager(plugins);
+  m_pluginPort = new Adapter::PluginManagerToolPort(plugins, this);
+  m_pipeline->setPluginTools(m_pluginPort);
   m_pipeline->setStages(PipelineRunner::defaultStages());
 
   m_preview = new Engine::EditorSession(this);
   m_preview->setLightweightHistory(true);
   m_feed = new Engine::ChangeFeed(m_preview, this);
-  m_pipeline->setChangeFeed(m_feed);
+  m_documentPort = new Adapter::SessionDocumentPort(m_preview, this);
+  m_changePort = new Adapter::FeedChangePort(m_feed, this);
+  m_pipeline->setDocument(m_documentPort);
+  m_pipeline->setChangeFeed(m_changePort);
   m_gate = new Engine::CapabilityGate(this);
   installGate();
 

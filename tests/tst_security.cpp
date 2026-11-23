@@ -1,3 +1,4 @@
+#include "adapter/AIEngineAdapters.h"
 #include "ai/AgentHttpServer.h"
 #include "ai/ModelRouter.h"
 #include "ai/PipelineRunner.h"
@@ -108,7 +109,10 @@ private slots:
     QJsonObject call;
     call.insert(QStringLiteral("name"), QStringLiteral("setText"));
     call.insert(QStringLiteral("arguments"), args);
-    Command cmd = ToolSchema::fromToolCall(call).value();
+    Command cmd;
+    cmd.type = Command::Type::SetText;
+    cmd.blockId = QStringLiteral("b1");
+    cmd.text = QStringLiteral("Hacked");
     cmd.actor = Actor::agent(QStringLiteral("viewer"));
 
     // Without a gate the unit-test behaviour is permissive.
@@ -136,16 +140,18 @@ private slots:
     call.insert(QStringLiteral("type"), QStringLiteral("function"));
     call.insert(QStringLiteral("function"), function);
 
-    auto parsed = ToolSchema::fromToolCall(call);
-    QVERIFY(parsed.ok());
-    QCOMPARE(parsed.value().text, QStringLiteral("From function"));
+    const auto parsed = ToolSchema::fromToolCall(call);
+    QVERIFY(parsed.ok);
+    QCOMPARE(parsed.command.value(QStringLiteral("text")).toString(),
+             QStringLiteral("From function"));
   }
 
   void testHttpRequiresTokenAndNoWildcardCors() {
     EditorSession session;
     QVERIFY(session.loadJson(document()));
+    Adapter::SessionDocumentPort documentPort(&session);
     AgentHttpServer server;
-    server.setDocumentProvider(&session);
+    server.setDocumentProvider(&documentPort);
     server.setAuthToken(QStringLiteral("secret-token"));
     QVERIFY(server.listen(0));
 
@@ -173,10 +179,12 @@ private slots:
     session.setActor(Actor::agent(QStringLiteral("http-agent")));
     session.setCapabilityGate(&gate);
     ChangeFeed feed(&session);
+    Adapter::SessionDocumentPort documentPort(&session);
+    Adapter::FeedChangePort changePort(&feed);
 
     AgentHttpServer server;
-    server.setDocumentProvider(&session);
-    server.setChangesProvider(&feed);
+    server.setDocumentProvider(&documentPort);
+    server.setChangesProvider(&changePort);
     server.setAuthToken(QStringLiteral("t"));
     QVERIFY(server.listen(0));
 
@@ -201,8 +209,9 @@ private slots:
   void testSplitBodyIsBuffered() {
     EditorSession session;
     QVERIFY(session.loadJson(document()));
+    Adapter::SessionDocumentPort documentPort(&session);
     AgentHttpServer server;
-    server.setDocumentProvider(&session);
+    server.setDocumentProvider(&documentPort);
     server.setAuthToken(QStringLiteral("t"));
     QVERIFY(server.listen(0));
 
@@ -279,8 +288,9 @@ private slots:
     second.text = QStringLiteral("done");
     router.scripted = {first, second};
 
+    Adapter::SessionDocumentPort documentPort(&session);
     PipelineRunner pipeline;
-    pipeline.setSession(&session);
+    pipeline.setDocument(&documentPort);
     pipeline.setRouter(&router);
     pipeline.setStages({{QStringLiteral("write"), QStringLiteral("prompt"), true}});
 
