@@ -245,6 +245,31 @@ Item {
           font.pixelSize: 11
         }
 
+        Row {
+          spacing: 6
+          visible: {
+            const entry = root.entryFor(selectedId)
+            return entry && entry.dependencies.length > 0
+          }
+          Text {
+            text: "Install dependencies first:"
+            color: Theme.textMuted
+            font.pixelSize: 11
+            anchors.verticalCenter: parent.verticalCenter
+          }
+          Repeater {
+            model: {
+              const entry = root.entryFor(selectedId)
+              return entry ? entry.dependencies : []
+            }
+            delegate: Button {
+              text: modelData
+              enabled: !pluginStore.busy
+              onClicked: pluginStore.install(modelData)
+            }
+          }
+        }
+
         Button {
           visible: pendingInstallId === selectedId
           text: "Allow and install"
