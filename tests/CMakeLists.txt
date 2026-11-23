@@ -293,7 +293,7 @@ foreach(alias_pair
         "PluginsSettings.qml|${PLUGINS_SETTINGS_QML}"
         "DeclarativePluginSettings.qml|${DECLARATIVE_SETTINGS_QML}"
         "SettingChoice.qml|${SETTING_CHOICE_QML}"
-        "SettingSlider.qml|${SETTING_SLIDER_QML}"
+        "SettingSlider.qml|${SETTING_SLIDER_QML}")
     string(REGEX REPLACE "^[^|]+\\|" "" qml_path "${alias_pair}")
     string(REGEX REPLACE "\\|.*$" "" qml_alias "${alias_pair}")
     set_source_files_properties("${qml_path}" PROPERTIES
@@ -311,6 +311,7 @@ qt_add_qml_module(tst_aisettings
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/aisettings"
     QML_FILES
         AISettingsTest.qml
+        SettingToggleTest.qml
         PluginsSettingsTest.qml
         ${TEST_QML_DIR}/Theme.qml
         ${AI_SETTING_TOGGLE_QML}

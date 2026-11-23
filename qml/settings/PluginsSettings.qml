@@ -576,14 +576,24 @@ Item {
             required property string description
             required property string version
             required property string category
-            required property bool enabled
             required property bool bundled
             required property bool hasSettings
+
+            // The model's "enabled" role would shadow QQuickItem::enabled on
+            // this Rectangle. Read the state through the manager instead, like
+            // the theme cards in AppearanceSettings do. Reading stateRevision
+            // keeps the value reactive even though isEnabled() has no NOTIFY.
+            readonly property bool pluginEnabled: {
+              if (typeof pluginManager === "undefined" || !pluginManager)
+                return false
+              const revision = pluginManager.stateRevision
+              return pluginManager.isEnabled(pluginCard.id)
+            }
 
             Accessible.role: Accessible.ListItem
             Accessible.name: pluginCard.name + ", version " + pluginCard.version +
                              (pluginCard.bundled ? ", bundled" : "") +
-                             (pluginCard.enabled ? ", enabled" : ", disabled")
+                             (pluginCard.pluginEnabled ? ", enabled" : ", disabled")
 
             // Theme plugins live exclusively in Appearance → Colour scheme,
             // where they are presented as selectable colour schemes. Hiding
@@ -604,7 +614,7 @@ Item {
             radius: 8
             color: Theme.surfaceAlt
             border.width: 1
-            border.color: enabled ? Theme.tint(Theme.accent, 0.4) : Theme.border
+            border.color: pluginCard.pluginEnabled ? Theme.tint(Theme.accent, 0.4) : Theme.border
 
             Row {
               anchors {
@@ -775,9 +785,9 @@ Item {
                 id: enableSwitch
                 anchors.verticalCenter: parent.verticalCenter
                 accessibleName: "Enable " + pluginCard.name
-                // Model-driven binding: dataChanged() from updatePluginEnabled()
-                // (including dependency cascades) refreshes this switch.
-                checked: pluginCard.enabled
+                // stateRevision is read inside pluginEnabled, so the switch
+                // refreshes after enable/disable and dependency cascades.
+                checked: pluginCard.pluginEnabled
                 onToggled: function(value) {
                   if (!pluginManager) return
                   root.clearDependencyNotice()
@@ -794,7 +804,7 @@ Item {
                     root.dependencyNotice = "Cannot enable — missing: " +
                                             (deps.length > 0 ? deps.join(", ") : "unknown")
                   }
-                  checked = Qt.binding(function() { return pluginCard.enabled })
+                  checked = Qt.binding(function() { return pluginCard.pluginEnabled })
                 }
               }
             }

@@ -141,6 +141,42 @@ ApplicationWindow {
     })
   }
 
+  // Settings is a page in this window, just like the home surface: the rail
+  // and explorer stay put and the workspace swaps the editor for settings.
+  function openSettings(section) {
+    if (searchBar.visible)
+      searchBar.close(false)
+    if (searchWindow.visible)
+      searchWindow.close()
+    if (shortcutsSheet.visible)
+      shortcutsSheet.close()
+
+    settingsWindow.open(section)
+  }
+
+  // Shared by the delete confirmation dialog and any other caller that needs
+  // to remove an entry and reconcile the currently open document.
+  function deleteDocument(pathToDelete) {
+    if (pathToDelete.length === 0 || !documentList.deleteEntry(pathToDelete))
+      return
+
+    // If the open document itself was deleted, switch to the most recent
+    // survivor; otherwise fall back to the home surface. Documents rescued
+    // from a deleted folder were retargeted by the pathRenamed handler above
+    // and stay open.
+    const current = blockModel.currentFilePath
+
+    if (current === pathToDelete || current.startsWith(pathToDelete + "/")) {
+      const recent = documentList.mostRecentDocumentPath()
+      if (recent.length > 0 && blockModel.loadDocument(recent)) {
+        documentList.currentFilePath = recent
+      } else {
+        Preferences.lastDocumentPath = ""
+        blockModel.closeDocument()
+      }
+    }
+  }
+
   // `blockModel` and `agentService` are C++ context objects. The agent works on
   // a preview session and mirrors its result through applyAgentDocument(), so
   // the editor sees AI edits through the same path as any remote change.
@@ -268,8 +304,12 @@ ApplicationWindow {
     onExplorerToggleRequested: {
       fileExplorer.expanded = !fileExplorer.expanded
     }
-    onHomeRequested: window.requestHome()
-    onSettingsRequested: settingsWindow.open()
+    onHomeRequested: {
+      if (settingsWindow.visible)
+        settingsWindow.close()
+      window.requestHome()
+    }
+    onSettingsRequested: window.openSettings()
   }
 
   FileExplorer {
@@ -290,10 +330,14 @@ ApplicationWindow {
     }
 
     onOpenDocumentRequested: function(path) {
+      if (settingsWindow.visible)
+        settingsWindow.close()
       window.requestOpenDocument(path)
     }
 
     onCreateDocumentRequested: function() {
+      if (settingsWindow.visible)
+        settingsWindow.close()
       window.requestNewDocument()
     }
 
@@ -334,7 +378,7 @@ ApplicationWindow {
       id: homeScreen
 
       anchors.fill: parent
-      visible: !window.hasDocument
+      visible: !window.hasDocument && !settingsWindow.visible
       z: 0
     }
 
@@ -345,7 +389,7 @@ ApplicationWindow {
       bottomReservedSpace: promptPanelLoader.item ? promptPanelLoader.item.height : 0
       model: blockModel
       modalOpen: window.modalOpen
-      visible: window.hasDocument
+      visible: window.hasDocument && !settingsWindow.visible
 
       // Full-window surfaces sit above the editor; wheel events must not move
       // the document while one of them is open.
@@ -360,7 +404,7 @@ ApplicationWindow {
 
       model: blockModel
 
-      visible: window.hasDocument
+      visible: window.hasDocument && !settingsWindow.visible
       width: Math.min(workspace.contentWidth, workspace.width - 48)
       z: 2
 
@@ -391,7 +435,7 @@ ApplicationWindow {
     Loader {
       id: promptPanelLoader
       z: 1
-      visible: window.hasDocument && status === Loader.Ready
+      visible: window.hasDocument && !settingsWindow.visible && status === Loader.Ready
       anchors {
         horizontalCenter: parent.horizontalCenter
         bottom: parent.bottom
@@ -483,7 +527,7 @@ ApplicationWindow {
         } else if (key === "shortcuts") {
           shortcutsSheet.open()
         } else if (key === "settings") {
-          settingsWindow.open()
+          window.openSettings()
         }
       }
 
@@ -505,10 +549,14 @@ ApplicationWindow {
         }
       }
     }
-  }
 
-  SettingsWindow {
-    id: settingsWindow
+    // A page, not a second window: the rail and explorer stay visible while
+    // this covers the workspace in place of the editor/home surface.
+    SettingsWindow {
+      id: settingsWindow
+
+      anchors.fill: parent
+    }
   }
 
   ShortcutsSheet {
@@ -724,28 +772,7 @@ ApplicationWindow {
             onClicked: {
               const pathToDelete = deleteConfirmationModal.targetPath
               deleteConfirmationModal.close()
-
-              if (pathToDelete.length > 0) {
-                if (!documentList.deleteEntry(pathToDelete))
-                  return
-
-                // If the open document itself was deleted, switch to the most
-                // recent survivor; otherwise fall back to the home surface.
-                // Documents rescued from a deleted folder were retargeted by
-                // the pathRenamed handler above and stay open.
-                const current = blockModel.currentFilePath
-
-                if (current === pathToDelete ||
-                    current.startsWith(pathToDelete + "/")) {
-                  const recent = documentList.mostRecentDocumentPath()
-                  if (recent.length > 0 && blockModel.loadDocument(recent)) {
-                    documentList.currentFilePath = recent
-                  } else {
-                    Preferences.lastDocumentPath = ""
-                    blockModel.closeDocument()
-                  }
-                }
-              }
+              window.deleteDocument(pathToDelete)
             }
           }
         }

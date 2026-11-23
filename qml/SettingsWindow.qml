@@ -2,14 +2,15 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
 
-// Centrally floating settings surface. It lives inside the main window so it
-// can dim the editor and keep the app feeling like a single window.
+// A full-workspace settings page. It replaces the editor inside Main's
+// workspace the same way HomeScreen does: the navigation rail and explorer
+// stay where they are, and only the writing surface is swapped out.
 Item {
   id: root
 
   anchors.fill: parent
   visible: false
-  z: 1000
+  z: 100
   focus: true
 
   // Read-only view of the persisted preference. Selecting a section must use
@@ -33,9 +34,6 @@ Item {
     if (Preferences.settingsActiveSection !== section)
       Preferences.settingsActiveSection = section
   }
-
-  // Focus to hand back to when the settings surface closes.
-  property var previousFocus: null
 
   readonly property var sections: [
     {
@@ -90,6 +88,9 @@ Item {
     return sections[0]
   }
 
+  // Focus to hand back to when the settings page closes.
+  property var previousFocus: null
+
   ModalFocusGuard { id: settingsFocusGuard }
 
   // The tab ring is rebuilt from the close button, the section rows and every
@@ -114,8 +115,7 @@ Item {
   // A focus cycle can land on a control in the loaded page that is scrolled
   // out of view. Map the focused item into the scroller's content coordinates
   // and scroll just enough to reveal it. Flickable has no ensureVisible()
-  // method in Qt 6 (that is only a custom helper in Qt examples), so adjust
-  // contentY directly and clamp it to the scrollable range.
+  // method in Qt 6, so adjust contentY directly and clamp it to the range.
   function ensureFocusVisible() {
     const item = Window.window ? Window.window.activeFocusItem : null
     const content = scroller ? scroller.contentItem : null
@@ -161,7 +161,7 @@ Item {
 
   function open(section) {
     // Opening again while already visible must not overwrite the original
-    // focus target with a control inside the settings panel.
+    // focus target with a control inside the settings page.
     if (!root.visible)
       root.previousFocus = Window.window ? Window.window.activeFocusItem : null
     if (section !== undefined)
@@ -193,299 +193,274 @@ Item {
     onActivated: root.close()
   }
 
-  Rectangle {
-    anchors.fill: parent
-    color: Qt.rgba(0, 0, 0, 0.52)
-
-    MouseArea {
-      anchors.fill: parent
-      onClicked: root.close()
-    }
-  }
+  // --- Settings page: fills the whole workspace to the right of Explorer ---
 
   Rectangle {
-    id: panel
+    id: sidebar
 
-    anchors.centerIn: parent
-    width: Math.min(root.width - 80, 900)
-    height: Math.min(root.height - 80, 580)
-    radius: 8
-    color: Theme.surface
-    border.width: 1
-    border.color: Theme.border
-    clip: true
-
-    MouseArea {
-      anchors.fill: parent
+    anchors {
+      top: parent.top
+      left: parent.left
+      bottom: parent.bottom
     }
 
-    Rectangle {
-      id: sidebar
+    width: 240
+    color: Theme.surfaceAlt
 
+    Column {
       anchors {
         top: parent.top
-        topMargin: 1
         left: parent.left
-        leftMargin: 1
-        bottom: parent.bottom
-        bottomMargin: 1
+        right: parent.right
+        topMargin: 22
+        leftMargin: 14
+        rightMargin: 14
       }
 
-      width: 207
-      color: Theme.surfaceAlt
-      topLeftRadius: 8
-      bottomLeftRadius: 8
+      spacing: 4
 
       Column {
-        anchors {
-          top: parent.top
-          left: parent.left
-          right: parent.right
-          topMargin: 22
-          leftMargin: 14
-          rightMargin: 14
+        width: parent.width
+        topPadding: 6
+        bottomPadding: 18
+        leftPadding: 10
+
+        spacing: 2
+
+        Text {
+          text: "Templnote"
+          color: Theme.text
+          font.pixelSize: 16
+          font.bold: true
         }
 
-        spacing: 4
-
-        Column {
-          width: parent.width
-          topPadding: 6
-          bottomPadding: 18
-          leftPadding: 10
-
-          spacing: 2
-
-          Text {
-            text: "Templnote"
-            color: Theme.text
-            font.pixelSize: 16
-            font.bold: true
-          }
-
-          Text {
-            text: "Settings"
-            color: Theme.textFaint
-            font.pixelSize: 12
-          }
-        }
-
-        Repeater {
-          id: sectionRepeater
-          model: root.sections
-
-          delegate: Rectangle {
-            id: sectionRow
-
-            required property var modelData
-
-            readonly property bool selected: root.currentSectionKey === modelData.key
-
-            focus: sectionRow.selected
-            activeFocusOnTab: true
-
-            Accessible.name: sectionRow.modelData.title
-            Accessible.description: sectionRow.modelData.description
-            Accessible.role: Accessible.Button
-            Accessible.selected: sectionRow.selected
-            Accessible.checked: sectionRow.selected
-            Accessible.focusable: true
-            Accessible.onPressAction: root.setActiveSection(sectionRow.modelData.key)
-
-            Keys.onReturnPressed: root.setActiveSection(sectionRow.modelData.key)
-            Keys.onSpacePressed: root.setActiveSection(sectionRow.modelData.key)
-
-            width: parent.width
-            height: 38
-            radius: 8
-            color: selected
-                   ? Theme.tint(Theme.accent, 0.16)
-                   : sectionMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-            Rectangle {
-              visible: sectionRow.selected
-
-              anchors {
-                left: parent.left
-                verticalCenter: parent.verticalCenter
-              }
-
-              width: 3
-              height: 18
-              radius: 2
-              color: Theme.accent
-            }
-
-            Text {
-              anchors {
-                left: parent.left
-                leftMargin: 14
-                right: parent.right
-                rightMargin: 10
-                verticalCenter: parent.verticalCenter
-              }
-
-              text: sectionRow.modelData.title
-              color: sectionRow.selected ? Theme.accent : Theme.textMuted
-              font.pixelSize: 13
-              elide: Text.ElideRight
-            }
-
-            MouseArea {
-              id: sectionMouse
-
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.setActiveSection(sectionRow.modelData.key)
-            }
-          }
+        Text {
+          text: "Settings"
+          color: Theme.textFaint
+          font.pixelSize: 12
         }
       }
 
-      Text {
-        anchors {
-          left: parent.left
-          leftMargin: 24
-          bottom: parent.bottom
-          bottomMargin: 18
-        }
+      Repeater {
+        id: sectionRepeater
+        model: root.sections
 
-        text: "v0.1.0"
-        color: Theme.textFaint
-        font.pixelSize: 11
-      }
-    }
+        delegate: Rectangle {
+          id: sectionRow
 
-    Item {
-      id: content
+          required property var modelData
 
-      anchors {
-        top: parent.top
-        left: sidebar.right
-        right: parent.right
-        bottom: parent.bottom
-      }
+          readonly property bool selected: root.currentSectionKey === modelData.key
 
-      Item {
-        id: header
-
-        anchors {
-          top: parent.top
-          left: parent.left
-          right: parent.right
-        }
-
-        height: 74
-
-        Column {
-          anchors {
-            left: parent.left
-            leftMargin: 28
-            right: closeButton.left
-            rightMargin: 16
-            verticalCenter: parent.verticalCenter
-          }
-
-          spacing: 3
-
-          Text {
-            width: parent.width
-            text: root.currentSection.title
-            color: Theme.text
-            font.pixelSize: 20
-            font.bold: true
-            elide: Text.ElideRight
-          }
-
-          Text {
-            width: parent.width
-            text: root.currentSection.description
-            color: Theme.textMuted
-            font.pixelSize: 12
-            elide: Text.ElideRight
-          }
-        }
-
-        Rectangle {
-          id: closeButton
-
-          anchors {
-            right: parent.right
-            rightMargin: 20
-            verticalCenter: parent.verticalCenter
-          }
-
-          focus: true
+          focus: sectionRow.selected
           activeFocusOnTab: true
 
-          Accessible.name: "Close settings"
+          Accessible.name: sectionRow.modelData.title
+          Accessible.description: sectionRow.modelData.description
           Accessible.role: Accessible.Button
+          Accessible.selected: sectionRow.selected
+          Accessible.checked: sectionRow.selected
           Accessible.focusable: true
-          Accessible.onPressAction: root.close()
+          Accessible.onPressAction: root.setActiveSection(sectionRow.modelData.key)
 
-          Keys.onReturnPressed: root.close()
-          Keys.onSpacePressed: root.close()
+          Keys.onReturnPressed: root.setActiveSection(sectionRow.modelData.key)
+          Keys.onSpacePressed: root.setActiveSection(sectionRow.modelData.key)
 
-          width: 30
-          height: 30
+          width: parent.width
+          height: 38
           radius: 8
-          color: closeMouse.containsMouse ? Theme.surfaceHover : "transparent"
+          color: selected
+                 ? Theme.tint(Theme.accent, 0.16)
+                 : sectionMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+          Rectangle {
+            visible: sectionRow.selected
+
+            anchors {
+              left: parent.left
+              verticalCenter: parent.verticalCenter
+            }
+
+            width: 3
+            height: 18
+            radius: 2
+            color: Theme.accent
+          }
 
           Text {
-            anchors.centerIn: parent
-            text: "\u2715"
-            color: Theme.textMuted
+            anchors {
+              left: parent.left
+              leftMargin: 14
+              right: parent.right
+              rightMargin: 10
+              verticalCenter: parent.verticalCenter
+            }
+
+            text: sectionRow.modelData.title
+            color: sectionRow.selected ? Theme.accent : Theme.textMuted
             font.pixelSize: 13
+            elide: Text.ElideRight
           }
 
           MouseArea {
-            id: closeMouse
+            id: sectionMouse
 
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.close()
+            onClicked: root.setActiveSection(sectionRow.modelData.key)
           }
         }
+      }
+    }
 
-        Rectangle {
-          anchors {
-            left: parent.left
-            right: parent.right
-            bottom: parent.bottom
-          }
+    Text {
+      anchors {
+        left: parent.left
+        leftMargin: 24
+        bottom: parent.bottom
+        bottomMargin: 18
+      }
 
-          height: 1
-          color: Theme.border
+      text: "v0.1.0"
+      color: Theme.textFaint
+      font.pixelSize: 11
+    }
+  }
+
+  Item {
+    id: content
+
+    anchors {
+      top: parent.top
+      left: sidebar.right
+      right: parent.right
+      bottom: parent.bottom
+    }
+
+    Rectangle {
+      anchors.fill: parent
+      color: Theme.background
+    }
+
+    Item {
+      id: header
+
+      anchors {
+        top: parent.top
+        left: parent.left
+        right: parent.right
+      }
+
+      height: 74
+
+      Column {
+        anchors {
+          left: parent.left
+          leftMargin: 28
+          right: closeButton.left
+          rightMargin: 16
+          verticalCenter: parent.verticalCenter
+        }
+
+        spacing: 3
+
+        Text {
+          width: parent.width
+          text: root.currentSection.title
+          color: Theme.text
+          font.pixelSize: 20
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        Text {
+          width: parent.width
+          text: root.currentSection.description
+          color: Theme.textMuted
+          font.pixelSize: 12
+          elide: Text.ElideRight
         }
       }
 
-      Flickable {
-        id: scroller
+      Rectangle {
+        id: closeButton
 
         anchors {
-          top: header.bottom
+          right: parent.right
+          rightMargin: 20
+          verticalCenter: parent.verticalCenter
+        }
+
+        focus: true
+        activeFocusOnTab: true
+
+        Accessible.name: "Close settings"
+        Accessible.role: Accessible.Button
+        Accessible.focusable: true
+        Accessible.onPressAction: root.close()
+
+        Keys.onReturnPressed: root.close()
+        Keys.onSpacePressed: root.close()
+
+        width: 30
+        height: 30
+        radius: 8
+        color: closeMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+        Text {
+          anchors.centerIn: parent
+          text: "\u2715"
+          color: Theme.textMuted
+          font.pixelSize: 13
+        }
+
+        MouseArea {
+          id: closeMouse
+
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.close()
+        }
+      }
+
+      Rectangle {
+        anchors {
           left: parent.left
           right: parent.right
           bottom: parent.bottom
-          leftMargin: 28
-          rightMargin: 28
-          topMargin: 24
-          bottomMargin: 24
         }
 
-        contentWidth: width
-        contentHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
+        height: 1
+        color: Theme.border
+      }
+    }
 
-        Loader {
-          id: pageLoader
+    Flickable {
+      id: scroller
 
-          width: scroller.width
-          source: root.currentSection.file
-        }
+      anchors {
+        top: header.bottom
+        left: parent.left
+        right: parent.right
+        bottom: parent.bottom
+        leftMargin: 28
+        rightMargin: 28
+        topMargin: 24
+        bottomMargin: 24
+      }
+
+      contentWidth: width
+      contentHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+
+      Loader {
+        id: pageLoader
+
+        width: scroller.width
+        source: root.currentSection.file
       }
     }
   }

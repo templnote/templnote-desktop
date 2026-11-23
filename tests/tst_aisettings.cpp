@@ -103,6 +103,57 @@ private slots:
     QVERIFY2(errors.isEmpty(), "AISettings.qml produced QML errors");
   }
 
+  void testToggleLabelsRender() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    qputenv("TEMPLNOTE_CONFIG_DIR", dir.path().toUtf8());
+
+    QQmlApplicationEngine engine;
+    QList<QQmlError> errors;
+    connect(&engine, &QQmlApplicationEngine::warnings, this,
+            [&errors](const QList<QQmlError> &list) { errors.append(list); });
+
+    engine.loadFromModule(QStringLiteral("TemplnoteAISettingsTest"),
+                          QStringLiteral("SettingToggleTest"));
+    QCOMPARE(engine.rootObjects().size(), 1);
+    if (!errors.isEmpty()) {
+      for (const QQmlError &error : errors)
+        qWarning() << error.toString();
+    }
+    QVERIFY2(errors.isEmpty(), "SettingToggle.qml produced QML errors");
+
+    QObject *toggle = engine.rootObjects().first()
+                          ->property("toggle").value<QObject *>();
+    QVERIFY(toggle);
+
+    const QString title = QStringLiteral("Restore last session");
+    const QString description = QStringLiteral(
+        "Reopen the documents that were open when Templnote was closed.");
+    bool foundTitle = false;
+    bool foundDescription = false;
+
+    const auto descendants = toggle->findChildren<QObject *>();
+    for (QObject *child : descendants) {
+      const QString text = child->property("text").toString();
+
+      if (text != title && text != description)
+        continue;
+
+      QVERIFY2(child->property("visible").toBool(),
+               qPrintable(text + QStringLiteral(" is not visible")));
+      QVERIFY2(child->property("width").toReal() > 0,
+               qPrintable(text + QStringLiteral(" collapsed to zero width")));
+
+      if (text == title)
+        foundTitle = true;
+      else
+        foundDescription = true;
+    }
+
+    QVERIFY2(foundTitle, "SettingToggle title is missing");
+    QVERIFY2(foundDescription, "SettingToggle description is missing");
+  }
+
   void testPluginsSettingsLoads() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());

@@ -75,6 +75,10 @@ Item {
   }
 
   SettingSwitch {
+    // The labels column anchors to this id; it was lost when the inline
+    // switch was replaced by SettingSwitch, which hid every toggle's text.
+    id: toggle
+
     anchors {
       right: parent.right
       verticalCenter: parent.verticalCenter

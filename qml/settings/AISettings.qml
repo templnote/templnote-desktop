@@ -394,7 +394,10 @@ Column {
 
         TextField {
           id: manualModelField
-          width: Math.min(300, parent.width - 90)
+          // Bind to the enclosing column, not the Row: a Row derives its own
+          // (implicit) width from its children, so reading parent.width here
+          // makes the field's width depend on itself and retriggers polish.
+          width: Math.max(120, Math.min(300, modelsColumn.width - 90))
           height: 36
           placeholderText: "Add model id manually"
           placeholderTextColor: Theme.textFaint
