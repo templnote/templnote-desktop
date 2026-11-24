@@ -49,6 +49,10 @@ AgentSession::AgentSession(::Templnote::BlockModel *model,
           &AgentSession::onStreamDebounce);
   m_streamTimer.setInterval(12);
   connect(&m_streamTimer, &QTimer::timeout, this, &AgentSession::onStreamTick);
+  m_reasoningTimer.setSingleShot(true);
+  m_reasoningTimer.setInterval(120);
+  connect(&m_reasoningTimer, &QTimer::timeout, this,
+          &AgentSession::onReasoningFlush);
 
   connect(m_pipeline, &PipelineRunner::runningChanged, this, [this] {
     emit runningChanged();
@@ -136,6 +140,27 @@ void AgentSession::refreshAgentRuns() {
 
 void AgentSession::setError(const QString &error) {
   m_lastError = error;
+  // Errors that happen during a turn belong to that turn, not to a detached
+  // banner at the bottom of the panel.
+  if (!error.isEmpty() && !m_transcript.isEmpty()) {
+    const QVariantMap last = m_transcript.last().toMap();
+    if (last.value(QStringLiteral("role")).toString() == QLatin1String("assistant")) {
+      QVariantMap turn = last;
+      QVariantList blocks = turn.value(QStringLiteral("blocks")).toList();
+      const int existing = blockIndex(blocks, QStringLiteral("error"));
+      QVariantMap block = makeBlock(QStringLiteral("error"), QStringLiteral("error"),
+                                    QStringLiteral("Stopped with an error"),
+                                    error.left(400), QStringLiteral("error"),
+                                    QStringLiteral("!"), 0);
+      if (existing >= 0)
+        blocks.replace(existing, block);
+      else
+        blocks.append(block);
+      turn.insert(QStringLiteral("blocks"), blocks);
+      m_transcript.replace(m_transcript.size() - 1, turn);
+      emit transcriptChanged();
+    }
+  }
   emit lastErrorChanged(m_lastError);
 }
 
@@ -170,7 +195,88 @@ QVariantList AgentSession::pendingDiff() const {
   return Adapter::diffDocuments(m_originalJson, current);
 }
 
+int AgentSession::ensureStreamingTurn() {
+  if (!m_transcript.isEmpty()) {
+    const QVariantMap last = m_transcript.last().toMap();
+    if (last.value(QStringLiteral("role")).toString() == QLatin1String("assistant") &&
+        last.value(QStringLiteral("streaming")).toBool())
+      return m_transcript.size() - 1;
+  }
+  QVariantMap entry;
+  entry.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+  entry.insert(QStringLiteral("text"), QString());
+  entry.insert(QStringLiteral("agent"), QString());
+  entry.insert(QStringLiteral("time"),
+               QTime::currentTime().toString(QStringLiteral("h:mm AP")));
+  entry.insert(QStringLiteral("streaming"), true);
+  entry.insert(QStringLiteral("blocks"), QVariantList{});
+  entry.insert(QStringLiteral("durationMs"), 0);
+  m_transcript.append(entry);
+  return m_transcript.size() - 1;
+}
+
+QVariantMap AgentSession::makeBlock(const QString &id, const QString &kind,
+                                   const QString &title,
+                                   const QString &description,
+                                   const QString &status,
+                                   const QString &icon, int depth,
+                                   qint64 startedMs) {
+  QVariantMap block;
+  block.insert(QStringLiteral("id"), id);
+  block.insert(QStringLiteral("kind"), kind);
+  block.insert(QStringLiteral("title"), title);
+  block.insert(QStringLiteral("description"), description);
+  block.insert(QStringLiteral("status"), status);
+  block.insert(QStringLiteral("icon"), icon);
+  block.insert(QStringLiteral("depth"), depth);
+  block.insert(QStringLiteral("detail"), QString());
+  block.insert(QStringLiteral("durationMs"), 0);
+  block.insert(QStringLiteral("startedMs"), startedMs);
+  return block;
+}
+
+QVariantMap AgentSession::blockFromStep(const PipelineStep &step) {
+  QString icon;
+  if (step.kind == QLatin1String("agent"))
+    icon = QStringLiteral("✦");
+  else if (step.kind == QLatin1String("result"))
+    icon = QStringLiteral("✓");
+  else if (step.label.contains(QStringLiteral("Read")) ||
+           step.label.contains(QStringLiteral("Searched")))
+    icon = QStringLiteral("⌕");
+  else
+    icon = QStringLiteral("▤");
+  const QString title = step.kind == QLatin1String("agent")
+                            ? agentName(step.agentId)
+                            : step.label;
+  QVariantMap block = makeBlock(
+      step.id, step.kind, title, step.description,
+      step.active ? QStringLiteral("running")
+                  : (step.ok ? QStringLiteral("done") : QStringLiteral("error")),
+      icon, step.parentId.isEmpty() ? 0 : 1,
+      step.active && m_runTimer.isValid() ? m_runTimer.elapsed() : 0);
+  block.insert(QStringLiteral("parentId"), step.parentId);
+  block.insert(QStringLiteral("label"), step.label);
+  block.insert(QStringLiteral("detail"), step.detail);
+  return block;
+}
+
+int AgentSession::blockIndex(const QVariantList &blocks, const QString &id) {
+  if (id.isEmpty())
+    return -1;
+  for (int i = 0; i < blocks.size(); ++i) {
+    if (blocks.at(i).toMap().value(QStringLiteral("id")).toString() == id)
+      return i;
+  }
+  return -1;
+}
+
 void AgentSession::onPipelineStep(const PipelineStep &step) {
+  if (step.kind == QLatin1String("agent") && !step.id.isEmpty())
+    m_activeStepId = step.id;
+
+  // Live trace rows: deactivate prior rows and replace by stable id so a
+  // tool's start and outcome are one row instead of two.
   for (QVariant &entry : m_steps) {
     QVariantMap item = entry.toMap();
     item.insert(QStringLiteral("active"), false);
@@ -181,35 +287,104 @@ void AgentSession::onPipelineStep(const PipelineStep &step) {
   item.insert(QStringLiteral("label"), step.label);
   item.insert(QStringLiteral("kind"), step.kind);
   item.insert(QStringLiteral("active"), step.active);
+  item.insert(QStringLiteral("id"), step.id);
+  item.insert(QStringLiteral("description"), step.description);
+  item.insert(QStringLiteral("ok"), step.ok);
   if (!step.detail.isEmpty())
     item.insert(QStringLiteral("detail"), step.detail);
-  m_steps.append(item);
+  const int stepIndex = blockIndex(m_steps, step.id);
+  if (stepIndex >= 0)
+    m_steps.replace(stepIndex, item);
+  else
+    m_steps.append(item);
   emit stepsChanged();
+
+  // Durable activity blocks live inside the assistant turn so the work stays
+  // visible after the run finishes (Notion-style collapsible steps).
+  const int turnIndex = ensureStreamingTurn();
+  QVariantMap turn = m_transcript.at(turnIndex).toMap();
+  QVariantList blocks = turn.value(QStringLiteral("blocks")).toList();
+  const qint64 now = m_runTimer.isValid() ? m_runTimer.elapsed() : 0;
+  for (QVariant &existing : blocks) {
+    QVariantMap prior = existing.toMap();
+    if (prior.value(QStringLiteral("kind")).toString() == QLatin1String("tool") &&
+        prior.value(QStringLiteral("status")).toString() == QLatin1String("running")) {
+      prior.insert(QStringLiteral("status"), QStringLiteral("done"));
+      const qint64 started = prior.value(QStringLiteral("startedMs")).toLongLong();
+      if (started > 0)
+        prior.insert(QStringLiteral("durationMs"), qMax<qint64>(0, now - started));
+      existing = prior;
+    }
+  }
+  QVariantMap block = blockFromStep(step);
+  const int index = blockIndex(blocks, step.id);
+  if (index >= 0) {
+    const qint64 started = blocks.at(index).toMap()
+                               .value(QStringLiteral("startedMs")).toLongLong();
+    block.insert(QStringLiteral("startedMs"), started);
+    if (started > 0)
+      block.insert(QStringLiteral("durationMs"), qMax<qint64>(0, now - started));
+    blocks.replace(index, block);
+  } else {
+    blocks.append(block);
+  }
+  turn.insert(QStringLiteral("blocks"), blocks);
+  m_transcript.replace(turnIndex, turn);
+  emit transcriptChanged();
 }
 
 void AgentSession::onStreamed(const StreamDelta &delta) {
+  if (delta.type == QLatin1String("reasoning")) {
+    if (!delta.text.isEmpty() && m_reasoningBuffer.size() < 8000)
+      m_reasoningBuffer += delta.text;
+    if (!m_reasoningTimer.isActive())
+      m_reasoningTimer.start();
+    return;
+  }
   if (delta.type != QLatin1String("text") || delta.text.isEmpty())
     return;
-  QVariantMap entry;
-  if (!m_transcript.isEmpty()) {
-    entry = m_transcript.last().toMap();
-    if (entry.value(QStringLiteral("role")).toString() == QLatin1String("assistant") &&
-        entry.value(QStringLiteral("streaming")).toBool()) {
-      entry.insert(QStringLiteral("text"),
-                   entry.value(QStringLiteral("text")).toString() + delta.text);
-      m_transcript.replace(m_transcript.size() - 1, entry);
-      emit transcriptChanged();
-      return;
-    }
-  }
-  entry.insert(QStringLiteral("role"), QStringLiteral("assistant"));
-  entry.insert(QStringLiteral("text"), delta.text);
-  entry.insert(QStringLiteral("agent"), agentName(delta.agentId));
-  entry.insert(QStringLiteral("streaming"), true);
-  entry.insert(QStringLiteral("time"),
-               QTime::currentTime().toString(QStringLiteral("h:mm AP")));
-  m_transcript.append(entry);
+  const int index = ensureStreamingTurn();
+  QVariantMap entry = m_transcript.at(index).toMap();
+  if (!entry.contains(QStringLiteral("blocks")))
+    entry.insert(QStringLiteral("blocks"), QVariantList{});
+  if (entry.value(QStringLiteral("agent")).toString().isEmpty())
+    entry.insert(QStringLiteral("agent"), agentName(delta.agentId));
+  entry.insert(QStringLiteral("text"),
+               entry.value(QStringLiteral("text")).toString() + delta.text);
+  m_transcript.replace(index, entry);
   emit transcriptChanged();
+}
+
+void AgentSession::onReasoningFlush() {
+  m_reasoningTimer.stop();
+  if (m_reasoningBuffer.isEmpty())
+    return;
+  const int index = ensureStreamingTurn();
+  QVariantMap turn = m_transcript.at(index).toMap();
+  QVariantList blocks = turn.value(QStringLiteral("blocks")).toList();
+  const int existing = blockIndex(blocks, QStringLiteral("reasoning"));
+  const qint64 started = existing >= 0
+                            ? blocks.at(existing).toMap()
+                                  .value(QStringLiteral("startedMs")).toLongLong()
+                            : (m_runTimer.isValid() ? m_runTimer.elapsed() : 0);
+  QVariantMap block =
+      makeBlock(QStringLiteral("reasoning"), QStringLiteral("reasoning"),
+                QStringLiteral("Thinking"), m_reasoningBuffer,
+                QStringLiteral("running"), QStringLiteral("◌"), 1, started);
+  block.insert(QStringLiteral("parentId"), m_activeStepId);
+  if (existing >= 0)
+    blocks.replace(existing, block);
+  else
+    blocks.append(block);
+  turn.insert(QStringLiteral("blocks"), blocks);
+  m_transcript.replace(index, turn);
+  m_reasoningBuffer.clear();
+  emit transcriptChanged();
+}
+
+void AgentSession::flushReasoning() {
+  m_reasoningTimer.stop();
+  onReasoningFlush();
 }
 
 void AgentSession::clearTranscript() {
@@ -440,7 +615,42 @@ void AgentSession::showPendingInEditor() {
 }
 
 void AgentSession::sendPrompt(const QString &prompt) {
-  const QString text = prompt.trimmed();
+  runPrompt(prompt.trimmed(), true);
+}
+
+void AgentSession::regenerate() {
+  if (running())
+    return;
+  int lastUser = -1;
+  for (int i = m_transcript.size() - 1; i >= 0; --i) {
+    if (m_transcript.at(i).toMap().value(QStringLiteral("role")).toString() ==
+        QLatin1String("user")) {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser < 0)
+    return;
+  const QString prompt = m_transcript.at(lastUser).toMap()
+                             .value(QStringLiteral("text")).toString();
+  if (prompt.isEmpty())
+    return;
+  while (m_transcript.size() > lastUser + 1)
+    m_transcript.removeLast();
+  // Regeneration starts from the committed document, so discard any staged
+  // preview from the answer being replaced.
+  if (m_hasPending)
+    reject();
+  emit transcriptChanged();
+  runPrompt(prompt, false);
+}
+
+void AgentSession::sendFeedback(bool positive) {
+  qInfo().nospace() << "[AI_FEEDBACK] session " << m_id.left(8) << ": "
+                    << (positive ? "up" : "down");
+}
+
+void AgentSession::runPrompt(const QString &text, bool recordUserTurn) {
   if (text.isEmpty() || running() || !m_model || !m_preview)
     return;
   if (m_hasPending) {
@@ -478,14 +688,19 @@ void AgentSession::sendPrompt(const QString &prompt) {
   m_estimatedCost = 0.0;
   emit usageChanged();
 
-  QVariantMap userTurn;
-  userTurn.insert(QStringLiteral("role"), QStringLiteral("user"));
-  userTurn.insert(QStringLiteral("text"), text);
-  userTurn.insert(QStringLiteral("time"),
-                  QTime::currentTime().toString(QStringLiteral("h:mm AP")));
-  m_transcript.append(userTurn);
-  emit transcriptChanged();
+  if (recordUserTurn) {
+    QVariantMap userTurn;
+    userTurn.insert(QStringLiteral("role"), QStringLiteral("user"));
+    userTurn.insert(QStringLiteral("text"), text);
+    userTurn.insert(QStringLiteral("time"),
+                    QTime::currentTime().toString(QStringLiteral("h:mm AP")));
+    m_transcript.append(userTurn);
+    emit transcriptChanged();
+  }
 
+  m_reasoningBuffer.clear();
+  m_reasoningTimer.stop();
+  m_activeStepId.clear();
   m_steps.clear();
   emit stepsChanged();
   emit promptStarted(text);
@@ -602,12 +817,43 @@ void AgentSession::onFinished(const PipelineResult &result) {
   if (!result.ok && !result.error.isEmpty())
     setError(result.error);
 
+  // Finalize buffered thinking, then carry the activity blocks onto the final
+  // answer so the work remains inspectable after the run ends.
+  const qint64 elapsed = m_runTimer.isValid() ? m_runTimer.elapsed() : 0;
+  flushReasoning();
+  QVariantList carried;
+  for (QVariant &entry : m_transcript) {
+    const QVariantMap turn = entry.toMap();
+    if (!turn.value(QStringLiteral("streaming")).toBool())
+      continue;
+    const QVariantList blocks = turn.value(QStringLiteral("blocks")).toList();
+    if (!blocks.isEmpty() && carried.isEmpty())
+      carried = blocks;
+  }
+  for (QVariant &block : carried) {
+    QVariantMap item = block.toMap();
+    if (item.value(QStringLiteral("status")).toString() == QLatin1String("running")) {
+      item.insert(QStringLiteral("status"), QStringLiteral("done"));
+      const qint64 started = item.value(QStringLiteral("startedMs")).toLongLong();
+      if (started > 0)
+        item.insert(QStringLiteral("durationMs"), qMax<qint64>(0, elapsed - started));
+    }
+    if (item.value(QStringLiteral("kind")).toString() == QLatin1String("reasoning") &&
+        item.value(QStringLiteral("title")).toString() == QLatin1String("Thinking")) {
+      item.insert(QStringLiteral("title"),
+                  QStringLiteral("Thought for %1s")
+                      .arg(qMax<qint64>(1, elapsed / 1000)));
+    }
+    block = item;
+  }
+
   // Drop any live streaming bubbles; the final answers replace them.
   for (int i = m_transcript.size() - 1; i >= 0; --i) {
     if (m_transcript.at(i).toMap().value(QStringLiteral("streaming")).toBool())
       m_transcript.removeAt(i);
   }
   m_answers.clear();
+  bool appendedAnswer = false;
   for (const AgentResponse &response : result.responses) {
     if (response.text.trimmed().isEmpty())
       continue;
@@ -624,6 +870,26 @@ void AgentSession::onFinished(const PipelineResult &result) {
     assistantTurn.insert(
         QStringLiteral("time"),
         QTime::currentTime().toString(QStringLiteral("h:mm AP")));
+    if (!appendedAnswer && !carried.isEmpty()) {
+      assistantTurn.insert(QStringLiteral("blocks"), carried);
+      assistantTurn.insert(QStringLiteral("durationMs"), elapsed);
+    }
+    appendedAnswer = true;
+    m_transcript.append(assistantTurn);
+  }
+  if (!appendedAnswer && !carried.isEmpty()) {
+    // Tool-only run: keep the trace in history even without prose output.
+    QVariantMap assistantTurn;
+    assistantTurn.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+    assistantTurn.insert(QStringLiteral("text"),
+                         result.ok ? QStringLiteral("Done.")
+                                   : QStringLiteral("Stopped."));
+    assistantTurn.insert(QStringLiteral("agent"), QStringLiteral("Assistant"));
+    assistantTurn.insert(
+        QStringLiteral("time"),
+        QTime::currentTime().toString(QStringLiteral("h:mm AP")));
+    assistantTurn.insert(QStringLiteral("blocks"), carried);
+    assistantTurn.insert(QStringLiteral("durationMs"), elapsed);
     m_transcript.append(assistantTurn);
   }
   emit transcriptChanged();

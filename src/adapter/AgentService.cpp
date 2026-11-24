@@ -25,7 +25,8 @@ AgentService::AgentService(::Templnote::BlockModel *model,
       m_transcriptModel({QStringLiteral("role"), QStringLiteral("text"),
                          QStringLiteral("agent"), QStringLiteral("time"),
                          QStringLiteral("streaming"), QStringLiteral("kind"),
-                         QStringLiteral("status"), QStringLiteral("id")}),
+                         QStringLiteral("status"), QStringLiteral("id"),
+                         QStringLiteral("blocks"), QStringLiteral("durationMs")}),
       m_stepsModel({QStringLiteral("agent"), QStringLiteral("label"),
                     QStringLiteral("kind"), QStringLiteral("active"),
                     QStringLiteral("detail")}),
@@ -463,6 +464,14 @@ QString AgentService::activeSessionTitle() const {
 void AgentService::clearTranscript() {
   if (active())
     active()->clearTranscript();
+}
+void AgentService::regenerate() {
+  if (active())
+    active()->regenerate();
+}
+void AgentService::sendFeedback(bool positive) {
+  if (active())
+    active()->sendFeedback(positive);
 }
 QString AgentService::previewJson() const {
   return active() ? active()->previewJson() : QString();

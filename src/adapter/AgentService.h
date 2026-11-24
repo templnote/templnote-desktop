@@ -104,6 +104,8 @@ public:
   QString activeSessionTitle() const;
 
   Q_INVOKABLE void clearTranscript();
+  Q_INVOKABLE void regenerate();
+  Q_INVOKABLE void sendFeedback(bool positive);
   Q_INVOKABLE QString previewJson() const;
   Q_INVOKABLE QString originalJson() const;
   Q_INVOKABLE bool commit();

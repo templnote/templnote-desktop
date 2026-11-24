@@ -10,6 +10,32 @@
 #include <QUrl>
 #include <QVariantMap>
 
+// ListView delegates are visually parented to the view's content item, which
+// is not always in the QObject child tree reachable from the window.
+static QObject *findVisualObject(QQuickItem *item, const QString &objectName) {
+  if (!item)
+    return nullptr;
+  if (item->objectName() == objectName)
+    return item;
+  const QList<QQuickItem *> children = item->childItems();
+  for (QQuickItem *child : children) {
+    if (QObject *found = findVisualObject(child, objectName))
+      return found;
+  }
+  return nullptr;
+}
+
+static void collectVisualObjects(QQuickItem *item, const QString &objectName,
+                                 QList<QObject *> &out) {
+  if (!item)
+    return;
+  if (item->objectName() == objectName)
+    out.append(item);
+  const QList<QQuickItem *> children = item->childItems();
+  for (QQuickItem *child : children)
+    collectVisualObjects(child, objectName, out);
+}
+
 class AgentReviewTests : public QObject {
   Q_OBJECT
 
@@ -370,6 +396,192 @@ private slots:
 
     QVERIFY(QMetaObject::invokeMethod(reject, "clicked"));
     QCOMPARE(m_agent->rejectCount(), 1);
+  }
+
+  void activityBlocksPersistAndCollapse() {
+    m_agent->clearErrors();
+    m_agent->setRunning(false);
+
+    QVariantMap plan;
+    plan.insert(QStringLiteral("id"), QStringLiteral("s1"));
+    plan.insert(QStringLiteral("kind"), QStringLiteral("agent"));
+    plan.insert(QStringLiteral("title"), QStringLiteral("Updating document content"));
+    plan.insert(QStringLiteral("description"), QStringLiteral("Following the writer instructions"));
+    plan.insert(QStringLiteral("status"), QStringLiteral("done"));
+    plan.insert(QStringLiteral("icon"), QStringLiteral("✦"));
+    plan.insert(QStringLiteral("depth"), 0);
+    plan.insert(QStringLiteral("durationMs"), 1200);
+
+    QVariantMap thinking;
+    thinking.insert(QStringLiteral("id"), QStringLiteral("reasoning"));
+    thinking.insert(QStringLiteral("parentId"), QStringLiteral("s1"));
+    thinking.insert(QStringLiteral("kind"), QStringLiteral("reasoning"));
+    thinking.insert(QStringLiteral("title"), QStringLiteral("Thought for 3s"));
+    thinking.insert(QStringLiteral("description"),
+                    QStringLiteral("The user wants to clear the page entirely."));
+    thinking.insert(QStringLiteral("status"), QStringLiteral("done"));
+    thinking.insert(QStringLiteral("icon"), QStringLiteral("◌"));
+    thinking.insert(QStringLiteral("depth"), 1);
+
+    QVariantMap tool;
+    tool.insert(QStringLiteral("id"), QStringLiteral("s2"));
+    tool.insert(QStringLiteral("parentId"), QStringLiteral("s1"));
+    tool.insert(QStringLiteral("kind"), QStringLiteral("tool"));
+    tool.insert(QStringLiteral("title"), QStringLiteral("Updated page"));
+    tool.insert(QStringLiteral("description"), QStringLiteral("Applied setText on b1"));
+    tool.insert(QStringLiteral("detail"),
+                QStringLiteral("args: {\"blockId\":\"b1\"}\nresult: applied"));
+    tool.insert(QStringLiteral("status"), QStringLiteral("done"));
+    tool.insert(QStringLiteral("icon"), QStringLiteral("▤"));
+    tool.insert(QStringLiteral("depth"), 1);
+    tool.insert(QStringLiteral("durationMs"), 420);
+
+    QVariantMap turn;
+    turn.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+    turn.insert(QStringLiteral("text"), QStringLiteral("The document is cleared."));
+    turn.insert(QStringLiteral("agent"), QStringLiteral("Assistant"));
+    turn.insert(QStringLiteral("blocks"), QVariantList{plan, thinking, tool});
+    turn.insert(QStringLiteral("durationMs"), 1500);
+    m_agent->setTranscript(QVariantList{turn});
+    QTest::qWait(100);
+
+    QQuickItem *content =
+        qobject_cast<QQuickItem *>(m_root->findChild<QObject *>(QStringLiteral("promptPanelRoot")));
+    QVERIFY(content);
+    QList<QObject *> blocks;
+    collectVisualObjects(content, QStringLiteral("activityBlock"), blocks);
+    QCOMPARE(blocks.size(), 3);
+    QList<QObject *> titles;
+    collectVisualObjects(content, QStringLiteral("activityTitle"), titles);
+    QCOMPARE(titles.size(), 3);
+    QVERIFY(titles.at(0)->property("text").toString().contains(
+        QStringLiteral("Updating document content")));
+    QVERIFY(titles.at(1)->property("text").toString().contains(
+        QStringLiteral("Thought for 3s")));
+
+    QObject *meta = findVisualObject(content, QStringLiteral("answerMeta"));
+    QVERIFY(meta);
+    QVERIFY(meta->property("text").toString().contains(QStringLiteral("Worked for")));
+
+    QQuickItem *toolBlock = nullptr;
+    for (QObject *entry : blocks) {
+      QObject *title = findVisualObject(qobject_cast<QQuickItem *>(entry),
+                                        QStringLiteral("activityTitle"));
+      if (title && title->property("text").toString().contains(QStringLiteral("Updated page"))) {
+        toolBlock = qobject_cast<QQuickItem *>(entry);
+        break;
+      }
+    }
+    QVERIFY(toolBlock);
+    QObject *detail = findVisualObject(toolBlock, QStringLiteral("activityDetail"));
+    QVERIFY(detail);
+    QVERIFY(!detail->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(toolBlock, "activate"));
+    QTest::qWait(50);
+    QVERIFY(detail->property("visible").toBool());
+
+    for (const QQmlError &warning : m_warnings) {
+      const QString text = warning.toString();
+      QVERIFY2(!text.contains(QStringLiteral("TypeError")) &&
+                   !text.contains(QStringLiteral("ReferenceError")),
+               qPrintable(text));
+    }
+  }
+
+  void markdownAnswerRendersSafely() {
+    QVariantMap turn;
+    turn.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+    turn.insert(QStringLiteral("text"),
+                QStringLiteral("# Heading\n**bold** and `code`\n- one\n- two\n"
+                               "[link](https://example.com)\n<script>alert(1)</script>"));
+    turn.insert(QStringLiteral("agent"), QStringLiteral("Assistant"));
+    m_agent->setTranscript(QVariantList{turn});
+    QTest::qWait(80);
+
+    QObject *answer = findVisualObject(
+        qobject_cast<QQuickWindow *>(m_root)->contentItem(),
+        QStringLiteral("promptAnswerText"));
+    QVERIFY(answer);
+    const QString html = answer->property("text").toString();
+    QVERIFY2(html.contains(QStringLiteral("<b>bold</b>")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("<li>one</li>")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("href='https://example.com'")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("&lt;script&gt;")), qPrintable(html));
+
+    for (const QQmlError &warning : m_warnings) {
+      const QString text = warning.toString();
+      QVERIFY2(!text.contains(QStringLiteral("TypeError")) &&
+                   !text.contains(QStringLiteral("ReferenceError")),
+               qPrintable(text));
+    }
+  }
+
+  void answerActionsReachService() {
+    m_agent->clearErrors();
+    m_agent->setRunning(false);
+    QVariantMap diff;
+    diff.insert(QStringLiteral("id"), QStringLiteral("b1"));
+    diff.insert(QStringLiteral("kind"), QStringLiteral("changed"));
+    QVariantMap run;
+    run.insert(QStringLiteral("id"), QStringLiteral("writer"));
+    run.insert(QStringLiteral("label"), QStringLiteral("Writer"));
+    run.insert(QStringLiteral("edits"), 1);
+    run.insert(QStringLiteral("changed"), true);
+    run.insert(QStringLiteral("accepted"), true);
+    m_agent->setPendingDiff(QVariantList{diff});
+    m_agent->setAgentRuns(QVariantList{run});
+    m_agent->setHasPending(true);
+
+    QVariantMap user;
+    user.insert(QStringLiteral("role"), QStringLiteral("user"));
+    user.insert(QStringLiteral("text"), QStringLiteral("Clear the document"));
+    QVariantMap answer;
+    answer.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+    answer.insert(QStringLiteral("text"), QStringLiteral("Cleared."));
+    answer.insert(QStringLiteral("agent"), QStringLiteral("Assistant"));
+    m_agent->setTranscript(QVariantList{user, answer});
+    QTest::qWait(80);
+
+    QQuickItem *content = qobject_cast<QQuickWindow *>(m_root)->contentItem();
+    QList<QObject *> chips;
+    collectVisualObjects(content, QStringLiteral("showChangesChip"), chips);
+    QStringList chipStates;
+    for (QObject *entry : chips)
+      chipStates << QStringLiteral("%1/%2").arg(entry->property("visible").toBool())
+                    .arg(entry->property("text").toString());
+    // The harness hosts several panel instances; inspect the active one.
+    QQuickItem *chip = nullptr;
+    for (QObject *entry : chips) {
+      if (entry->property("visible").toBool()) {
+        chip = qobject_cast<QQuickItem *>(entry);
+        break;
+      }
+    }
+    QVERIFY2(chip, qPrintable(chipStates.join(QStringLiteral(","))));
+    QVERIFY(QMetaObject::invokeMethod(chip, "activate"));
+    QTest::qWait(50);
+    QObject *card = m_root->findChild<QObject *>(QStringLiteral("reviewCard"));
+    QVERIFY(card && card->property("visible").toBool());
+
+    QQuickItem *actionRow = chip->parentItem();
+    QVERIFY(actionRow);
+    const int regenerates = m_agent->regenerateCount();
+    QVERIFY(QMetaObject::invokeMethod(
+        findVisualObject(actionRow, QStringLiteral("regenerateChip")), "activate"));
+    QCOMPARE(m_agent->regenerateCount(), regenerates + 1);
+
+    const int positive = m_agent->positiveFeedback();
+    QVERIFY(QMetaObject::invokeMethod(
+        findVisualObject(actionRow, QStringLiteral("feedbackUp")), "activate"));
+    QCOMPARE(m_agent->positiveFeedback(), positive + 1);
+    m_agent->setHasPending(false);
+
+    for (const QQmlError &warning : m_warnings) {
+      const QString text = warning.toString();
+      QVERIFY2(!text.contains(QStringLiteral("TypeError")) &&
+                   !text.contains(QStringLiteral("ReferenceError")),
+               qPrintable(text));
+    }
   }
 
 private:

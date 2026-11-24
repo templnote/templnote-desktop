@@ -146,6 +146,9 @@ public:
   int commitCount() const { return m_commits; }
   int rejectCount() const { return m_rejects; }
   int promptCount() const { return m_prompts; }
+  int regenerateCount() const { return m_regenerates; }
+  int positiveFeedback() const { return m_positiveFeedback; }
+  int negativeFeedback() const { return m_negativeFeedback; }
 
   Q_INVOKABLE bool commit() {
     ++m_commits;
@@ -160,6 +163,10 @@ public:
   Q_INVOKABLE void clearTranscript() {
     m_transcript.clear();
     emit transcriptChanged();
+  }
+  Q_INVOKABLE void regenerate() { ++m_regenerates; }
+  Q_INVOKABLE void sendFeedback(bool positive) {
+    positive ? ++m_positiveFeedback : ++m_negativeFeedback;
   }
   Q_INVOKABLE void sendPrompt(const QString &text) {
     ++m_prompts;
@@ -245,6 +252,9 @@ private:
   int m_commits = 0;
   int m_rejects = 0;
   int m_prompts = 0;
+  int m_regenerates = 0;
+  int m_positiveFeedback = 0;
+  int m_negativeFeedback = 0;
   QVariantList m_sessions;
   QVariantList m_subagents;
   QVariantList m_permissions;

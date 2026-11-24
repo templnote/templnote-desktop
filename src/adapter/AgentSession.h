@@ -97,6 +97,9 @@ public:
                     const QString &kind = QString());
   void clearErrors();
   void clearTranscript();
+  // Re-run the most recent user prompt without adding a duplicate user bubble.
+  void regenerate();
+  void sendFeedback(bool positive);
   bool commit();
   void reject();
 
@@ -127,10 +130,21 @@ private slots:
   void onFinished(const PipelineResult &result);
   void onPipelineStep(const PipelineStep &step);
   void onStreamed(const StreamDelta &delta);
+  void onReasoningFlush();
   void onStreamDebounce();
   void onStreamTick();
 
 private:
+  void runPrompt(const QString &text, bool recordUserTurn);
+  int ensureStreamingTurn();
+  QVariantMap blockFromStep(const PipelineStep &step);
+  static QVariantMap makeBlock(const QString &id, const QString &kind,
+                               const QString &title,
+                               const QString &description,
+                               const QString &status, const QString &icon,
+                               int depth, qint64 startedMs = 0);
+  static int blockIndex(const QVariantList &blocks, const QString &id);
+  void flushReasoning();
   void installGate();
   QVector<AgentRun> buildAgentRuns(int *skipped) const;
   void captureCaret();
@@ -183,6 +197,11 @@ private:
   QString m_streamTargetJson;
   QTimer m_streamDebounce;
   QTimer m_streamTimer;
+  // Reasoning streams arrive token by token; buffering them avoids rebuilding
+  // the transcript model on every delta.
+  QTimer m_reasoningTimer;
+  QString m_reasoningBuffer;
+  QString m_activeStepId;
   QVector<StreamStep> m_streamSteps;
   QString m_lastAnswer;
   QVariantList m_answers;

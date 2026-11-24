@@ -129,25 +129,118 @@ Rectangle {
   readonly property var transcript: root.agent ? (root.agent.transcript || []) : []
   readonly property var steps: root.agent ? (root.agent.steps || []) : []
 
-  // Answer text with a small muted timestamp appended inline, so no separate
-  // avatar/name row is needed above the reply.
-  function answerHtml(text, time) {
-    function escape(value) {
-      return String(value === undefined || value === null ? "" : value)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    }
-    const stamp = escape(time)
-    const tail = stamp.length > 0
-      ? " <span style='color:" + Theme.textMuted + ";font-size:10px;'>" +
-        stamp + "</span>"
-      : ""
-    return "<span>" + escape(text) + "</span>" + tail
+  // Text is escaped first, then a small Markdown subset is applied. Qt's rich
+  // text engine renders the resulting HTML; links are guarded on activation.
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
   }
+
+  function inlineMd(value) {
+    let out = value
+    out = out.replace(/`([^`\n]+)`/g, function (_, code) {
+      return "<span style='font-family:monospace;color:" + Theme.accent +
+             "'>" + code + "</span>"
+    })
+    out = out.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
+    out = out.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+                      "<a href='$2'>$1</a>")
+    return out
+  }
+
+  function markdownHtml(text, time) {
+    const lines = escapeHtml(text).split(/\r?\n/)
+    let html = ""
+    let inCode = false
+    let list = ""
+    function closeList() {
+      if (list.length > 0) { html += "</" + list + ">"; list = "" }
+    }
+    for (let i = 0; i < lines.length; ++i) {
+      const line = lines[i]
+      const trimmed = line.trim()
+      if (/^```/.test(trimmed)) {
+        if (inCode) {
+          html += "</span></p>"
+          inCode = false
+        } else {
+          closeList()
+          html += "<p><span style='font-family:monospace;font-size:11px;color:" +
+                  Theme.textMuted + "'>"
+          inCode = true
+        }
+        continue
+      }
+      if (inCode) { html += line + "<br>"; continue }
+      if (trimmed.length === 0) { closeList(); continue }
+      const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed)
+      if (heading) {
+        closeList()
+        const size = heading[1].length === 1 ? 16 : heading[1].length === 2 ? 14 : 12
+        html += "<p><b><span style='font-size:" + size + "px'>" +
+                inlineMd(heading[2]) + "</span></b></p>"
+        continue
+      }
+      const bullet = /^[-*+]\s+(.*)$/.exec(trimmed)
+      const numbered = /^\d+[.)]\s+(.*)$/.exec(trimmed)
+      if (bullet || numbered) {
+        const wanted = bullet ? "ul" : "ol"
+        if (list !== wanted) { closeList(); html += "<" + wanted + ">"; list = wanted }
+        html += "<li>" + inlineMd((bullet || numbered)[1]) + "</li>"
+        continue
+      }
+      if (/^>\s?/.test(trimmed)) {
+        closeList()
+        html += "<p><span style='color:" + Theme.textMuted + "'>" +
+                inlineMd(trimmed.replace(/^>\s?/, "")) + "</span></p>"
+        continue
+      }
+      closeList()
+      html += "<p>" + inlineMd(trimmed) + "</p>"
+    }
+    if (inCode) html += "</span></p>"
+    closeList()
+    const stamp = escapeHtml(time)
+    if (stamp.length > 0)
+      html += "<p><span style='color:" + Theme.textMuted +
+              ";font-size:10px'>" + stamp + "</span></p>"
+    return html
+  }
+
+  // Kept as a compatibility alias for older consumers.
+  function answerHtml(text, time) { return markdownHtml(text, time) }
 
   readonly property string usageText: root.agent && root.agent.liveTokens > 0
     ? root.agent.liveTokens + " tok · $" + root.agent.liveCostUsd.toFixed(3)
     : ""
   readonly property bool contextCompacted: root.agent && root.agent.compacted
+  readonly property bool hasPendingChanges: !!root.agent && root.agent.hasPending && !root.agentRunning
+  readonly property bool hasLiveTurn: {
+    const t = root.transcript
+    return t.length > 0 && t[t.length - 1].role === "assistant" &&
+           t[t.length - 1].streaming === true
+  }
+  // Once the running turn carries its own activity blocks, the separate trace
+  // would be a duplicate; keep it only as a fallback for hosts that still
+  // publish steps without blocks.
+  readonly property bool liveTurnHasBlocks: {
+    const t = root.transcript
+    if (!root.agentRunning || t.length === 0)
+      return false
+    const last = t[t.length - 1]
+    return last.role === "assistant" && last.streaming === true &&
+           last.blocks && last.blocks.length > 0
+  }
+  function revealReview() {
+    root.showReviewDetails = true
+    if (!reviewCard || !conversation)
+      return
+    const point = reviewCard.mapToItem(conversation, 0, 0)
+    conversation.contentY = Math.max(
+      0, conversation.contentY + point.y - conversation.height * 0.45)
+  }
   readonly property var permissionRequests: root.agent
     ? root.agent.permissionModel : null
   readonly property var skillList: root.agent ? root.agent.skillModel : null
@@ -491,10 +584,13 @@ Rectangle {
             }
 
             Item {
+              id: assistantRoot
               objectName: "assistantMessage"
               visible: turn.role === "assistant"
               width: parent.width
               height: assistantInner.implicitHeight
+              property bool feedbackUp: false
+              property bool feedbackDown: false
 
               MouseArea {
                 id: answerHover
@@ -508,17 +604,220 @@ Rectangle {
                 width: parent.width
                 spacing: 6
 
+                // Durable, collapsible record of the work done for this turn.
+                Repeater {
+                  objectName: "activityRepeater"
+                  model: (turn.blocks && turn.blocks.length) ? turn.blocks : []
+                  delegate: Item {
+                    id: blockRow
+                    property var block: (typeof modelData !== "undefined") ? modelData : model
+                    property bool expanded: false
+                    property int indent: Math.min(2, (block.depth || 0)) * 14
+                    width: assistantInner.width
+                    height: blockInner.implicitHeight
+
+                    Item {
+                      id: blockInner
+                      anchors {
+                        left: parent.left
+                        leftMargin: blockRow.indent
+                        right: parent.right
+                      }
+                      height: blockShell.implicitHeight
+
+                      Rectangle {
+                        id: blockShell
+                        objectName: "activityBlock"
+                        width: parent.width
+                        implicitHeight: blockContent.implicitHeight + 12
+                        function activate() {
+                          if (block.description || block.detail)
+                            blockRow.expanded = !blockRow.expanded
+                        }
+                        radius: 8
+                        color: block.kind === "reasoning"
+                               ? Theme.surface
+                               : (block.status === "error"
+                                  ? Theme.tint(Theme.danger, 0.10)
+                                  : Theme.tint(Theme.accent, 0.04))
+                        border.width: 1
+                        border.color: block.status === "error" ? Theme.danger
+                                      : (block.status === "running" ? Theme.accent
+                                                                    : Theme.border)
+
+                        MouseArea {
+                          id: blockMouse
+                          objectName: "activityToggle"
+                          anchors.fill: parent
+                          cursorShape: (block.description || block.detail)
+                                       ? Qt.PointingHandCursor : Qt.DefaultCursor
+                          onClicked: blockShell.activate()
+                        }
+
+                        Column {
+                          id: blockContent
+                          anchors {
+                            left: parent.left
+                            right: parent.right
+                            top: parent.top
+                            margins: 6
+                          }
+                          spacing: 3
+
+                          Row {
+                            id: blockTitleRow
+                            width: parent.width
+                            spacing: 6
+                            Text {
+                              objectName: "activityTitle"
+                              width: parent.width - 56
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: (block.icon || "›") + "  " +
+                                    (block.title || block.label || "")
+                              color: block.status === "error" ? Theme.danger
+                                    : (block.status === "running" ? Theme.accent
+                                                                  : Theme.text)
+                              font.pixelSize: 11
+                              font.bold: true
+                              elide: Text.ElideRight
+                            }
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: (block.durationMs || 0) > 0
+                                    ? ((block.durationMs / 1000).toFixed(1) + "s") : ""
+                              color: Theme.textMuted
+                              font.pixelSize: 10
+                            }
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: (block.description || block.detail)
+                                    ? (blockRow.expanded ? "⌃" : "⌄") : ""
+                              color: Theme.textMuted
+                              font.pixelSize: 11
+                            }
+                          }
+
+                          Text {
+                            id: blockDescription
+                            objectName: "activityDescription"
+                            visible: (block.description || "").length > 0
+                            width: parent.width
+                            text: block.description || ""
+                            color: Theme.textMuted
+                            font.pixelSize: 10
+                            wrapMode: blockRow.expanded ? Text.Wrap : Text.NoWrap
+                            elide: blockRow.expanded ? Text.ElideNone : Text.ElideRight
+                            maximumLineCount: blockRow.expanded ? 0 : 1
+                          }
+
+                          Text {
+                            id: blockDetail
+                            objectName: "activityDetail"
+                            visible: blockRow.expanded && (block.detail || "").length > 0
+                            width: parent.width
+                            text: block.detail || ""
+                            color: Theme.textMuted
+                            font.pixelSize: 10
+                            wrapMode: Text.WrapAnywhere
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
                 Text {
                   objectName: "promptAnswerText"
                   width: parent.width
-                  text: root.answerHtml(turn.text || "", turn.time || "")
+                  visible: (turn.text || "").length > 0
+                  text: root.markdownHtml(turn.text || "")
                   color: Theme.text
                   font.pixelSize: 12
                   wrapMode: Text.Wrap
                   textFormat: Text.RichText
+                  onLinkActivated: function (link) {
+                    if (link.indexOf("http://") === 0 || link.indexOf("https://") === 0)
+                      Qt.openUrlExternally(link)
+                  }
                 }
+
+                Text {
+                  objectName: "answerMeta"
+                  visible: (turn.durationMs || 0) > 0 || (turn.time || "").length > 0
+                  text: (turn.durationMs || 0) > 0
+                        ? "Worked for " + Math.max(1, Math.round(turn.durationMs / 1000)) + "s"
+                        : (turn.time || "")
+                  color: Theme.textFaint
+                  font.pixelSize: 10
+                }
+
+                // Approval needed by a tool in this turn, inline with the work.
+                Rectangle {
+                  objectName: "inlinePermissionBanner"
+                  visible: turn.streaming === true && root.permissionCount > 0
+                  width: parent.width
+                  height: visible ? 34 : 0
+                  radius: 6
+                  color: Theme.tint(Theme.accent, 0.10)
+                  border.width: 1
+                  border.color: Theme.accent
+                  Row {
+                    anchors { left: parent.left; right: parent.right; margins: 6 }
+                    spacing: 8
+                    Text {
+                      width: parent.width - 150
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: "Needs approval: " + (root.firstPermission.action || "tool")
+                      color: Theme.text
+                      font.pixelSize: 10
+                      elide: Text.ElideRight
+                    }
+                    Text {
+                      objectName: "inlineAllow"
+                      text: "Allow"
+                      color: Theme.accent
+                      font.pixelSize: 10
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          const req = root.firstPermission
+                          if (root.agent) root.agent.approveTool(req.id || "", false)
+                        }
+                      }
+                    }
+                    Text {
+                      text: "Always"
+                      color: Theme.accent
+                      font.pixelSize: 10
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          const req = root.firstPermission
+                          if (root.agent) root.agent.approveTool(req.id || "", true)
+                        }
+                      }
+                    }
+                    Text {
+                      objectName: "inlineDeny"
+                      text: "Deny"
+                      color: Theme.textMuted
+                      font.pixelSize: 10
+                      MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          const req = root.firstPermission
+                          if (root.agent) root.agent.denyTool(req.id || "")
+                        }
+                      }
+                    }
+                  }
+                }
+
                 Row {
-                  opacity: answerHover.containsMouse ? 1 : 0
+                  opacity: answerHover.containsMouse || root.hasPendingChanges ? 1 : 0
                   Behavior on opacity { OpacityAnimator { duration: 120 } }
                   spacing: 12
                   Text {
@@ -531,6 +830,65 @@ Rectangle {
                       onClicked: Clipboard.setText(turn.text || "")
                     }
                   }
+                  Text {
+                    objectName: "showChangesChip"
+                    visible: root.hasPendingChanges
+                    text: "Show changes"
+                    color: Theme.accent
+                    font.pixelSize: 10
+                    function activate() { root.revealReview() }
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: parent.activate()
+                    }
+                  }
+                  Text {
+                    objectName: "regenerateChip"
+                    text: "↻ Regenerate"
+                    color: Theme.textMuted
+                    font.pixelSize: 10
+                    function activate() { if (root.agent) root.agent.regenerate() }
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: parent.activate()
+                    }
+                  }
+                  Text {
+                    objectName: "feedbackUp"
+                    text: assistantRoot.feedbackUp ? "✓ Good" : "Good"
+                    color: assistantRoot.feedbackUp ? Theme.accent : Theme.textMuted
+                    font.pixelSize: 10
+                    function activate() {
+                      assistantRoot.feedbackUp = !assistantRoot.feedbackUp
+                      assistantRoot.feedbackDown = false
+                      if (assistantRoot.feedbackUp && root.agent)
+                        root.agent.sendFeedback(true)
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: parent.activate()
+                    }
+                  }
+                  Text {
+                    objectName: "feedbackDown"
+                    text: assistantRoot.feedbackDown ? "✓ Bad" : "Bad"
+                    color: assistantRoot.feedbackDown ? Theme.danger : Theme.textMuted
+                    font.pixelSize: 10
+                    function activate() {
+                      assistantRoot.feedbackDown = !assistantRoot.feedbackDown
+                      assistantRoot.feedbackUp = false
+                      if (assistantRoot.feedbackDown && root.agent)
+                        root.agent.sendFeedback(false)
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: parent.activate()
+                    }
+                  }
                 }
               }
             }
@@ -538,11 +896,11 @@ Rectangle {
         }
       }
 
-      // Live run trace.
+      // Live run trace (fallback for hosts that do not publish activity blocks).
       Item {
         width: parent.width
         height: visible ? traceColumn.implicitHeight : 0
-        visible: root.agentRunning
+        visible: root.agentRunning && !root.liveTurnHasBlocks
 
         Column {
           id: traceColumn
@@ -652,7 +1010,7 @@ Rectangle {
       Rectangle {
         id: errorBanner
         objectName: "promptErrorBanner"
-        visible: root.errorMessage.length > 0
+        visible: root.errorMessage.length > 0 && !root.hasLiveTurn
         width: parent.width
         height: Math.min(120, Math.max(32, errorText.implicitHeight + 12))
         radius: 8
@@ -716,7 +1074,7 @@ Rectangle {
       // and the model's repair round retries the call.
       Rectangle {
         objectName: "permissionBanner"
-        visible: root.permissionCount > 0
+        visible: root.permissionCount > 0 && !root.hasLiveTurn
         width: parent.width
         height: visible ? 46 : 0
         radius: 8
