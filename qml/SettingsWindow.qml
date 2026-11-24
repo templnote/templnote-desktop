@@ -63,8 +63,20 @@ Item {
     {
       key: "ai",
       title: "AI Providers",
-      description: "Connect providers and choose which models are available",
+      description: "Connect providers and manage API keys",
       file: "settings/AISettings.qml"
+    },
+    {
+      key: "models",
+      title: "Models",
+      description: "Choose which models appear in the model picker",
+      file: "settings/AIModelsSettings.qml"
+    },
+    {
+      key: "agents",
+      title: "Agents",
+      description: "Create agents and choose which ones work on your documents",
+      file: "settings/AgentsSettings.qml"
     },
     {
       key: "plugins",
@@ -322,7 +334,7 @@ Item {
         bottomMargin: 18
       }
 
-      text: "v0.1.0"
+      text: "v0.3.1"
       color: Theme.textFaint
       font.pixelSize: 11
     }

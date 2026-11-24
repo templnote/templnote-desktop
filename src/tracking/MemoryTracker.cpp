@@ -23,6 +23,18 @@ namespace {
 double roundedMb(double value) {
     return std::round(value * 100.0) / 100.0;
 }
+
+QString formatStats(const Templnote::MemoryStats &stats) {
+    return QStringLiteral("RSS: %1 MB | Peak: %2 MB | VSZ: %3 MB")
+        .arg(stats.residentSetSizeMb, 0, 'f', 2)
+        .arg(stats.peakRssMb, 0, 'f', 2)
+        .arg(stats.virtualMemorySizeMb, 0, 'f', 2);
+}
+
+QString logPrefix(const QString &context) {
+    return context.isEmpty() ? QStringLiteral("[MemoryTracker]")
+                             : QStringLiteral("[MemoryTracker - %1]").arg(context);
+}
 } // namespace
 
 namespace Templnote {
@@ -94,10 +106,7 @@ double MemoryTracker::vszMb() const {
 }
 
 QString MemoryTracker::formattedStats() const {
-    return QStringLiteral("RSS: %1 MB | Peak: %2 MB | VSZ: %3 MB")
-        .arg(m_stats.residentSetSizeMb, 0, 'f', 2)
-        .arg(m_stats.peakRssMb, 0, 'f', 2)
-        .arg(m_stats.virtualMemorySizeMb, 0, 'f', 2);
+    return formatStats(m_stats);
 }
 
 void MemoryTracker::refresh() {
@@ -118,10 +127,16 @@ void MemoryTracker::refresh() {
     emit statsChanged();
 }
 
+void MemoryTracker::logSnapshot(const QString &context) {
+    const MemoryStats fresh = snapshot();
+    qInfo().noquote() << QStringLiteral("%1 %2")
+                             .arg(logPrefix(context), formatStats(fresh));
+}
+
 void MemoryTracker::logCurrent(const QString &context) const {
-    const QString prefix = context.isEmpty() ? QStringLiteral("[MemoryTracker]")
-                                            : QStringLiteral("[MemoryTracker - %1]").arg(context);
-    qInfo().noquote() << QStringLiteral("%1 %2").arg(prefix, formattedStats());
+    // logCurrent() promises *current* consumption; the cached m_stats is only
+    // refreshed by refresh() and would otherwise report stale values.
+    logSnapshot(context);
 }
 
 } // namespace Templnote

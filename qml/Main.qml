@@ -24,6 +24,17 @@ ApplicationWindow {
   // home surface instead of an empty editor.
   readonly property bool hasDocument: blockModel.currentFilePath.length > 0
 
+  // The AI prompt panel is a collapsible right sidebar. Its open state is a
+  // preference so it survives restarts; settings temporarily hides it so the
+  // settings page keeps the full workspace.
+  property bool promptSidebarOpen: Preferences.promptPanelOpen
+  readonly property bool promptSidebarVisible: promptSidebarOpen && !settingsWindow.visible
+  property real promptSidebarWidth: 400
+
+  function togglePromptPanel() {
+    Preferences.promptPanelOpen = !Preferences.promptPanelOpen
+  }
+
   // Set once the user chose Save/Discard so the close handler lets the
   // window go through on the second pass.
   property bool allowClose: false
@@ -348,6 +359,26 @@ ApplicationWindow {
     }
   }
 
+  // Invisible gutter that pushes the editor left while the sidebar is open.
+  // Declared before the workspace so its id is available to the anchors there.
+  Item {
+    id: rightGutter
+
+    anchors {
+      top: parent.top
+      right: parent.right
+      bottom: parent.bottom
+    }
+    width: window.promptSidebarVisible ? window.promptSidebarWidth : 0
+
+    Behavior on width {
+      NumberAnimation {
+        duration: 200
+        easing.type: Easing.OutCubic
+      }
+    }
+  }
+
   Item {
     id: workspace
 
@@ -365,7 +396,7 @@ ApplicationWindow {
     anchors {
       top: parent.top
       left: fileExplorer.right
-      right: parent.right
+      right: rightGutter.left
       bottom: parent.bottom
     }
 
@@ -386,7 +417,9 @@ ApplicationWindow {
       id: editor
       anchors.fill: parent
       contentWidth: workspace.contentWidth
-      bottomReservedSpace: promptPanelLoader.item ? promptPanelLoader.item.height : 0
+      // The prompt panel now lives in the right sidebar, so the editor no
+      // longer has to reserve a bottom band for a floating composer.
+      bottomReservedSpace: 0
       model: blockModel
       modalOpen: window.modalOpen
       visible: window.hasDocument && !settingsWindow.visible
@@ -432,64 +465,15 @@ ApplicationWindow {
       }
     }
 
-    Loader {
-      id: promptPanelLoader
-      z: 1
-      visible: window.hasDocument && !settingsWindow.visible && status === Loader.Ready
-      anchors {
-        horizontalCenter: parent.horizontalCenter
-        bottom: parent.bottom
-      }
-
-      // Changing the URL forces a fresh component instance without ever
-      // assigning to `source`, so the binding below stays intact. Only the
-      // prompt-panel being enabled or disabled bumps it; unrelated plugin
-      // state changes must not throw away typed text, and a prompt-panel
-      // setting edit updates the panel directly via its own Connections block.
-      property int reloadNonce: 0
-
-      source: {
-        let component = ""
-        if (typeof pluginManager !== "undefined" && pluginManager) {
-          const decs = pluginManager.decorationsForSlot("prompt-panel")
-          if (decs && decs.length > 0 && decs[0].component)
-            component = String(decs[0].component)
-        }
-        if (component.length === 0)
-          return ""
-        const separator = component.indexOf("?") >= 0 ? "&" : "?"
-        return component + separator + "tnReload=" + reloadNonce
-      }
-
-      Connections {
-        target: typeof pluginManager !== "undefined" ? pluginManager : null
-
-        // Recreate the panel only when the prompt-panel itself comes or goes
-        // online. Listening to the generic stateRevision signal rebuilt it on
-        // every unrelated plugin enable/disable and discarded typed text.
-        // settingsRevision is deliberately ignored: the panel's own setting
-        // handler updates its state in place.
-        // PluginManager emits these signals BEFORE rebuildActiveState(), so
-        // decorationsForSlot("prompt-panel") is still stale when the signal
-        // arrives. Defer the bump to the next event-loop turn so the `source`
-        // binding above reads fresh decorations. The id filter and the
-        // nonce-in-URL approach are intentionally unchanged.
-        function onPluginEnabled(id) {
-          if (id === "prompt-panel")
-            Qt.callLater(function() { ++promptPanelLoader.reloadNonce })
-        }
-
-        function onPluginDisabled(id) {
-          if (id === "prompt-panel")
-            Qt.callLater(function() { ++promptPanelLoader.reloadNonce })
-        }
-      }
-    }
-
     OptionsMenu {
       id: optionsMenu
       anchors.fill: parent
       z: 3
+      // The workspace itself shrinks by the sidebar width, so the header
+      // buttons keep their normal top-right position (20px gap) with no extra
+      // shift. Adding the sidebar width here pushed them into the middle.
+      promptPanelOpen: window.promptSidebarOpen
+      onTogglePromptPanelRequested: window.togglePromptPanel()
       searchActive: searchBar.visible
       globalSearchActive: searchWindow.visible
       fullWidthActive: workspace.isFullWidth
@@ -557,6 +541,143 @@ ApplicationWindow {
 
       anchors.fill: parent
     }
+  }
+
+  // The sidebar itself slides in from the window edge with an XAnimator, so
+  // the motion is interpolated on the render thread rather than by relayout.
+  Rectangle {
+    id: promptSidebar
+
+    z: 5
+    width: window.promptSidebarWidth
+    anchors {
+      top: parent.top
+      bottom: parent.bottom
+    }
+    // Kept visible at all times: while closed it sits entirely outside the
+    // window. XAnimator keeps the slide on the render thread; binding visible
+    // to x would pop it in only when the animation finished.
+    x: window.promptSidebarVisible ? window.width - width : window.width
+    color: Theme.surface
+    clip: true
+
+    Behavior on x {
+      XAnimator {
+        duration: 200
+        easing.type: Easing.OutCubic
+      }
+    }
+
+    Rectangle {
+      anchors {
+        top: parent.top
+        bottom: parent.bottom
+        left: parent.left
+      }
+      width: 1
+      color: Theme.border
+    }
+
+    Loader {
+      id: sidebarPanelLoader
+
+      anchors.fill: parent
+
+      // Recreate only when the sidebar plugin itself comes or goes online.
+      // Reloading on any plugin change would throw away typed prompts.
+      property int reloadNonce: 0
+
+      source: {
+        let component = ""
+        if (typeof pluginManager !== "undefined" && pluginManager) {
+          const decs = pluginManager.decorationsForSlot("prompt-panel-sidebar")
+          if (decs && decs.length > 0 && decs[0].component)
+            component = String(decs[0].component)
+        }
+        if (component.length === 0)
+          return ""
+        const separator = component.indexOf("?") >= 0 ? "&" : "?"
+        return component + separator + "tnReload=" + reloadNonce
+      }
+
+      Connections {
+        target: typeof pluginManager !== "undefined" ? pluginManager : null
+
+        function onPluginEnabled(id) {
+          if (id === "prompt-panel-sidebar")
+            Qt.callLater(function() { ++sidebarPanelLoader.reloadNonce })
+        }
+
+        function onPluginDisabled(id) {
+          if (id === "prompt-panel-sidebar")
+            Qt.callLater(function() { ++sidebarPanelLoader.reloadNonce })
+        }
+      }
+    }
+
+    Text {
+      anchors.centerIn: parent
+      visible: sidebarPanelLoader.status !== Loader.Ready
+      text: "AI panel is not available."
+      color: Theme.textMuted
+      font.pixelSize: 12
+    }
+  }
+
+  // Bottom-right launcher. It fades out while the sidebar is open; the
+  // header's panel-right button is the way back.
+  Rectangle {
+    id: logoLauncher
+
+    z: 6
+    width: 56
+    height: 56
+    radius: 28
+    anchors {
+      right: parent.right
+      bottom: parent.bottom
+      rightMargin: 18
+      bottomMargin: 18
+    }
+    color: logoMouse.containsMouse ? Theme.surfaceHover : Theme.surface
+    border.width: 1
+    border.color: Theme.border
+    opacity: window.promptSidebarOpen ? 0 : 1
+    // The opacity animator runs on the render thread, so keep the item
+    // enabled/visible from the GUI thread's point of view and simply make it
+    // non-interactive while the panel is open.
+    enabled: !window.promptSidebarOpen
+
+    Behavior on opacity {
+      OpacityAnimator {
+        duration: 150
+        easing.type: Easing.OutQuad
+      }
+    }
+
+    Image {
+      anchors.centerIn: parent
+      width: 40
+      height: 40
+      source: "qrc:/qt/qml/Templnote/assets/logo.png"
+      sourceSize.width: 80
+      sourceSize.height: 80
+      fillMode: Image.PreserveAspectFit
+      smooth: true
+    }
+
+    MouseArea {
+      id: logoMouse
+
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: window.togglePromptPanel()
+    }
+
+    ToolTip.visible: logoMouse.containsMouse
+    ToolTip.text: "Open AI panel"
+    ToolTip.delay: 500
   }
 
   ShortcutsSheet {

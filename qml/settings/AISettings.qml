@@ -1,15 +1,16 @@
 import QtQuick
 import QtQuick.Controls
 
-// Core AI settings: connected providers and the models discovered from them.
-// Local providers (Ollama / LM Studio) appear here automatically after a probe.
+// AI Providers settings: connect cloud providers with a key. Local providers
+// are added automatically after a probe and need no key. Models live in their
+// own Settings section (AIModelsSettings.qml).
 Column {
   id: root
+  objectName: "aiSettingsRoot"
 
   width: parent ? parent.width : 0
   spacing: 18
 
-  property string selectedProviderId: ""
   property string statusMessage: ""
   // Reading the registry revision inside the JS bindings below makes them
   // re-evaluate when connection state or model toggles change.
@@ -19,18 +20,32 @@ Column {
     const rev = root.registryRevision
     return providerManager ? providerManager.providers : []
   }
-  property var selectedModels: {
-    const rev = root.registryRevision
-    return (providerManager && root.selectedProviderId.length > 0)
-      ? providerManager.modelsFor(root.selectedProviderId) : []
+
+  // Kept on the root so it is in scope for every control inside the dialog,
+  // including controls defined in their own components (SettingsButton).
+  function connectAction() {
+    if (!providerManager || connectPopup.providerId.length === 0)
+      return
+    root.statusMessage = "Connecting..."
+    connectPopup.close()
+    providerManager.connectProvider(connectPopup.providerId,
+                                    connectPopup.keyField.text.trim(),
+                                    connectPopup.urlField.text.trim())
+    connectPopup.keyField.text = ""
+    connectPopup.urlField.text = ""
   }
 
-  function selectedProvider() {
-    for (let i = 0; i < root.providerList.length; ++i) {
-      if (root.providerList[i].id === root.selectedProviderId)
-        return root.providerList[i]
+  function providerDescription(id) {
+    switch (id) {
+    case "google": return "Gemini models for fast, structured responses"
+    case "openai": return "GPT models for fast, capable general AI tasks"
+    case "anthropic": return "Direct access to Claude models via API key"
+    case "openrouter": return "Access many supported models from one provider"
+    case "groq": return "Fast open-source inference with an OpenAI-style API"
+    case "together": return "Hosted open models through an OpenAI-style API"
+    case "custom": return "Any OpenAI-compatible endpoint"
+    default: return "Connect with an API key"
     }
-    return null
   }
 
   Text {
@@ -43,7 +58,7 @@ Column {
   Text {
     width: parent.width
     text: "Connect an API key to a cloud provider, or start a local model server. " +
-          "Models are listed after a successful connection and can be toggled individually."
+          "Choose which of their models are available in the separate Models section."
     color: Theme.textMuted
     font.pixelSize: 12
     wrapMode: Text.Wrap
@@ -64,7 +79,9 @@ Column {
     Text {
       anchors.verticalCenter: parent.verticalCenter
       text: root.statusMessage
-      color: root.statusMessage.indexOf("Cannot") === 0 ? Theme.danger : Theme.textMuted
+      color: root.statusMessage.indexOf("Cannot") === 0 ||
+             root.statusMessage.indexOf("An API key") === 0
+             ? Theme.danger : Theme.textMuted
       font.pixelSize: 12
       wrapMode: Text.Wrap
       maximumLineCount: 2
@@ -93,17 +110,11 @@ Column {
         width: parent.width
         implicitHeight: 60
         radius: 8
-        color: modelData.id === root.selectedProviderId
-               ? Theme.surfaceHover : Theme.surfaceAlt
+        color: Theme.surfaceAlt
         border.width: 1
-        border.color: modelData.id === root.selectedProviderId
-                      ? Theme.accent : Theme.border
+        border.color: Theme.border
 
-        // Fixed right-hand action column: "Models" always sits at the same x,
-        // and "Connect"/"Disconnect" occupies the slot to its left. Local rows
-        // simply leave that slot empty instead of shifting "Models" leftwards.
         Item {
-          id: row
           anchors {
             left: parent.left
             right: parent.right
@@ -111,16 +122,14 @@ Column {
             rightMargin: 12
             verticalCenter: parent.verticalCenter
           }
-          implicitHeight: Math.max(labels.implicitHeight, 36)
-          height: implicitHeight
+          height: 36
 
           Column {
-            id: labels
             anchors {
               left: parent.left
+              right: connectButton.visible ? connectButton.left : parent.right
+              rightMargin: connectButton.visible ? 12 : 0
               verticalCenter: parent.verticalCenter
-              right: connectButton.visible ? connectButton.left : modelsButton.left
-              rightMargin: 12
             }
             spacing: 3
 
@@ -140,7 +149,7 @@ Column {
                        : "Local • not detected")
                     : (modelData.connected
                        ? "Connected • " + modelData.modelCount + " models"
-                       : "Not connected")
+                       : root.providerDescription(modelData.id))
               color: modelData.connected ? Theme.accent : Theme.textMuted
               font.pixelSize: 11
               elide: Text.ElideRight
@@ -150,33 +159,25 @@ Column {
           SettingsButton {
             id: connectButton
             anchors {
-              right: modelsButton.left
-              rightMargin: 10
+              right: parent.right
               verticalCenter: parent.verticalCenter
             }
             text: modelData.connected ? "Disconnect" : "Connect"
             accessibleName: text + " " + modelData.name
             visible: modelData.kind !== "local"
             onClicked: {
-              root.selectedProviderId = modelData.id
               root.statusMessage = ""
-              if (modelData.connected && providerManager)
-                providerManager.disconnectProvider(modelData.id)
-            }
-          }
-
-          SettingsButton {
-            id: modelsButton
-            anchors {
-              right: parent.right
-              verticalCenter: parent.verticalCenter
-            }
-            text: "Models"
-            accessibleName: "Show models for " + modelData.name
-            enabled: modelData.connected && modelData.modelCount > 0
-            onClicked: {
-              root.selectedProviderId = modelData.id
-              root.statusMessage = ""
+              if (modelData.connected) {
+                if (providerManager)
+                  providerManager.disconnectProvider(modelData.id)
+              } else {
+                connectPopup.providerId = modelData.id
+                connectPopup.providerName = modelData.name
+                connectPopup.errorMessage = ""
+                connectPopup.keyField.text = ""
+                connectPopup.urlField.text = ""
+                connectPopup.open()
+              }
             }
           }
         }
@@ -184,46 +185,97 @@ Column {
     }
   }
 
-  // ─── CONNECT FORM ───
-  Rectangle {
-    visible: root.selectedProviderId.length > 0 &&
-             !(root.selectedProvider() && root.selectedProvider().connected) &&
-             !(root.selectedProvider() && root.selectedProvider().kind === "local")
-    width: parent.width
-    implicitHeight: formColumn.implicitHeight + 24
-    radius: 8
-    color: Theme.surfaceAlt
-    border.width: 1
-    border.color: Theme.border
+  // ─── CONNECT DIALOG ───
+  Popup {
+    id: connectPopup
+    objectName: "connectPopup"
+    anchors.centerIn: Overlay.overlay
+    width: Math.min(480, root.width - 32)
+    modal: true
+    focus: true
+    padding: 20
+    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
-    Column {
-      id: formColumn
-      anchors {
-        left: parent.left
-        right: parent.right
-        margins: 12
+    property string providerId: ""
+    property string providerName: ""
+    property string errorMessage: ""
+    property alias keyField: apiKeyField
+    property alias urlField: baseUrlField
+
+    Overlay.modal: Rectangle {
+      color: Qt.rgba(0, 0, 0, 0.55)
+    }
+
+    background: Rectangle {
+      radius: 12
+      color: Theme.surface
+      border.width: 1
+      border.color: Theme.border
+    }
+
+    contentItem: Column {
+      id: dialogColumn
+      width: connectPopup.width - 40
+      spacing: 12
+
+      Row {
+        width: parent.width
+        spacing: 10
+
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: "✦"
+          color: Theme.accent
+          font.pixelSize: 18
+        }
+
+        Text {
+          id: dialogTitle
+          anchors.verticalCenter: parent.verticalCenter
+          text: "Connect " + connectPopup.providerName
+          color: Theme.text
+          font.pixelSize: 15
+          font.bold: true
+        }
+
+        Item {
+          width: Math.max(0, parent.width - dialogTitle.implicitWidth - 70)
+          height: 1
+        }
+
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: "×"
+          color: Theme.textMuted
+          font.pixelSize: 20
+          MouseArea {
+            anchors.fill: parent
+            onClicked: connectPopup.close()
+          }
+        }
       }
-      spacing: 10
 
       Text {
-        text: "Connect to " + (root.selectedProvider()
-                               ? root.selectedProvider().name : "")
-        color: Theme.text
-        font.pixelSize: 13
-        font.bold: true
-      }
-
-      Text {
-        text: "API key"
+        width: parent.width
+        text: "Enter your " + connectPopup.providerName +
+              " API key to connect your account and use its models in Templnote."
         color: Theme.textMuted
+        font.pixelSize: 12
+        wrapMode: Text.Wrap
+      }
+
+      Text {
+        text: connectPopup.providerName + " API key"
+        color: Theme.text
         font.pixelSize: 11
+        font.bold: true
       }
 
       TextField {
         id: apiKeyField
         width: parent.width
-        height: 36
-        placeholderText: "sk-..."
+        height: 38
+        placeholderText: "API key"
         placeholderTextColor: Theme.textFaint
         color: Theme.text
         font.pixelSize: 13
@@ -233,9 +285,13 @@ Column {
         passwordCharacter: "\u2022"
         background: Rectangle {
           radius: 8
-          color: Theme.surface
+          color: Theme.surfaceAlt
           border.width: 1
           border.color: apiKeyField.activeFocus ? Theme.accent : Theme.border
+        }
+        Keys.onReturnPressed: {
+          if (apiKeyField.text.trim().length > 0)
+            root.connectAction()
         }
       }
 
@@ -248,7 +304,7 @@ Column {
       TextField {
         id: baseUrlField
         width: parent.width
-        height: 36
+        height: 38
         placeholderText: "https://api.example.com/v1"
         placeholderTextColor: Theme.textFaint
         color: Theme.text
@@ -257,174 +313,40 @@ Column {
         rightPadding: 12
         background: Rectangle {
           radius: 8
-          color: Theme.surface
+          color: Theme.surfaceAlt
           border.width: 1
           border.color: baseUrlField.activeFocus ? Theme.accent : Theme.border
         }
+      }
+
+      Text {
+        visible: connectPopup.errorMessage.length > 0
+        width: parent.width
+        text: connectPopup.errorMessage
+        color: Theme.danger
+        font.pixelSize: 11
+        wrapMode: Text.Wrap
       }
 
       Row {
         spacing: 10
 
         SettingsButton {
-          text: "Connect"
+          objectName: "connectContinueButton"
+          text: "Continue"
           primary: true
-          accessibleName: "Connect " + (root.selectedProvider()
-                                        ? root.selectedProvider().name : "provider")
+          accessibleName: "Connect " + connectPopup.providerName
           enabled: apiKeyField.text.trim().length > 0
-          onClicked: {
-            if (providerManager) {
-              providerManager.connectProvider(root.selectedProviderId,
-                                              apiKeyField.text.trim(),
-                                              baseUrlField.text.trim())
-              root.statusMessage = "Connecting..."
-            }
-          }
+          onClicked: root.connectAction()
         }
+
         SettingsButton {
           text: "Cancel"
           accessibleName: "Cancel connection"
-          onClicked: {
-            root.selectedProviderId = ""
-            apiKeyField.text = ""
-            baseUrlField.text = ""
-            root.statusMessage = ""
-          }
-        }
-      }
-    }
-  }
-
-  // ─── MODELS ───
-  Rectangle {
-    visible: root.selectedProviderId.length > 0 && root.selectedModels.length > 0
-    width: parent.width
-    implicitHeight: modelsColumn.implicitHeight + 24
-    radius: 8
-    color: Theme.surfaceAlt
-    border.width: 1
-    border.color: Theme.border
-
-    Column {
-      id: modelsColumn
-      anchors {
-        left: parent.left
-        right: parent.right
-        margins: 12
-      }
-      spacing: 10
-
-      Text {
-        text: "Models — " + (root.selectedProvider()
-                             ? root.selectedProvider().name : "")
-        color: Theme.text
-        font.pixelSize: 13
-        font.bold: true
-      }
-
-      Text {
-        text: "Enabled models appear in the prompt panel. All models are enabled by default."
-        color: Theme.textMuted
-        font.pixelSize: 11
-        wrapMode: Text.Wrap
-        width: parent.width
-      }
-
-      Repeater {
-        model: root.selectedModels
-
-        delegate: Item {
-          required property var modelData
-          width: parent.width
-          implicitHeight: toggle.implicitHeight
-          height: implicitHeight
-
-          SettingToggle {
-            id: toggle
-            anchors {
-              left: parent.left
-              right: actionsRow.left
-              rightMargin: 12
-              verticalCenter: parent.verticalCenter
-            }
-            title: modelData.label
-            description: modelData.modelId
-            checked: modelData.enabled
-            onToggled: function(value) {
-              if (providerManager)
-                providerManager.setModelEnabled(modelData.providerId,
-                                                modelData.modelId, value)
-            }
-          }
-
-          Row {
-            id: actionsRow
-            anchors {
-              right: parent.right
-              verticalCenter: parent.verticalCenter
-            }
-            spacing: 8
-
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: providerManager && providerManager.defaultModelKey === modelData.key
-                    ? "Default" : ""
-              color: Theme.accent
-              font.pixelSize: 11
-            }
-
-            SettingsButton {
-              anchors.verticalCenter: parent.verticalCenter
-              text: "Use"
-              accessibleName: "Use " + modelData.label + " as default"
-              enabled: modelData.enabled && modelData.connected
-              onClicked: {
-                if (providerManager)
-                  providerManager.defaultModelKey = modelData.key
-              }
-            }
-          }
+          onClicked: connectPopup.close()
         }
       }
 
-      Row {
-        spacing: 8
-        visible: root.selectedProviderId === "custom" ||
-                 root.selectedProviderId === "openrouter"
-
-        TextField {
-          id: manualModelField
-          // Bind to the enclosing column, not the Row: a Row derives its own
-          // (implicit) width from its children, so reading parent.width here
-          // makes the field's width depend on itself and retriggers polish.
-          width: Math.max(120, Math.min(300, modelsColumn.width - 90))
-          height: 36
-          placeholderText: "Add model id manually"
-          placeholderTextColor: Theme.textFaint
-          color: Theme.text
-          font.pixelSize: 13
-          leftPadding: 12
-          rightPadding: 12
-          background: Rectangle {
-            radius: 8
-            color: Theme.surface
-            border.width: 1
-            border.color: manualModelField.activeFocus ? Theme.accent : Theme.border
-          }
-        }
-        SettingsButton {
-          text: "Add"
-          primary: true
-          accessibleName: "Add model"
-          enabled: manualModelField.text.trim().length > 0
-          onClicked: {
-            if (providerManager)
-              providerManager.addModel(root.selectedProviderId,
-                                       manualModelField.text.trim())
-            manualModelField.text = ""
-          }
-        }
-      }
     }
   }
 
@@ -432,15 +354,15 @@ Column {
     target: providerManager ? providerManager : null
 
     function onConnected(id) {
-      if (id === root.selectedProviderId) {
-        root.statusMessage = "Connected — models loaded."
-        apiKeyField.text = ""
-        baseUrlField.text = ""
-      }
+      root.statusMessage = "Connected — models loaded."
+      connectPopup.errorMessage = ""
     }
 
     function onError(message) {
-      root.statusMessage = message
+      if (connectPopup.opened)
+        connectPopup.errorMessage = message
+      else
+        root.statusMessage = message
     }
   }
 }

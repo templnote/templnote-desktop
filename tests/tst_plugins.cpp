@@ -45,6 +45,8 @@ private slots:
   void testProvenanceOverridesBundledField();
   void testUninstallFailureIsRetryable();
   void testNewBundledPluginAutoEnabled();
+  void testPromptPanelSidebarMigration();
+  void testRetiredBundledPluginIsRemoved();
   void testUninstallCascadesDependents();
   void testEmptyColorRejectedInGenericPath();
   void testCorruptSettingsSanitizedOnLoad();
@@ -59,12 +61,15 @@ private slots:
   void testEnableFailureReportsMissingDependencies();
   void testBundledThemeManifestVersions();
   void testBundledPaperManifestVersion();
+  void testBundledPromptPanelSidebarManifestVersion();
   void testAgentCreatePlugin();
   void testAgentWritePluginFileAndValidate();
   void testApprovalGate();
   void testRollbackPlugin();
   void testDeclarativeSettingsAndPermissions();
   void testPathTraversalRejected();
+  void testUnknownPermissionsAreDropped();
+  void testAgentCreatedFlagInManifestIsNotTrusted();
 
 private:
   void writePlugin(const QString &dirPath, const QJsonObject &manifest);
@@ -213,6 +218,46 @@ void PluginTests::testDeclarativeSettingsAndPermissions() {
            QStringList{QStringLiteral("network")});
 }
 
+void PluginTests::testUnknownPermissionsAreDropped() {
+  PluginManager manager;
+  QJsonObject spec;
+  spec.insert(QStringLiteral("id"), QStringLiteral("perm-test"));
+  spec.insert(QStringLiteral("name"), QStringLiteral("Perms"));
+  spec.insert(QStringLiteral("permissions"),
+              QJsonArray{QStringLiteral("network"), QStringLiteral("camera"),
+                         QStringLiteral("filesystem")});
+  QVERIFY(manager.createPlugin(spec));
+  QCOMPARE(manager.pluginPermissions(QStringLiteral("perm-test")),
+           QStringList{QStringLiteral("network")});
+
+  QJsonObject raw;
+  raw.insert(QStringLiteral("id"), QStringLiteral("raw-perms"));
+  raw.insert(QStringLiteral("permissions"),
+             QJsonArray{QStringLiteral("clipboard"), QStringLiteral("network")});
+  bool ok = false;
+  const PluginManifest manifest =
+      PluginManifest::fromJson(raw, QDir::currentPath(), &ok);
+  QVERIFY(ok);
+  QCOMPARE(manifest.permissions(), QStringList{QStringLiteral("network")});
+}
+
+void PluginTests::testAgentCreatedFlagInManifestIsNotTrusted() {
+  PluginManager manager;
+  QJsonObject manifest;
+  manifest.insert(QStringLiteral("id"), QStringLiteral("forged-agent"));
+  manifest.insert(QStringLiteral("name"), QStringLiteral("Forged"));
+  manifest.insert(QStringLiteral("agentCreated"), true);
+  writePlugin(QDir(AppPaths::pluginsDirectory())
+                  .filePath(QStringLiteral("forged-agent")),
+              manifest);
+  PluginManager reloaded;
+  // A self-declared agentCreated flag must not force an approval prompt, and
+  // must not grant bundled provenance either.
+  QVERIFY(!reloaded.needsApproval(QStringLiteral("forged-agent")));
+  QVERIFY(!reloaded.isBundled(QStringLiteral("forged-agent")));
+  QVERIFY(reloaded.enablePlugin(QStringLiteral("forged-agent")));
+}
+
 void PluginTests::testPathTraversalRejected() {
   PluginManager manager;
   QJsonObject spec;
@@ -290,7 +335,6 @@ void PluginTests::testPluginDiscovery() {
   QVERIFY(pm.isBundled("theme-solarized-osaka"));
   QVERIFY(pm.isBundled("theme-github"));
   QVERIFY(pm.isBundled("paper-background"));
-  QVERIFY(pm.isBundled("prompt-panel"));
 
   // Check themes are active
   const QVariantList themes = pm.activeThemes();
@@ -764,6 +808,45 @@ void PluginTests::testNewBundledPluginAutoEnabled() {
     // Explicit user choice is preserved.
     QVERIFY(!second.isEnabled(QStringLiteral("plugin-one")));
   }
+}
+
+void PluginTests::testPromptPanelSidebarMigration() {
+  // The floating bottom panel is gone; the sidebar panel is the only AI panel
+  // and must be bundled and enabled by default.
+  PluginManager first;
+  QVERIFY(first.pluginInfo(QStringLiteral("prompt-panel-sidebar"))
+              .contains(QStringLiteral("id")));
+  QVERIFY(!first.pluginInfo(QStringLiteral("prompt-panel"))
+               .contains(QStringLiteral("id")));
+  QVERIFY(first.isEnabled(QStringLiteral("prompt-panel-sidebar")));
+  QVERIFY(first.decorationsForSlot(QStringLiteral("prompt-panel-sidebar"))
+              .size() >= 1);
+  QVERIFY(first.decorationsForSlot(QStringLiteral("prompt-panel")).isEmpty());
+}
+void PluginTests::testRetiredBundledPluginIsRemoved() {
+  // Simulate a user config that still has an installed copy of a bundled
+  // plugin which is no longer shipped. It must not appear in the plugin list.
+  const QString dir =
+      QDir(testConfigDir()).filePath(QStringLiteral("plugins/retired-panel"));
+  QVERIFY(QDir().mkpath(dir));
+  QJsonObject manifest;
+  manifest.insert(QStringLiteral("id"), QStringLiteral("prompt-panel"));
+  manifest.insert(QStringLiteral("name"), QStringLiteral("Retired Panel"));
+  manifest.insert(QStringLiteral("version"), QStringLiteral("1.0.0"));
+  manifest.insert(QStringLiteral("bundled"), true);
+  QFile manifestFile(QDir(dir).filePath(QStringLiteral("manifest.json")));
+  QVERIFY(manifestFile.open(QIODevice::WriteOnly));
+  manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Compact));
+  manifestFile.close();
+  QFile marker(QDir(dir).filePath(QStringLiteral(".templnote-bundled")));
+  QVERIFY(marker.open(QIODevice::WriteOnly));
+  marker.write("prompt-panel\n");
+  marker.close();
+
+  PluginManager manager;
+  QVERIFY(!manager.pluginInfo(QStringLiteral("prompt-panel"))
+               .contains(QStringLiteral("id")));
+  QVERIFY(!QFile::exists(QDir(dir).filePath(QStringLiteral("manifest.json"))));
 }
 
 void PluginTests::testUninstallCascadesDependents() {
@@ -1246,6 +1329,24 @@ void PluginTests::testBundledPaperManifestVersion() {
   QVERIFY(doc.isObject());
   QCOMPARE(doc.object().value(QStringLiteral("version")).toString(),
            QStringLiteral("2.0.1"));
+}
+
+void PluginTests::testBundledPromptPanelSidebarManifestVersion() {
+  // The installer refreshes an installed plugin only when its manifest
+  // version grows. Bump this whenever the sidebar decoration changes,
+  // otherwise users keep running the old QML from the installed copy.
+  const QString path =
+      QDir(m_testBundledDir)
+          .filePath(QStringLiteral("prompt-panel-sidebar/manifest.json"));
+  QVERIFY2(QFile::exists(path), qPrintable(path));
+
+  QFile file(path);
+  QVERIFY(file.open(QIODevice::ReadOnly));
+  const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+  file.close();
+  QVERIFY(doc.isObject());
+  QCOMPARE(doc.object().value(QStringLiteral("version")).toString(),
+           QStringLiteral("1.3.0"));
 }
 
 QTEST_MAIN(PluginTests)

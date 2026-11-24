@@ -6,6 +6,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -14,8 +15,10 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QThread>
 #include <QUrl>
 #include <QTextBoundaryFinder>
+#include <QtConcurrent>
 #include <algorithm>
 #include <functional>
 #include <utility>
@@ -39,6 +42,58 @@ QString attachmentManifestPath() {
              ? QString()
              : QDir(config).filePath(
                    QStringLiteral("attachment-documents.json"));
+}
+
+// Image sources come from document files, which may be untrusted. Never let a
+// note turn an Image element into an arbitrary local-file reader: file: URLs
+// are only accepted for attachments copied into our own attachments directory.
+QString safeImageSource(const QString &raw) {
+  const QString source = raw.trimmed();
+  if (source.isEmpty())
+    return {};
+  const QUrl url(source);
+  if (!url.isValid())
+    return {};
+  const QString scheme = url.scheme().toLower();
+  if (scheme == QLatin1String("https") || scheme == QLatin1String("http") ||
+      scheme == QLatin1String("qrc"))
+    return source;
+  if (scheme == QLatin1String("data"))
+    return source.startsWith(QLatin1String("data:image/"),
+                             Qt::CaseInsensitive)
+               ? source
+               : QString();
+  if (scheme == QLatin1String("file")) {
+    const QString root =
+        QFileInfo(AppPaths::attachmentsDirectory()).canonicalFilePath();
+    const QString candidate = QFileInfo(url.toLocalFile()).canonicalFilePath();
+    if (!root.isEmpty() && !candidate.isEmpty() &&
+        (candidate == root || candidate.startsWith(root + QLatin1Char('/'))))
+      return source;
+  }
+  return {};
+}
+
+// Documents are untrusted input. Strip unsafe image sources before they reach
+// an Image element or a save, so opening a malicious note cannot read local
+// files or reach arbitrary schemes.
+void sanitizeDocumentImageSources(QJsonObject &document) {
+  QJsonArray blocks = document.value(QStringLiteral("blocks")).toArray();
+  bool changed = false;
+  for (auto it = blocks.begin(); it != blocks.end(); ++it) {
+    QJsonObject block = it->toObject();
+    QJsonObject metadata = block.value(QStringLiteral("metadata")).toObject();
+    const QString source =
+        metadata.value(QStringLiteral("imageSource")).toString();
+    if (!source.isEmpty() && safeImageSource(source).isEmpty()) {
+      metadata.remove(QStringLiteral("imageSource"));
+      block.insert(QStringLiteral("metadata"), metadata);
+      *it = block;
+      changed = true;
+    }
+  }
+  if (changed)
+    document.insert(QStringLiteral("blocks"), blocks);
 }
 
 // Reads the raw (cleaned, but not existence-filtered) contents of the manifest.
@@ -816,6 +871,29 @@ bool BlockModel::updateBlockText(const QString &id, const QString &text) {
   return true;
 }
 
+bool BlockModel::applyStreamedText(const QString &id, const QString &text) {
+  const bool previous = m_applyingRemote;
+  m_applyingRemote = true;
+  const bool ok = updateBlockText(id, text);
+  m_applyingRemote = previous;
+  return ok;
+}
+
+void BlockModel::setAgentBusy(bool busy) {
+  if (m_agentBusy == busy)
+    return;
+  m_agentBusy = busy;
+  emit agentBusyChanged();
+}
+
+void BlockModel::markAgentDocumentModified() {
+  // applyRemoteDocument() resets the model's state ids to "saved" (the engine
+  // owns the snapshot). Bumping the id is what makes the normal dirty check
+  // see the agent's edit and re-arm autosave.
+  m_currentStateId = ++m_stateCounter;
+  markModified();
+}
+
 QString BlockModel::splitBlock(const QString &id, int position,
                                const QString &editorText) {
   const int row = m_document.indexOf(id);
@@ -1431,12 +1509,9 @@ void BlockModel::cleanupOrphanedAttachments() {
   // deleted outside the app, and that pruned set must replace the manifest.
   saveKnownAttachmentPaths();
 
-  // Collect attachment file names by parsing documents instead of doing a
-  // substring search over concatenated bytes: this is linear in document
-  // content rather than attachments x total bytes on every autosave.
   QSet<QString> referenced;
 
-  auto rememberReference = [&referenced](const QString &source) {
+  auto rememberReference = [](QSet<QString> &refs, const QString &source) {
     if (source.isEmpty())
       return;
 
@@ -1445,10 +1520,22 @@ void BlockModel::cleanupOrphanedAttachments() {
     const QString name = QFileInfo(local).fileName();
 
     if (!name.isEmpty())
-      referenced.insert(name);
+      refs.insert(name);
   };
 
-  auto collectFromDocument = [&rememberReference](const QByteArray &data) {
+  static const QRegularExpression imageLink(QStringLiteral(
+      R"(!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\))"));
+
+  auto collectMarkdownRefs = [&rememberReference](QSet<QString> &refs,
+                                                  const QString &text) {
+    auto matches = imageLink.globalMatch(text);
+
+    while (matches.hasNext())
+      rememberReference(refs, matches.next().captured(1));
+  };
+
+  auto collectFromData = [&rememberReference, &collectMarkdownRefs](
+                             QSet<QString> &refs, const QByteArray &data) {
     const QJsonDocument doc = QJsonDocument::fromJson(data);
 
     if (!doc.isObject())
@@ -1462,40 +1549,64 @@ void BlockModel::cleanupOrphanedAttachments() {
       const QString source =
           block.value(QStringLiteral("metadata")).toObject()
               .value(QStringLiteral("imageSource")).toString();
-      rememberReference(source);
+      rememberReference(refs, source);
 
       // Images may also be embedded as Markdown `![alt](file:///.../uuid.png)`
       // in the block text, which carries no imageSource metadata.
-      static const QRegularExpression imageLink(QStringLiteral(
-          R"(!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\))"));
-      auto matches = imageLink.globalMatch(
-          block.value(QStringLiteral("text")).toString());
-
-      while (matches.hasNext())
-        rememberReference(matches.next().captured(1));
+      collectMarkdownRefs(refs, block.value(QStringLiteral("text")).toString());
     }
+  };
+
+  // Scan a document only when its size or mtime changed since the last sweep;
+  // otherwise reuse the references collected then. This keeps the safety
+  // guarantee (a changed document is always rescanned) while making repeated
+  // autosaves over a stable document set cheap.
+  QSet<QString> liveDocumentKeys;
+
+  auto scanDocumentFile = [&](const QString &path) {
+    const QFileInfo info(path);
+    const QString key = QDir::cleanPath(info.absoluteFilePath());
+
+    if (key.isEmpty())
+      return;
+
+    liveDocumentKeys.insert(key);
+
+    const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
+    const qint64 size = info.size();
+    const auto cached = m_attachmentRefsByDocument.constFind(key);
+
+    if (cached != m_attachmentRefsByDocument.constEnd() &&
+        m_attachmentDocMtimes.value(key) == mtime &&
+        m_attachmentDocSizes.value(key) == size) {
+      referenced.unite(cached.value());
+      return;
+    }
+
+    QSet<QString> refs;
+    QFile file(path);
+
+    if (file.open(QIODevice::ReadOnly))
+      collectFromData(refs, file.readAll());
+
+    m_attachmentDocMtimes.insert(key, mtime);
+    m_attachmentDocSizes.insert(key, size);
+    m_attachmentRefsByDocument.insert(key, refs);
+    referenced.unite(refs);
   };
 
   // Every document this app has opened or saved, including Save As targets
   // outside the documents root. Their attachments must never be reclaimed.
-  for (const QString &path : std::as_const(m_knownAttachmentPaths)) {
-    QFile file(path);
-
-    if (file.open(QIODevice::ReadOnly))
-      collectFromDocument(file.readAll());
-  }
+  for (const QString &path : std::as_const(m_knownAttachmentPaths))
+    scanDocumentFile(path);
 
   // Documents created outside the app still live in the default folder.
   QDirIterator it(AppPaths::documentsDirectory(),
                   QStringList{QStringLiteral("*.templnote")}, QDir::Files,
                   QDirIterator::Subdirectories);
 
-  while (it.hasNext()) {
-    QFile file(it.next());
-
-    if (file.open(QIODevice::ReadOnly))
-      collectFromDocument(file.readAll());
-  }
+  while (it.hasNext())
+    scanDocumentFile(it.next());
 
   // A Save As copy can live beside the open document outside the documents
   // root. Scan that directory too so siblings sharing an attachment UUID keep
@@ -1505,22 +1616,44 @@ void BlockModel::cleanupOrphanedAttachments() {
                           QStringList{QStringLiteral("*.templnote")},
                           QDir::Files);
 
-    while (siblings.hasNext()) {
-      QFile file(siblings.next());
-
-      if (file.open(QIODevice::ReadOnly))
-        collectFromDocument(file.readAll());
-    }
+    while (siblings.hasNext())
+      scanDocumentFile(siblings.next());
   }
 
-  // Unsaved edits in the open document (metadata and Markdown text refs).
-  collectFromDocument(
-      QJsonDocument(m_document.toJson()).toJson(QJsonDocument::Compact));
+  // Unsaved edits in the open document. Scan the blocks directly instead of
+  // serializing the whole document to JSON on every autosave.
+  QSet<QString> openRefs;
+
+  for (const Block &block : m_document.blocks()) {
+    rememberReference(openRefs,
+                      block.metadata.value(QStringLiteral("imageSource")).toString());
+    collectMarkdownRefs(openRefs, block.text);
+  }
+  referenced.unite(openRefs);
+
+  // Drop signatures for documents that left the scan set so stale references
+  // cannot keep files alive forever after a rename or delete.
+  for (auto cacheIt = m_attachmentRefsByDocument.begin();
+       cacheIt != m_attachmentRefsByDocument.end();) {
+    if (!liveDocumentKeys.contains(cacheIt.key())) {
+      m_attachmentDocMtimes.remove(cacheIt.key());
+      m_attachmentDocSizes.remove(cacheIt.key());
+      cacheIt = m_attachmentRefsByDocument.erase(cacheIt);
+    } else {
+      ++cacheIt;
+    }
+  }
 
   for (const QString &name : files) {
     if (!referenced.contains(name))
       QFile::remove(directory.filePath(name));
   }
+}
+
+void BlockModel::invalidateAttachmentScanCache() {
+  m_attachmentDocSizes.clear();
+  m_attachmentDocMtimes.clear();
+  m_attachmentRefsByDocument.clear();
 }
 
 bool BlockModel::moveBlock(const QString &id, int destination) {
@@ -1889,9 +2022,11 @@ bool BlockModel::saveDocument(const QString &path) {
   m_lastError.clear();
   emit lastErrorChanged();
 
-  // The file now contains the current references, so imported files that no
-  // document points at can be reclaimed from the cache.
-  cleanupOrphanedAttachments();
+  // A no-op autosave changed neither the file nor its image references, so
+  // skip the full attachment sweep. Unreferenced files are still reclaimed by
+  // the next save that actually changes content (or by a close/load).
+  if (!unchanged)
+    cleanupOrphanedAttachments();
 
   return true;
 }
@@ -1903,12 +2038,14 @@ bool BlockModel::saveCurrentDocument() {
   return saveDocument(m_currentFilePath);
 }
 
-bool BlockModel::loadDocument(const QString &path) {
-  ScopedTimer loadTimer(QStringLiteral("BlockModel::loadDocument: ") + path);
+QString BlockModel::resolveDocumentPath(const QString &path, QString *error) {
   QString target = path.trimmed();
 
-  if (target.isEmpty())
-    return setError(QStringLiteral("Cannot open a document without a path."));
+  if (target.isEmpty()) {
+    if (error)
+      *error = QStringLiteral("Cannot open a document without a path.");
+    return {};
+  }
 
   if (!QFileInfo::exists(target) &&
       !target.endsWith(QStringLiteral(".templnote"), Qt::CaseInsensitive)) {
@@ -1917,13 +2054,36 @@ bool BlockModel::loadDocument(const QString &path) {
 
   const QFileInfo info(target);
 
-  if (!info.exists() || !info.isFile())
-    return setError(QStringLiteral("The document does not exist."));
+  if (!info.exists() || !info.isFile()) {
+    if (error)
+      *error = QStringLiteral("The document does not exist.");
+    return {};
+  }
 
-  QFile file(info.absoluteFilePath());
+  return info.absoluteFilePath();
+}
 
-  if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-    return setError(file.errorString());
+BlockModel::ParsedDocument BlockModel::parseDocumentFile(const QString &path) {
+  ParsedDocument result;
+  QString pathError;
+  const QString target = resolveDocumentPath(path, &pathError);
+
+  if (target.isEmpty()) {
+    result.error = pathError;
+    return result;
+  }
+
+  const QFileInfo info(target);
+  result.absolutePath = info.absoluteFilePath();
+  result.fileSize = info.size();
+  result.fileMtimeMs = info.lastModified().toMSecsSinceEpoch();
+
+  QFile file(target);
+
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    result.error = file.errorString();
+    return result;
+  }
 
   QJsonParseError parseError{};
   const QJsonDocument parsed =
@@ -1931,19 +2091,25 @@ bool BlockModel::loadDocument(const QString &path) {
   file.close();
 
   if (parseError.error != QJsonParseError::NoError || !parsed.isObject()) {
-    return setError(QStringLiteral("Could not read document: %1")
-                        .arg(parseError.errorString()));
+    result.error = QStringLiteral("Could not read document: %1")
+                       .arg(parseError.errorString());
+    return result;
   }
+
+  QJsonObject documentJson = parsed.object();
+  sanitizeDocumentImageSources(documentJson);
 
   Document document;
   QString documentError;
 
-  if (!document.fromJson(parsed.object(), &documentError))
-    return setError(documentError);
+  if (!document.fromJson(documentJson, &documentError)) {
+    result.error = documentError;
+    return result;
+  }
 
-  resetDocument(std::move(document));
-
-  m_createdAt =
+  result.document = std::move(document);
+  result.ok = true;
+  result.createdAt =
       parsed.object().value(QStringLiteral("createdAt")).toString();
 
   QDateTime modified = QDateTime::fromString(
@@ -1954,8 +2120,30 @@ bool BlockModel::loadDocument(const QString &path) {
   if (!modified.isValid())
     modified = info.lastModified();
 
-  setCurrentFilePath(info.absoluteFilePath());
-  setLastModified(modified.toLocalTime());
+  result.modified = modified;
+  return result;
+}
+
+bool BlockModel::parsedDocumentIsCurrent(const ParsedDocument &parsed) const {
+  if (!parsed.ok || parsed.absolutePath.isEmpty())
+    return false;
+
+  const QFileInfo info(parsed.absolutePath);
+  return info.exists() && info.isFile() && info.size() == parsed.fileSize &&
+         info.lastModified().toMSecsSinceEpoch() == parsed.fileMtimeMs;
+}
+
+bool BlockModel::applyParsedDocument(ParsedDocument parsed) {
+  if (!parsed.ok)
+    return setError(parsed.error);
+
+  // Everything from here on touches the model and emits signals, so this is
+  // only ever called on the model's thread (GUI thread in the application).
+  resetDocument(std::move(parsed.document));
+
+  m_createdAt = parsed.createdAt;
+  setCurrentFilePath(parsed.absolutePath);
+  setLastModified(parsed.modified.toLocalTime());
   setModified(false);
 
   m_lastError.clear();
@@ -1966,11 +2154,123 @@ bool BlockModel::loadDocument(const QString &path) {
   return true;
 }
 
+bool BlockModel::loadDocument(const QString &path) {
+  ScopedTimer loadTimer(QStringLiteral("BlockModel::loadDocument: ") + path);
+
+  QString pathError;
+  const QString target = resolveDocumentPath(path, &pathError);
+
+  if (target.isEmpty())
+    return setError(pathError);
+
+  ParsedDocument parsed;
+  const auto cached = m_prewarmedParses.constFind(target);
+
+  if (cached != m_prewarmedParses.constEnd() && cached.value().isFinished())
+    parsed = cached.value().result();
+  else
+    parsed = parseDocumentFile(target);
+
+  m_prewarmedParses.remove(target);
+
+  // A pre-warmed parse may refer to a file that changed while it was running.
+  if (parsed.ok && !parsedDocumentIsCurrent(parsed))
+    parsed = parseDocumentFile(target);
+
+  // Invalidate in-flight async loads: the newest load always wins.
+  ++m_loadRequestId;
+
+  // A load replaces the attachment reference cache with a fresh full sweep.
+  invalidateAttachmentScanCache();
+
+  return applyParsedDocument(std::move(parsed));
+}
+
+void BlockModel::prewarmDocument(const QString &path) {
+  // The cache is plain QHash state owned by the model's thread.
+  if (QThread::currentThread() != thread())
+    return;
+
+  QString pathError;
+  const QString target = resolveDocumentPath(path, &pathError);
+
+  if (target.isEmpty() || m_prewarmedParses.contains(target))
+    return;
+
+  m_prewarmedParses.insert(
+      target, QtConcurrent::run([target] { return parseDocumentFile(target); }));
+
+  // Bound speculative prewarming so browsing a large document list cannot
+  // grow this cache without limit.
+  if (m_prewarmedParses.size() > 8)
+    m_prewarmedParses.erase(m_prewarmedParses.begin());
+}
+
+void BlockModel::loadDocumentAsync(const QString &path) {
+  loadDocumentAsync(path, std::function<void(bool)>{});
+}
+
+void BlockModel::loadDocumentAsync(const QString &path,
+                                   std::function<void(bool)> callback) {
+  if (QThread::currentThread() != thread()) {
+    // No event loop on this thread to deliver the watcher signal. Keep the
+    // synchronous fast path and invoke the callback inline instead.
+    const bool ok = loadDocument(path);
+    if (callback)
+      callback(ok);
+    return;
+  }
+
+  QString pathError;
+  const QString target = resolveDocumentPath(path, &pathError);
+
+  if (target.isEmpty()) {
+    setError(pathError);
+    emit documentLoadFinished(false);
+    if (callback)
+      callback(false);
+    return;
+  }
+
+  const quint64 requestId = ++m_loadRequestId;
+  auto *watcher = new QFutureWatcher<ParsedDocument>(this);
+
+  connect(watcher, &QFutureWatcher<ParsedDocument>::finished, this,
+          [this, watcher, requestId, callback]() {
+            if (requestId != m_loadRequestId) {
+              watcher->deleteLater();
+              return; // superseded by a newer load or by closeDocument()
+            }
+
+            ParsedDocument parsed = watcher->result();
+            const QString appliedPath = parsed.absolutePath;
+            watcher->deleteLater();
+
+            // The file may have changed while the worker was parsing it.
+            if (!parsedDocumentIsCurrent(parsed))
+              parsed = parseDocumentFile(appliedPath);
+
+            invalidateAttachmentScanCache();
+            const bool ok = applyParsedDocument(std::move(parsed));
+            m_prewarmedParses.remove(appliedPath);
+            emit documentLoadFinished(ok);
+            if (callback)
+              callback(ok);
+          });
+
+  const QFuture<ParsedDocument> future =
+      QtConcurrent::run([target] { return parseDocumentFile(target); });
+  m_prewarmedParses.insert(target, future);
+  watcher->setFuture(future);
+}
+
 bool BlockModel::applyRemoteDocument(const QJsonObject &documentJson,
                                      const QJsonObject &patchJson) {
+  QJsonObject sanitized = documentJson;
+  sanitizeDocumentImageSources(sanitized);
   Document document;
   QString error;
-  if (!document.fromJson(documentJson, &error))
+  if (!document.fromJson(sanitized, &error))
     return setError(error);
 
   const QString focusedId = m_lastHistoryBlockId;
@@ -2039,8 +2339,10 @@ bool BlockModel::applyAgentDocument(const QJsonObject &documentJson,
                                     const QJsonObject &patchJson) {
   const bool ok = applyRemoteDocument(documentJson, patchJson);
   if (ok) {
-    // Agent edits are real edits: mark dirty so autosave writes them back.
-    markModified();
+    // Agent edits are real edits. applyRemoteDocument() resets the saved-state
+    // ids, so bump first or markModified() would see an unchanged document and
+    // leave autosave disabled for the agent's snapshot.
+    markAgentDocumentModified();
   }
   return ok;
 }
@@ -2066,6 +2368,8 @@ bool BlockModel::createDocument(const QString &path) {
   Document document;
   document.appendBlock(Block::create(BlockType::Paragraph));
 
+  ++m_loadRequestId; // invalidate any in-flight async load
+  invalidateAttachmentScanCache();
   resetDocument(std::move(document));
 
   m_createdAt.clear();
@@ -2081,6 +2385,8 @@ bool BlockModel::createDocument(const QString &path) {
 
 bool BlockModel::closeDocument() {
   Document empty;
+  ++m_loadRequestId; // invalidate any in-flight async load
+  invalidateAttachmentScanCache();
   resetDocument(std::move(empty));
 
   m_createdAt.clear();

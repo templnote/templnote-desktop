@@ -8,6 +8,7 @@
 
 #include "model/BlockModel.h"
 #include "core/Document.h"
+#include "engine/CrdtDocumentState.h"
 #include "tracking/MemoryTracker.h"
 #include "tracking/ScopedTimer.h"
 
@@ -70,14 +71,28 @@ private:
         const bool loaded = model.loadDocument(path);
         const double totalMs = timer.elapsed();
 
-        qInfo().noquote() << QStringLiteral("PHASES ok=%1/%2 read=%3ms json=%4ms blocks=%5ms loadTotal=%6ms blocks=%7")
+        timer.restart();
+        Templnote::Engine::CrdtDocumentState crdt;
+        QString crdtError;
+        const bool crdtOk = crdt.load(json.object(), &crdtError);
+        const double crdtSeedMs = timer.elapsed();
+
+        timer.restart();
+        const QJsonObject serialized = crdt.serialize();
+        const double crdtSerializeMs = timer.elapsed();
+
+        qInfo().noquote() << QStringLiteral("PHASES ok=%1/%2 read=%3ms json=%4ms blocks=%5ms loadTotal=%6ms blocks=%7 crdtSeed=%8ms/%9 crdtSerialize=%10ms crdtJsonFields=%11")
                                  .arg(ok)
                                  .arg(loaded)
                                  .arg(readMs, 0, 'f', 3)
                                  .arg(parseMs, 0, 'f', 3)
                                  .arg(decodeMs, 0, 'f', 3)
                                  .arg(totalMs, 0, 'f', 3)
-                                 .arg(document.count());
+                                 .arg(document.count())
+                                 .arg(crdtSeedMs, 0, 'f', 3)
+                                 .arg(crdtOk)
+                                 .arg(crdtSerializeMs, 0, 'f', 3)
+                                 .arg(serialized.size());
     }
 
 private slots:
@@ -126,6 +141,70 @@ private slots:
         QString path = createDummyDocument(10000);
         QVERIFY(!path.isEmpty());
         measurePhases(path);
+        QFile::remove(path);
+    }
+
+    // Break down the per-keystroke CRDT path that used to serialize and parse
+    // the whole document on every command. ScopedTimer callbacks collect the
+    // numbers so only one summary line is printed.
+    void crdtApplyPhaseBreakdown() {
+        const QString path = createDummyDocument(2000);
+        QVERIFY(!path.isEmpty());
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+        file.close();
+
+        Templnote::Engine::CrdtDocumentState state;
+        double seedMs = 0.0;
+        {
+            ScopedTimer timer(QStringLiteral("crdt.seed"),
+                              [&seedMs](double ms) { seedMs = ms; });
+            QString error;
+            QVERIFY(state.load(root, &error));
+        }
+
+        const QJsonArray blocks = root.value(QStringLiteral("blocks")).toArray();
+        QVERIFY(!blocks.isEmpty());
+        const QString blockId = blocks.at(0).toObject()
+                                    .value(QStringLiteral("id")).toString();
+        QVERIFY(!blockId.isEmpty());
+
+        const int edits = 500;
+        double applyMs = 0.0;
+        {
+            ScopedTimer timer(QStringLiteral("crdt.apply"),
+                              [&applyMs](double ms) { applyMs = ms; });
+            for (int i = 0; i < edits; ++i) {
+                Templnote::Engine::Command cmd =
+                    Templnote::Engine::Command::setText(
+                        blockId, QStringLiteral("edited %1").arg(i));
+                cmd.actor = Templnote::Engine::Actor::human(
+                    QStringLiteral("benchmark"));
+                cmd.lamport = static_cast<quint64>(i + 1);
+                const QString error = state.apply(cmd, nullptr);
+                if (!error.isEmpty()) {
+                    qWarning() << error;
+                    break;
+                }
+            }
+        }
+
+        double serializeMs = 0.0;
+        {
+            ScopedTimer timer(QStringLiteral("crdt.serialize"),
+                              [&serializeMs](double ms) { serializeMs = ms; });
+            (void)state.serialize();
+        }
+
+        qInfo().noquote() << QStringLiteral("CRDT_PHASES edits=%1 seed=%2ms apply=%3ms applyPerEdit=%4ms serialize=%5ms ops=%6")
+                                 .arg(edits)
+                                 .arg(seedMs, 0, 'f', 3)
+                                 .arg(applyMs, 0, 'f', 3)
+                                 .arg(applyMs / edits, 0, 'f', 4)
+                                 .arg(serializeMs, 0, 'f', 3)
+                                 .arg(static_cast<qlonglong>(state.opSet().size()));
+        MemoryTracker::logSnapshot(QStringLiteral("after CRDT apply"));
         QFile::remove(path);
     }
 

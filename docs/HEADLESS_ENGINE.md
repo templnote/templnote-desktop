@@ -17,8 +17,9 @@ templnote_engine   QtCore-only: Commands, Ops, Patches, EditorSession,
                                 ChangeFeed, CapabilityGate
 templnote_store    QtCore+Sql:  DocumentStore (CAS writes, journal, snapshots)
 templnote_sync     QtCore+Net:  SyncManager (LAN CRDT op exchange)
-templnote_ai       QtCore+Net:  ToolSchema, ModelRouter, PipelineRunner,
-                                AgentHttpServer, AgentService
+templnote_ai       QtCore+Net:  ToolSchema, ModelRouter, AgentRegistry,
+                                SkillFile, PipelineRunner, AgentHttpServer,
+                                AgentService
 templnote_core     existing GUI/QML code (BlockModel now also accepts patches)
 ```
 
@@ -86,27 +87,58 @@ stream for "what did the AI change".
   parses model tool calls back into validated `Command`s.
 - `ModelRouter`: detects local Ollama (`/api/tags`), falls back to OpenRouter
   only when explicitly enabled. API key stays on the host.
-- `PipelineRunner`: sequential stages (write → grammar → humanizer → grammar →
-  validation), each acting under a distinct pipeline actor id so provenance
-  records which stage changed what. Each stage is a real tool-use loop: tool
-  results are fed back to the model until it stops calling tools, with
-  configurable tool-round and revision budgets, cancellation, token accounting
-  and SSE stage events.
-- `AgentService`: in-process desktop agent. It owns the router/pipeline, seeds a
-  preview `EditorSession` from the open editor's live document, and mirrors the
-  result through `BlockModel::applyAgentDocument()`. The prompt-panel plugin
-  calls `agentService.sendPrompt()`; no separate daemon is needed for desktop
-  use.
+- `AgentRegistry`: the user's configured agents, persisted in `agents.json`.
+  An agent has an id, name, instructions, an optional document and an enabled
+  flag. The user selects which agents are "active"; there is **no built-in
+  stage sequence**. Several active agents collaborate on the same document in
+  the order selected; an agent may instead be scoped to its own document.
+- `SkillFile`: a single plain-text `skills.md` (config dir, or
+  `TEMPLNOTE_SKILLS_FILE`) injected into every run. A default template is
+  written on first use and the file is re-read for each prompt, so edits take
+  effect immediately. Instruction order is: agent instructions → `skills.md`
+  → document context → user prompt.
+- `PipelineRunner`: runs the selected agents. Each agent is a real tool-use loop
+  under its own actor id, so provenance records which agent changed what. Tool
+  results are fed back until it stops calling tools, with tool-round and
+  revision budgets, cancellation, token accounting and SSE agent events. With
+  no agents configured a single prompt-driven agent runs with no system persona
+  — the user's prompt is the only instruction.
+- `AgentService`: in-process desktop agent. It owns the router/runner, seeds a
+  preview `EditorSession` from the open editor's live document, and records each
+  agent's validated commands and block-level diff as they arrive. Nothing is
+  written to the editor until `commit()`: with all agents accepted the preview
+  is mirrored through `BlockModel::applyAgentDocument()`; with some agents
+  rejected only the accepted commands are replayed onto a fresh session seeded
+  from the original document. `reject()` discards everything, and a new prompt
+  is blocked while a review is pending. `ProviderRegistry::error` is forwarded
+  as `connectionError`, so provider/connection failures and generation failures
+  both appear in the prompt panel's dismissible error banner (`clearErrors()`).
+  The sidebar prompt-panel plugin calls `agentService.sendPrompt()` and renders the
+  streaming per-agent diff. Agents are managed in Settings → Agents; no daemon
+  is needed for desktop use.
+- **Live streaming:** as each agent command lands, the preview document is
+  animated into the open editor one character at a time (the editor text input
+  is read-only via `BlockModel.agentBusy` during this window). Streamed steps go
+  through `BlockModel::applyStreamedText()`, which updates the view without
+  touching undo history, the dirty flag or autosave. When the run finishes the
+  editor is snapped exactly to the preview; accepting keeps it (and marks it
+  dirty for autosave), while rejecting restores the snapshot taken before the
+  prompt and puts the caret back.
 - `AgentHttpServer`: authenticated HTTP control API for phone clients:
   `GET /document`, `/changes`, `/status`, `/tools`, `/providers`, `/models`,
-  `/events` (SSE), `POST /command`, `/prompt`, `/cancel`, `/plugin-tool`,
-  `/provider/*`, `/model/*`.
+  `/agents`, `/sessions`, `/events` (SSE), `POST /command`, `/prompt`, `/cancel`,
+  `/plugin-tool`, `/provider/*`, `/model/*`, `/agent/*`, and
+  `/session/create`, `/session/load`, `/session/send`, `/session/cancel`,
+  `/session/remove`. Conversations persist in `agent-sessions.sqlite` and can
+  be resumed after a daemon restart. SSE emits `step`, `delta` (streamed text),
+  `finished` and `session-finished` events in addition to the legacy lifecycle.
 
 ## Running the agent daemon
 
 ```sh
-# Loopback only by default. A bearer token is generated and printed on stderr
-# when --token / TEMPLNOTE_AGENT_TOKEN is not supplied.
+# Loopback only by default. When no token is supplied, a random one is generated
+# and a reminder is printed on stderr; use --print-token to reveal it once, or
+# --token-file / TEMPLNOTE_AGENT_TOKEN to provide your own.
 templnote-headless serve --port 8787 --sync-port 45210 --file /path/doc.templnote
 
 # Explicit LAN exposure (use a VPN tunnel and a strong token):
@@ -179,7 +211,7 @@ same instance:
 - `manifest.json` supports declarative `settings.fields` and `permissions`.
   `DeclarativePluginSettings.qml` renders them without hand-written QML.
 - New `home-screen` decoration slot in `HomeScreen.qml` (alongside
-  `paper-background` and `prompt-panel`), so verse/weather/clock widgets work.
+  `paper-background` and `prompt-panel-sidebar`), so verse/weather/clock widgets work.
 - `PluginHost` gives plugins cached `fetchJson()` plus settings access instead
   of raw networking; `network` permission + approval are required.
 - Agent-authored plugins carry `agentCreated: true` and **cannot be enabled
@@ -200,8 +232,24 @@ no QML runtime. The same registry is exposed to QML as `providerManager` and to
 the HTTP API.
 
 - Definitions ship in code: generic OpenAI-compatible (`openrouter`, `openai`,
-  `groq`, `together`, `custom`), native `ollama`, `lm-studio`, and `anthropic`.
-  Adding a provider is a registry-data change, not a new protocol.
+  `groq`, `together`, `google`, `custom`), native `ollama`, `lm-studio`, and
+  `anthropic`. `google` uses Gemini's OpenAI-compatible endpoint
+  (`https://generativelanguage.googleapis.com/v1beta/openai`) with bearer auth
+  and OpenAI-style function tools (`tools` + `tool_choice: auto`). Its presets
+  are current chat models (`gemini-4-hydrogen`, `gemini-4-neon`,
+  `gemini-4-carbon`, `gemini-3.5-flash-lite`); the `models/` prefix from
+  `/models` is normalised and non-chat models (embeddings, image, TTS) are
+  filtered out. Each Google model advertises its supported thinking levels
+  (e.g. Gemini 4 Hydrogen/Neon: low/medium/high/xhigh; Carbon/Argon and 3.8
+  Flash: low/medium/high; 3.5 Flash-Lite: minimal/low/medium/high). The user
+  picks a level per model in the prompt panel's model picker; it is stored in
+  the registry and sent as OpenAI `reasoning_effort`, which Gemini maps to
+  `thinking_level`. "Default" omits the field. Sampling parameters such as
+  `temperature` are omitted for Google entirely (Gemini 4 / 3.6+ deprecate them
+  and can return 400). Provider error responses now include the server's
+  `error.message`, so failures are actionable instead of just "Error
+  transferring ...". Adding a provider is a registry-data change, not a new
+  protocol.
 - `connectProvider(id, key, baseUrl)` validates by listing models; on success
   every discovered model is **enabled by default** and the key is stored in
   `SecretStore`. `disconnectProvider()` removes the key but keeps the toggles.
@@ -217,7 +265,13 @@ the HTTP API.
 - `ModelRouter` now resolves an explicit `ModelRef` through the registry and
   refuses to run when no provider is connected ("Connect a provider before
   using AI"). It understands Ollama, OpenAI-compatible and Anthropic payloads.
-- Settings UI: `qml/settings/AISettings.qml` (new core "AI Providers" section).
+- Settings UI: "AI Providers" (`qml/settings/AISettings.qml`) is a dedicated
+  page whose Connect action opens a modal API-key dialog. Models live in their
+  own "Models" settings section (`qml/settings/AIModelsSettings.qml`), which
+  groups models by provider; each provider row expands to show its models with
+  enable toggles and a "Use" action for the default, and a search field filters
+  the groups. The old per-provider "Models" button and inline connect form are
+  gone, and the model list is no longer shown on the Providers page.
   Control API: `GET /providers`, `GET /models`, `POST /provider/connect`,
   `POST /provider/disconnect`, `POST /model/toggle`, `POST /model/default`.
 - Tests: `tests/tst_providers.cpp` (mock HTTP server: connect, discovery,

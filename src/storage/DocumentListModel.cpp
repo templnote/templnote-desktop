@@ -58,16 +58,33 @@ void DocumentListModel::setupWatcher() {
   }
 }
 
+namespace {
+// Resolve symlinks for the whole path, including paths that do not exist yet
+// (new files/folders). For a missing path we canonicalize the nearest existing
+// ancestor and re-append the remaining components, so a symlinked parent
+// cannot be used to escape the document root.
+QString canonicalPathForContainment(const QString &path) {
+  const QString absolute = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+  QFileInfo existing(absolute);
+  while (!existing.exists() && existing.filePath() != existing.absolutePath())
+    existing = QFileInfo(existing.absolutePath());
+  const QString canonical = existing.canonicalFilePath();
+  if (canonical.isEmpty())
+    return {};
+  return QDir::cleanPath(canonical + absolute.mid(existing.filePath().size()));
+}
+} // namespace
+
 bool DocumentListModel::isInsideRoot(const QString &path) const {
   if (m_rootDirectory.isEmpty())
     return false;
 
-  const QString root = QDir::cleanPath(m_rootDirectory);
-  const QString candidate =
-      QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+  const QString root = canonicalPathForContainment(m_rootDirectory);
+  const QString candidate = canonicalPathForContainment(path);
+  if (root.isEmpty() || candidate.isEmpty())
+    return false;
 
-  return candidate == root ||
-         candidate.startsWith(root + QLatin1Char('/'));
+  return candidate == root || candidate.startsWith(root + QLatin1Char('/'));
 }
 
 int DocumentListModel::rowCount(const QModelIndex &parent) const {

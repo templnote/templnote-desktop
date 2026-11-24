@@ -9,6 +9,7 @@
 
 #include <QJsonObject>
 #include <QObject>
+#include <QSqlDatabase>
 #include <QString>
 #include <QVector>
 
@@ -68,6 +69,22 @@ public:
   int currentRevision(const QString &path) const;
   QString journalPath() const { return m_journalPath; }
 
+  // Maximum number of recent snapshots kept per document. Every Nth revision
+  // is additionally retained as a checkpoint. Values below 1 are clamped to 1
+  // so the newest snapshot is never dropped. Default: 50.
+  void setSnapshotRetention(int count);
+  int snapshotRetention() const { return m_snapshotRetention; }
+
+  // Drop snapshots beyond the retention window and delete patches older than
+  // the oldest retained snapshot. Commits only apply the snapshot policy;
+  // patch rows are append-only provenance and are removed only here, when the
+  // caller explicitly asks for a journal prune. Returns deleted row count.
+  int pruneJournal(const QString &path);
+
+  // Compact the SQLite journal. Never called from commit(); only when the
+  // caller explicitly requests it.
+  bool vacuum();
+
   // Creates an initial revision for a document that has no revision yet.
   Engine::Result<CommitResult> initialize(const QString &path,
                                           const QJsonObject &document);
@@ -82,10 +99,15 @@ private:
   bool writeFile(const QString &path, const QJsonObject &document,
                  int revision, quint64 lamport, QString *error);
   bool readRevision(const QString &path, QString *error) const;
+  // Prunes snapshots outside the retention window; invoked inside the commit
+  // transaction (and by the explicit pruneJournal()).
+  int pruneSnapshots(QSqlDatabase &db, const QString &path);
 
+  static constexpr int kCheckpointEvery = 10;
   QString m_journalPath;
   QString m_connectionName = QStringLiteral("tn_store_main");
   mutable bool m_dbChecked = false;
+  int m_snapshotRetention = 50;
 };
 
 } // namespace Templnote::Store

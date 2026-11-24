@@ -3,11 +3,33 @@
 #include "engine/Types.h"
 #include "model/BlockModel.h"
 
+#include "storage/AppPaths.h"
+
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QScopeGuard>
 
 namespace Templnote {
+
+namespace {
+// LiveBridge is reachable from QML/plugin contexts, so never let it read an
+// arbitrary file or block the GUI thread on a huge one.
+constexpr qint64 kMaxDocumentBytes = 32 * 1024 * 1024;
+
+bool isAllowedDocumentPath(const QString &path) {
+  if (path.isEmpty())
+    return false;
+  const QString root =
+      QFileInfo(AppPaths::documentsDirectory()).canonicalFilePath();
+  const QString candidate = QFileInfo(path).canonicalFilePath();
+  if (root.isEmpty() || candidate.isEmpty())
+    return false;
+  return candidate == root || candidate.startsWith(root + QLatin1Char('/'));
+}
+} // namespace
 
 LiveBridge::LiveBridge(QObject *parent)
     : QObject(parent),
@@ -51,9 +73,17 @@ bool LiveBridge::loadFromDisk() {
     emit bridgeError(QStringLiteral("No document path set."));
     return false;
   }
+  if (!isAllowedDocumentPath(m_documentPath)) {
+    emit bridgeError(QStringLiteral("Document path is outside the documents directory."));
+    return false;
+  }
   QFile file(m_documentPath);
   if (!file.open(QIODevice::ReadOnly)) {
     emit bridgeError(file.errorString());
+    return false;
+  }
+  if (file.size() > kMaxDocumentBytes) {
+    emit bridgeError(QStringLiteral("Document is too large to load."));
     return false;
   }
   QJsonParseError error;
@@ -75,9 +105,9 @@ void LiveBridge::pushToView() {
   if (!m_liveEnabled || !m_blockModel || m_syncing)
     return;
   m_syncing = true;
+  const auto guard = qScopeGuard([this] { m_syncing = false; });
   const QJsonObject document = m_session->toJson();
   m_blockModel->applyRemoteDocument(document, m_lastPatchJson);
-  m_syncing = false;
 }
 
 bool LiveBridge::applyCommand(const QJsonObject &commandJson) {

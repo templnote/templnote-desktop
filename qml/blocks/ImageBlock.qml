@@ -227,7 +227,7 @@ Item {
       Image {
         id: renderedImage
         anchors.fill: parent
-        source: root.imageSource
+        source: MarkdownSyntax.safeImageSource(root.imageSource)
         fillMode: Image.PreserveAspectFit
         asynchronous: true
         mipmap: true

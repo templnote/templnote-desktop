@@ -94,6 +94,54 @@ private slots:
     QBENCHMARK { (void)m_index->search(QStringLiteral("sample")); }
   }
 
+  // Each iteration uses a distinct key, so every reply comes from FTS5 on a
+  // reader connection rather than from the cache. Before connection reuse this
+  // opened and closed a SQLite connection per keystroke.
+  void asyncReaderConnectionReuseManual() {
+    constexpr int iterations = 20;
+    QSignalSpy spy(m_index.get(), &SearchIndex::searchFinished);
+
+    QElapsedTimer timer;
+    timer.start();
+
+    int received = 0;
+    for (int i = 0; i < iterations; ++i) {
+      const quint64 token = quint64(i + 1);
+      m_index->searchAsync(QStringLiteral("sample%1").arg(i), token);
+      QTRY_VERIFY_WITH_TIMEOUT(spy.count() > received, 5000);
+      ++received;
+    }
+
+    qInfo().noquote()
+        << QStringLiteral("ASYNC_CONNECTION_REUSE avg=%1 ms")
+               .arg(timer.nsecsElapsed() / iterations / 1e6, 0, 'f', 3);
+  }
+
+  // A generation change used to clear all 24 cache entries. Entries are now
+  // generation-tagged and kept, so the first query after indexUpdated() pays
+  // for FTS5 again while later repeats hit the retained cache.
+  void cacheGenerationManual() {
+    constexpr int iterations = 20;
+    QElapsedTimer timer;
+
+    (void)m_index->search(QStringLiteral("sample"));
+    timer.start();
+    for (int i = 0; i < iterations; ++i)
+      (void)m_index->search(QStringLiteral("sample"));
+    const double warmMs = timer.nsecsElapsed() / iterations / 1e6;
+
+    timer.start();
+    for (int i = 0; i < iterations; ++i) {
+      m_index->syncIncremental();
+      (void)m_index->search(QStringLiteral("sample"));
+    }
+
+    qInfo().noquote()
+        << QStringLiteral("CACHE_GENERATION warm=%1 ms invalidated=%2 ms")
+               .arg(warmMs, 0, 'f', 4)
+               .arg(timer.nsecsElapsed() / iterations / 1e6, 0, 'f', 3);
+  }
+
   // Measures only the GUI-thread cost of dispatching an async search; the
   // FTS5 query and highlighting run on a worker pool.
   void asyncDispatchManual() {

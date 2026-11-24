@@ -11,6 +11,7 @@
 #include <qqmlapplicationengine.h>
 
 #include "adapter/AgentService.h"
+#include "ai/AgentRegistry.h"
 #include "ai/ProviderRegistry.h"
 #include "ai/SecretStore.h"
 #include "core/CodeHighlighter.h"
@@ -89,6 +90,8 @@ int main(int argc, char *argv[]) {
   Templnote::PluginHost pluginHost(&pluginManager);
   Templnote::AI::ProviderRegistry providerRegistry;
   providerRegistry.detectLocalProviders();
+  Templnote::AI::AgentRegistry agentRegistry;
+  agentRegistry.load();
   ClipboardHelper clipboardHelper;
   Templnote::EmojiDatabase emojiDatabase;
 
@@ -101,13 +104,14 @@ int main(int argc, char *argv[]) {
   auto *blockModel = new Templnote::BlockModel(&engine);
   blockModel->setAutosaveEnabled(true);
   auto *agentService = new Templnote::AI::AgentService(
-      blockModel, &pluginManager, &providerRegistry, &engine);
+      blockModel, &pluginManager, &providerRegistry, &agentRegistry, &engine);
 
   engine.rootContext()->setContextProperty("ClipboardService", &clipboardHelper);
   engine.rootContext()->setContextProperty("EmojiDatabase", &emojiDatabase);
   engine.rootContext()->setContextProperty("pluginManager", &pluginManager);
   engine.rootContext()->setContextProperty("pluginHost", &pluginHost);
   engine.rootContext()->setContextProperty("providerManager", &providerRegistry);
+  engine.rootContext()->setContextProperty("agentManager", &agentRegistry);
   engine.rootContext()->setContextProperty("blockModel", blockModel);
   engine.rootContext()->setContextProperty("agentService", agentService);
 

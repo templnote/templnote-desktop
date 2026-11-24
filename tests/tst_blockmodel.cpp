@@ -105,6 +105,26 @@ private slots:
     QCOMPARE(feed.count(), 2);
   }
 
+  void streamedTextDoesNotMarkDirty() {
+    BlockModel model;
+    const QString id = model.blockIdAt(0);
+
+    int changes = 0;
+    connect(&model, &QAbstractItemModel::dataChanged, &model,
+            [&changes] { ++changes; });
+
+    QVERIFY(model.applyStreamedText(id, QStringLiteral("Hel")));
+    QVERIFY(model.applyStreamedText(id, QStringLiteral("Hello")));
+    QCOMPARE(model.document().findBlock(id)->text, QStringLiteral("Hello"));
+    QVERIFY(changes >= 2);
+    QVERIFY(!model.isModified());
+
+    model.setAgentBusy(true);
+    QVERIFY(model.agentBusy());
+    model.setAgentBusy(false);
+    QVERIFY(!model.agentBusy());
+  }
+
   void engineAndModelShareDocument() {
     BlockModel model;
     const QString id = model.blockIdAt(0);
@@ -818,6 +838,44 @@ private slots:
              QString("Second save"));
   }
 
+  void loadDocumentAsyncAppliesOnModelThread() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel seed;
+    QVERIFY(seed.createDocument(directory.filePath(QStringLiteral("Async"))));
+    const QString path = seed.currentFilePath();
+
+    BlockModel model;
+    QSignalSpy finished(&model, &BlockModel::documentLoadFinished);
+
+    bool callbackOk = false;
+    model.loadDocumentAsync(path,
+                            [&callbackOk](bool ok) { callbackOk = ok; });
+
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() == 1, 4000);
+    QVERIFY(callbackOk);
+    QVERIFY(finished.first().at(0).toBool());
+    QCOMPARE(model.currentFilePath(), path);
+    QCOMPARE(model.count(), 1);
+    QVERIFY(!model.isModified());
+  }
+
+  void prewarmedParseCanBeAppliedSynchronously() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel seed;
+    QVERIFY(seed.createDocument(directory.filePath(QStringLiteral("Prewarm"))));
+    const QString path = seed.currentFilePath();
+
+    BlockModel model;
+    model.prewarmDocument(path);
+    QVERIFY(model.loadDocument(path));
+    QCOMPARE(model.currentFilePath(), path);
+    QCOMPARE(model.count(), 1);
+  }
+
   void loadInvalidDocumentLeavesCurrentDocumentUntouched() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -908,6 +966,60 @@ private slots:
     QVERIFY(model.undo());
     QCOMPARE(model.document().blockAt(0)->text, QStringLiteral("a"));
     QVERIFY(!model.isModified());
+  }
+
+  void applyingAgentSnapshotRestoresDirtyState() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    QVERIFY(model.createDocument(directory.filePath(QStringLiteral("Agent"))));
+    QVERIFY(!model.isModified());
+
+    QJsonObject json = model.document().toJson();
+    QJsonArray blocks = json.value(QStringLiteral("blocks")).toArray();
+    QVERIFY(!blocks.isEmpty());
+
+    QJsonObject block = blocks.first().toObject();
+    block.insert(QStringLiteral("text"), QStringLiteral("agent text"));
+    blocks[0] = block;
+    json.insert(QStringLiteral("blocks"), blocks);
+
+    QVERIFY(model.applyAgentDocument(json, QJsonObject{}));
+    QCOMPARE(model.document().blockAt(0)->text, QStringLiteral("agent text"));
+    // The engine-applied snapshot resets the saved-state ids; the model must
+    // still restore the dirty flag so autosave writes the agent edit back.
+    QVERIFY(model.isModified());
+  }
+
+  void noOpSaveSkipsAttachmentSweep() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    BlockModel model;
+    const QString doc = directory.filePath(QStringLiteral("NoOp"));
+    QVERIFY(model.saveDocument(doc));
+
+    const QString orphan =
+        QDir(AppPaths::attachmentsDirectory())
+            .filePath(QStringLiteral("orphan-") +
+                      QUuid::createUuid().toString(QUuid::WithoutBraces) +
+                      QStringLiteral(".png"));
+    {
+      QFile file(orphan);
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write("x");
+    }
+    QVERIFY(QFile::exists(orphan));
+
+    // An unchanged save does not sweep attachments.
+    QVERIFY(model.saveDocument(doc));
+    QVERIFY(QFile::exists(orphan));
+
+    // The next save that changes content does sweep and reclaim the orphan.
+    QVERIFY(!model.appendBlock(0).isEmpty());
+    QVERIFY(model.saveDocument(doc));
+    QVERIFY(!QFile::exists(orphan));
   }
 
   void autosaveWritesAfterIdle() {

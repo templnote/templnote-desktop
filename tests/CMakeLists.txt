@@ -21,6 +21,20 @@ add_test(
     COMMAND benchmark_search
 )
 
+add_executable(tst_panelmodel
+    tst_panelmodel.cpp
+)
+target_link_libraries(tst_panelmodel PRIVATE
+    templnote_desktop_adapter
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::Test
+)
+add_test(
+    NAME PanelModelTests
+    COMMAND tst_panelmodel
+)
+
 add_executable(tst_document
     tst_document.cpp
 )
@@ -70,6 +84,32 @@ add_test(
     COMMAND tst_ai
 )
 
+add_executable(tst_complexdocs
+    tst_complexdocs.cpp
+)
+target_link_libraries(tst_complexdocs PRIVATE
+    templnote_ai
+    templnote_ai_adapters
+    templnote_core
+    Qt6::Test
+)
+add_test(
+    NAME ComplexDocsTests
+    COMMAND tst_complexdocs
+)
+
+# LIVE end-to-end agent test against a local Ollama model. Built on demand but
+# not registered with CTest because it needs qwen3.5:4b running locally.
+add_executable(tst_liveagent
+    tst_liveagent.cpp
+)
+target_link_libraries(tst_liveagent PRIVATE
+    templnote_ai
+    templnote_ai_adapters
+    templnote_core
+    Qt6::Core
+)
+
 add_executable(tst_security
     tst_security.cpp
 )
@@ -77,6 +117,7 @@ target_link_libraries(tst_security PRIVATE
     templnote_ai
     templnote_ai_adapters
     templnote_core
+    templnote_sync
     Qt6::Test
 )
 add_test(
@@ -238,11 +279,17 @@ set_source_files_properties(
 
 # AI settings smoke test: compile and instantiate the real AISettings.qml.
 set(AI_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/AISettings.qml")
+set(AI_MODELS_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/AIModelsSettings.qml")
+set(AGENTS_SETTINGS_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/AgentsSettings.qml")
 set(AI_SETTING_TOGGLE_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingToggle.qml")
 set(AI_SETTING_SWITCH_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingSwitch.qml")
 set(AI_SETTINGS_BUTTON_QML "${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingsButton.qml")
 set_source_files_properties(${AI_SETTINGS_QML} PROPERTIES
     QT_RESOURCE_ALIAS "AISettings.qml")
+set_source_files_properties(${AI_MODELS_SETTINGS_QML} PROPERTIES
+    QT_RESOURCE_ALIAS "AIModelsSettings.qml")
+set_source_files_properties(${AGENTS_SETTINGS_QML} PROPERTIES
+    QT_RESOURCE_ALIAS "AgentsSettings.qml")
 set_source_files_properties(${AI_SETTING_TOGGLE_QML} PROPERTIES
     QT_RESOURCE_ALIAS "SettingToggle.qml")
 set_source_files_properties(${AI_SETTING_SWITCH_QML} PROPERTIES
@@ -275,6 +322,8 @@ qt_add_qml_module(tst_aisettings
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/aisettings"
     QML_FILES
         AISettingsTest.qml
+        AIModelsTest.qml
+        AgentsSettingsTest.qml
         SettingToggleTest.qml
         PluginsSettingsTest.qml
         ${TEST_QML_DIR}/Theme.qml
@@ -282,6 +331,8 @@ qt_add_qml_module(tst_aisettings
         ${AI_SETTING_SWITCH_QML}
         ${AI_SETTINGS_BUTTON_QML}
         ${AI_SETTINGS_QML}
+        ${AI_MODELS_SETTINGS_QML}
+        ${AGENTS_SETTINGS_QML}
         ${PLUGINS_SETTINGS_QML}
         ${DECLARATIVE_SETTINGS_QML}
         ${SETTING_CHOICE_QML}
@@ -413,6 +464,46 @@ add_test(
 )
 
 set_tests_properties(SearchWindowQmlTests PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+)
+
+# Sidebar prompt-panel smoke test: drive the real plugin decoration against a
+# stub agent so diff bindings, composer, picker and review buttons are exercised.
+set(SIDEBAR_DECORATION "${CMAKE_CURRENT_SOURCE_DIR}/../bundled-plugins/prompt-panel-sidebar/PromptPanelSidebarDecoration.qml")
+set_source_files_properties(${SIDEBAR_DECORATION} PROPERTIES
+    QT_RESOURCE_ALIAS "PromptPanelSidebarDecoration.qml")
+set_source_files_properties(${TEST_QML_DIR}/Theme.qml PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+    QT_RESOURCE_ALIAS "Theme.qml")
+
+qt_add_executable(tst_agentreview
+    tst_agentreview.cpp
+    FakeAgent.h
+    FakeRegistry.h
+)
+qt_add_qml_module(tst_agentreview
+    URI Templnote
+    VERSION 1.0
+    # tst_editor also declares a module with URI Templnote. Disambiguate the
+    # generated qrc name so both test executables can coexist in one build.
+    __QT_INTERNAL_DISAMBIGUATE_QMLDIR_RESOURCE
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/agentreview"
+    QML_FILES
+        AgentReviewTest.qml
+        SidebarPanelTest.qml
+        ${TEST_QML_DIR}/Theme.qml
+        ${SIDEBAR_DECORATION}
+)
+target_link_libraries(tst_agentreview PRIVATE
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+)
+add_test(
+    NAME AgentReviewQmlTests
+    COMMAND $<TARGET_FILE:tst_agentreview>
+)
+set_tests_properties(AgentReviewQmlTests PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
 )
 

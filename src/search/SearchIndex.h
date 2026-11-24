@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QFuture>
 #include <QHash>
 #include <QObject>
@@ -11,6 +12,8 @@
 #include <QVector>
 
 #include <qtmetamacros.h>
+
+#include <optional>
 
 #include "../model/BlockModel.h"
 #include "../storage/DocumentListModel.h"
@@ -102,6 +105,24 @@ private:
   struct CachedSearch {
     QVector<Result> results;
     bool truncated = false;
+    // Generation of the index the rows were produced from. Entries are kept
+    // across indexUpdated() instead of being cleared wholesale; see
+    // cacheEntryIsFresh()/cacheEntryWithinGrace() in the .cpp.
+    quint64 generation = 0;
+    // Age on the monotonic cache clock, used to bound the async grace window.
+    qint64 ageMs = 0;
+  };
+
+  // Needles prepared once per query for matchRanges(), so highlighting does
+  // not re-tokenize and re-fold every term for every result row.
+  struct HighlightNeedle {
+    QString folded;
+    bool isAscii = true;
+  };
+
+  struct HighlightTerms {
+    QVector<HighlightNeedle> needles;
+    bool allAscii = true;
   };
 
   struct PendingOp {
@@ -131,8 +152,18 @@ private:
   void onPathRenamed(const QString &oldPath, const QString &newPath);
   void onPathRemoved(const QString &path);
 
+  void deliverSearchOutcome(quint64 token, const SearchOutcome &outcome);
   void invalidateSearchCache();
   void cacheSearchResult(const QString &query, const CachedSearch &cached) const;
+  bool cacheEntryIsFresh(const CachedSearch &entry) const;
+  bool cacheEntryWithinGrace(const CachedSearch &entry) const;
+
+  static QString pendingKey(const QString &path, const QString &blockId);
+  void pendingAppend(const PendingOp &op);
+  void pendingInsert(int index, const PendingOp &op);
+  void pendingCompact(const QVector<int> &removeIndices);
+  void pendingRebuildIndex();
+  void pendingClear();
 
   void queueBlockUpsert(const QString &path, const QString &title,
                         const QString &blockId, const QString &text);
@@ -153,8 +184,9 @@ private:
                                                  const QString &query);
   static QStringList queryTerms(const QString &query);
   static QString buildFtsQuery(const QStringList &terms);
+  static HighlightTerms prepareHighlightTerms(const QStringList &terms);
   static QVector<MatchRange> matchRanges(const QString &text,
-                                         const QStringList &terms);
+                                         const HighlightTerms &terms);
   static QString makeSnippet(const QString &text,
                              const QVector<MatchRange> &ranges,
                              QVector<MatchRange> *snippetRanges);
@@ -165,6 +197,9 @@ private:
   QString m_databasePath;
   QTimer m_flushTimer;
   QVector<PendingOp> m_pending;
+  // Index into m_pending so coalescing a repeated block edit (or checking
+  // whether a full reindex supersedes it) is O(1) instead of a linear scan.
+  QHash<QString, int> m_pendingIndex;
   // Failed write batches are retried with exponential backoff instead of being
   // silently dropped.
   int m_flushRetryCount = 0;
@@ -173,11 +208,16 @@ private:
   // Only an exact hit is served from the cache: prefix/refinement results used
   // to be derived by filtering a cached query, but bm25 ranks are query-specific
   // and a surrogate rank made ordering depend on typing history. Every other
-  // query runs against FTS5. The whole cache is dropped whenever the index
-  // changes or a write batch fails.
+  // query runs against FTS5. Entries survive indexUpdated(); they carry the
+  // generation they were produced in and are invalidated lazily (strict for
+  // search(), short grace window for searchAsync()).
   mutable QHash<QString, CachedSearch> m_searchCache;
   mutable QStringList m_searchCacheOrder;
   mutable quint64 m_cacheGeneration = 0;
+  // Monotonic clock for the async cache grace window; never restarted.
+  mutable QElapsedTimer m_cacheClock;
+  // Guards against an older async reply overwriting a newer search's results.
+  std::optional<quint64> m_lastDeliveredToken;
 
   // Live-edit writes are applied off the GUI thread. A single worker keeps
   // SQLite writers serialized while reads continue on the main connection.

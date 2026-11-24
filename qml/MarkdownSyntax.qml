@@ -136,10 +136,26 @@ QtObject {
 
   function safeUrl(value) {
     const url = String(value || "").trim()
-    // Block javascript:/data: URLs from pasted or typed markdown.
-    if (/^(?:javascript|data|vbscript):/i.test(url))
+    // Only web/mail schemes are safe to hand to Qt.openUrlExternally().
+    // Document content is untrusted: file:, javascript:, data: and other
+    // schemes must never be opened from a note.
+    if (/^(?:https?:\/\/|mailto:)/i.test(url))
+      return url
+    // Relative links without a scheme are fine (they are resolved by the
+    // preview), but anything with a disallowed scheme is not.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url))
       return "#"
     return url
+  }
+
+  // Image sources are validated again here so plugin QML cannot bypass the
+  // model-level check. Local file: URLs are allowed only for attachments,
+  // which the model has already canonicalized into a safe value.
+  function safeImageSource(value) {
+    const url = String(value || "").trim()
+    if (/^(?:https?:\/\/|qrc:|data:image\/|file:\/\/)/i.test(url))
+      return url
+    return ""
   }
 
   // ---------------------------------------------------------------------------

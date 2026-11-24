@@ -2033,6 +2033,11 @@ Item {
           anchors.fill: parent
           z: 3
 
+          // While an agent streams its edits, input is frozen so the animated
+          // document cannot race with user keystrokes and revert stays exact.
+          readOnly: (typeof blockModel !== "undefined" && blockModel)
+                    ? blockModel.agentBusy : false
+
           padding: 0
           leftPadding: 0
           rightPadding: 0

@@ -10,7 +10,7 @@ Column {
 
   property var pluginContext: null
   readonly property string pluginId: pluginContext && pluginContext.pluginId
-                                     ? pluginContext.pluginId : "prompt-panel"
+                                     ? pluginContext.pluginId : "prompt-panel-sidebar"
   readonly property var registry: typeof providerManager !== "undefined"
                                   ? providerManager : null
   readonly property int revision: registry ? registry.revision : 0

@@ -1,6 +1,7 @@
 #include "store/DocumentStore.h"
 #include "engine/EditorSession.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -147,6 +148,50 @@ private slots:
                                   .value(QStringLiteral("blocks")).toArray();
     QCOMPARE(blocks.first().toObject().value(QStringLiteral("text")).toString(),
              QStringLiteral("Hello"));
+  }
+
+  void testSnapshotRetentionAndExplicitPrune() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("doc.templnote"));
+
+    EditorSession s;
+    QVERIFY(s.loadJson(sampleDoc()));
+    QFile f(path);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(s.documentJson().toUtf8());
+    f.close();
+
+    DocumentStore store(dir.filePath(QStringLiteral("journal.sqlite")));
+    store.setSnapshotRetention(2);
+    QCOMPARE(store.snapshotRetention(), 2);
+
+    auto init = store.initialize(path, s.toJson());
+    QVERIFY2(init.ok(), qPrintable(init.error()));
+    int rev = init.value().revision;
+
+    Engine::Patch patch;
+    patch.actor = Actor::human();
+    patch.timestampMs = QDateTime::currentMSecsSinceEpoch();
+
+    for (int i = 0; i < 6; ++i) {
+      auto r = store.commit(path, rev, sampleDoc(QString::number(i)), patch,
+                            s.lamport(), QStringLiteral("step"));
+      QVERIFY2(r.ok(), qPrintable(r.error()));
+      rev = r.value().revision;
+    }
+
+    // Commits prune snapshots but keep every patch row (append-only
+    // provenance). None of these revisions is a checkpoint.
+    const auto versions = store.versions(path);
+    QCOMPARE(versions.size(), 2);
+    QCOMPARE(versions.last().revision, rev);
+    QCOMPARE(store.patches(path).size(), 7);
+
+    // An explicit prune may drop patches older than the retained snapshots.
+    QVERIFY(store.pruneJournal(path) >= 0);
+    QVERIFY(store.patches(path).size() <= 2);
+    QVERIFY(store.vacuum());
   }
 
   void testAgentProvenance() {

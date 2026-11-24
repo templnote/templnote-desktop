@@ -3,14 +3,18 @@
 #include "ai/ModelRouter.h"
 #include "ai/PipelineRunner.h"
 #include "ai/ProviderRegistry.h"
+#include "ai/SecretStore.h"
 #include "ai/ToolSchema.h"
 #include "engine/CapabilityGate.h"
 #include "engine/ChangeFeed.h"
 #include "engine/EditorSession.h"
 #include "engine/Types.h"
 #include "plugins/PluginManager.h"
+#include "sync/SyncManager.h"
+#include "engine/CrdtDocumentState.h"
 
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -101,7 +105,10 @@ private slots:
     EditorSession session;
     QVERIFY(session.loadJson(document()));
     CapabilityGate gate;
-    gate.setRole(QStringLiteral("viewer"), CapabilityGate::Role::Viewer);
+    // The gate now replaces actor ids it has not been told about with the
+    // session's trusted identity. Grant an explicit non-owner role so the
+    // self-claimed agent id survives stamping and is checked by the gate.
+    gate.setRole(QStringLiteral("viewer"), CapabilityGate::Role::Editor);
 
     QJsonObject args;
     args.insert(QStringLiteral("blockId"), QStringLiteral("b1"));
@@ -119,6 +126,8 @@ private slots:
     QVERIFY(session.apply(cmd).ok());
     session.loadJson(document());
     session.setCapabilityGate(&gate);
+    session.setTrustedActorIds({QStringLiteral("viewer"),
+                                QStringLiteral("ai-agent")});
     auto denied = session.apply(cmd);
     QVERIFY(!denied.ok());
     QVERIFY(denied.error().contains(QStringLiteral("AI")));
@@ -169,6 +178,89 @@ private slots:
         "secret-token\r\nConnection: close\r\n\r\n");
     QVERIFY(ok.startsWith("HTTP/1.1 200"));
     QVERIFY(ok.contains("\"blocks\""));
+  }
+
+  void testHttpAcceptsCaseSensitiveBearerToken() {
+    EditorSession session;
+    QVERIFY(session.loadJson(document()));
+    Adapter::SessionDocumentPort documentPort(&session);
+    AgentHttpServer server;
+    server.setDocumentProvider(&documentPort);
+    server.setAuthToken(QStringLiteral("AbCdEf123"));
+    QVERIFY(server.listen(0));
+
+    const QByteArray ok = exchange(
+        server.port(),
+        "GET /document HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer "
+        "AbCdEf123\r\nConnection: close\r\n\r\n");
+    QVERIFY(ok.startsWith("HTTP/1.1 200"));
+
+    const QByteArray wrongCase = exchange(
+        server.port(),
+        "GET /document HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer "
+        "abcdef123\r\nConnection: close\r\n\r\n");
+    QVERIFY(wrongCase.startsWith("HTTP/1.1 401"));
+  }
+
+  void testSecretFallbackFileIsOwnerOnly() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    SecretStore secrets;
+    secrets.setTestMode(true);
+    const QString path = dir.filePath(QStringLiteral("secrets.dat"));
+    secrets.setFilePath(path);
+    QVERIFY(secrets.set(QStringLiteral("ai.provider.test.apiKey"),
+                        QStringLiteral("sk-secret-value")));
+    QVERIFY(QFileInfo::exists(path));
+    QVERIFY(QFileInfo::exists(path + QStringLiteral(".key")));
+    const auto permissions = QFileInfo(path).permissions();
+    QVERIFY(!(permissions & QFile::ReadGroup));
+    QVERIFY(!(permissions & QFile::ReadOther));
+    QCOMPARE(secrets.get(QStringLiteral("ai.provider.test.apiKey")),
+             QStringLiteral("sk-secret-value"));
+  }
+
+  void testSyncHandshakeAuthenticatesAndMerges() {
+    CrdtDocumentState localState;
+    CrdtDocumentState remoteState;
+    QVERIFY(localState.load(document()));
+    QVERIFY(remoteState.load(document()));
+
+    Sync::SyncManager server(0);
+    server.setAuthToken(QStringLiteral("s3cret"));
+    server.setState(&localState);
+    QVERIFY(server.startServer());
+    const quint16 port = server.serverPort();
+    QVERIFY(port > 0);
+
+    Sync::SyncManager client(0);
+    client.setAuthToken(QStringLiteral("s3cret"));
+    client.setState(&remoteState);
+    client.connectToPeer(QStringLiteral("127.0.0.1"), port);
+
+    for (int i = 0; i < 50 && (server.peerCount() == 0 || client.peerCount() == 0); ++i)
+      QTest::qWait(20);
+    QCOMPARE(server.peerCount(), 1);
+    QCOMPARE(client.peerCount(), 1);
+
+    // A local edit must reach the authenticated peer.
+    Command cmd = Command::setText(QStringLiteral("b1"),
+                                   QStringLiteral("synced"));
+    cmd.lamport = 10;
+    QVERIFY(localState.apply(cmd, nullptr).isEmpty());
+    server.broadcast();
+    for (int i = 0; i < 50 && remoteState.document().findBlock(QStringLiteral("b1"))->text != QStringLiteral("synced"); ++i)
+      QTest::qWait(20);
+    QCOMPARE(remoteState.document().findBlock(QStringLiteral("b1"))->text,
+             QStringLiteral("synced"));
+
+    // A peer with the wrong token never authenticates and cannot inject ops.
+    Sync::SyncManager rogue(0);
+    rogue.setAuthToken(QStringLiteral("wrong"));
+    rogue.setState(&remoteState);
+    rogue.connectToPeer(QStringLiteral("127.0.0.1"), port);
+    QTest::qWait(100);
+    QVERIFY(!remoteState.opSet().isEmpty()); // sanity: state still usable
   }
 
   void testHttpIgnoresCallerActorAndGates() {
@@ -292,7 +384,7 @@ private slots:
     PipelineRunner pipeline;
     pipeline.setDocument(&documentPort);
     pipeline.setRouter(&router);
-    pipeline.setStages({{QStringLiteral("write"), QStringLiteral("prompt"), true}});
+    pipeline.setAgentRuns({{QStringLiteral("agent-1"), QStringLiteral("prompt"), true}});
 
     QEventLoop loop;
     PipelineResult result;

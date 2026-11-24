@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project( Templnote
-  VERSION 0.1.0
+  VERSION 0.3.1
   DESCRIPTION "Local first AI-native text editor"
   LANGUAGES CXX
 )
@@ -143,6 +143,10 @@ target_link_libraries(templnote_ai_adapters PUBLIC
 add_library(templnote_desktop_adapter STATIC
   src/adapter/AgentService.h
   src/adapter/AgentService.cpp
+  src/adapter/AgentSession.h
+  src/adapter/AgentSession.cpp
+  src/adapter/PanelListModel.h
+  src/adapter/PanelListModel.cpp
 )
 target_include_directories(templnote_desktop_adapter PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
@@ -196,7 +200,6 @@ qt_add_qml_module(templnote
   qml/SearchWindow.qml
   qml/ResultsList.qml
   qml/ResultPreview.qml
-  qml/PromptPanel.qml
   qml/SelectionToolbar.qml
   qml/NavigationRail.qml
   qml/FileExplorer.qml
@@ -213,6 +216,8 @@ qt_add_qml_module(templnote
   qml/settings/PluginsSettings.qml
   qml/settings/DeclarativePluginSettings.qml
   qml/settings/AISettings.qml
+  qml/settings/AIModelsSettings.qml
+  qml/settings/AgentsSettings.qml
   qml/settings/SettingToggle.qml
   qml/settings/SettingSwitch.qml
   qml/settings/SettingsButton.qml
@@ -249,9 +254,9 @@ qt_add_qml_module(templnote
   bundled-plugins/paper-background/manifest.json
   bundled-plugins/paper-background/PaperBackgroundDecoration.qml
   bundled-plugins/paper-background/PaperBackgroundSettings.qml
-  bundled-plugins/prompt-panel/manifest.json
-  bundled-plugins/prompt-panel/PromptPanelDecoration.qml
-  bundled-plugins/prompt-panel/PromptPanelSettings.qml
+  bundled-plugins/prompt-panel-sidebar/manifest.json
+  bundled-plugins/prompt-panel-sidebar/PromptPanelSidebarDecoration.qml
+  bundled-plugins/prompt-panel-sidebar/PromptPanelSettings.qml
 
   qml/shaders/paper.frag.qsb
   qml/shaders/edgefade.frag.qsb
@@ -260,6 +265,9 @@ qt_add_qml_module(templnote
   assets/emoji/messages.json
   assets/emoji/shortcodes-github.json
   assets/emoji/LICENSE
+  assets/logo.png
+  assets/icons/ic_fluent_panel_right_20_filled.svg
+  assets/icons/ic_fluent_panel_right_20_regular.svg
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_image_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg

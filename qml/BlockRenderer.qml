@@ -35,6 +35,10 @@ Item {
                                           : Qt.ArrowCursor
   readonly property int cursorPosition: block ? block.cursorPosition : 0
   readonly property string editorText: block ? block.editorText : ""
+  // Renderers whose editor shows a header (callout marker, code fence) expose
+  // the model text separately so callers never write decorated markdown back.
+  readonly property string cleanBody: block && "cleanBody" in block
+                                      ? block.cleanBody : editorText
   readonly property bool isFocused: block ? block.isFocused : false
   readonly property real firstLineHeight: block ? block.firstLineHeight : 24
 

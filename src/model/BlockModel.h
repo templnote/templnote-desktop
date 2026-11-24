@@ -4,8 +4,10 @@
 #include <QSortFilterProxyModel>
 #include <QByteArray>
 #include <QDateTime>
+#include <QFuture>
 #include <QStringList>
 #include <deque>
+#include <functional>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QVector>
@@ -28,6 +30,12 @@ class BlockModel : public QAbstractListModel {
   Q_PROPERTY(
       QString documentTitle READ documentTitle NOTIFY documentTitleChanged)
   Q_PROPERTY(bool isModified READ isModified NOTIFY modifiedChanged)
+
+  // True while an AI agent is streaming edits into the document. The editor
+  // makes its text input read-only during this window so the streamed snapshot
+  // cannot race with user keystrokes.
+  Q_PROPERTY(bool agentBusy READ agentBusy WRITE setAgentBusy NOTIFY
+                 agentBusyChanged)
   Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
   Q_PROPERTY(
       QDateTime lastModified READ lastModified NOTIFY lastModifiedChanged)
@@ -97,6 +105,20 @@ public:
   Q_INVOKABLE QString duplicateBlock(const QString &id);
 
   Q_INVOKABLE bool updateBlockText(const QString &id, const QString &text);
+
+  // Applies a single streamed text step from an AI agent. Unlike a normal edit
+  // it does not enter undo history, mark the document dirty or schedule
+  // autosave: the agent's preview session remains the source of truth until
+  // the user accepts the changes.
+  Q_INVOKABLE bool applyStreamedText(const QString &id, const QString &text);
+
+  bool agentBusy() const { return m_agentBusy; }
+  void setAgentBusy(bool busy);
+
+  // Used by the agent service to persist a reviewed snapshot or a revert.
+  // Implemented out of line because engine-applied snapshots reset the saved
+  // state id, so the dirty flag has to be restored explicitly.
+  void markAgentDocumentModified();
 
   Q_INVOKABLE bool changeBlockType(const QString &id, int type,
                                    int headdingLevel = 0);
@@ -236,6 +258,22 @@ public:
   // failure the open document and its undo history are left untouched.
   Q_INVOKABLE bool loadDocument(const QString &path);
 
+  // Parse a document on a QtConcurrent worker and apply the result on this
+  // model's thread. Completion is reported through documentLoadFinished() and
+  // the optional C++ callback (ok == true when the document was applied).
+  // loadDocument() stays synchronous so existing QML/C++ callers and tests keep
+  // their current semantics; callers that want a large document opened without
+  // blocking the GUI thread should use this method.
+  Q_INVOKABLE void loadDocumentAsync(const QString &path);
+  void loadDocumentAsync(const QString &path,
+                         std::function<void(bool)> callback);
+
+  // Start a background parse without applying it. A later loadDocument() for
+  // the same path consumes a finished result (after checking the file's
+  // mtime/size), turning the expensive part of a document switch into a cheap
+  // main-thread apply.
+  void prewarmDocument(const QString &path);
+
   // Headless engine bridge: apply a document snapshot produced by an
   // EditorSession. The patch JSON is re-emitted so views can restore focus to
   // the block that changed. Used by the live change feed (P3).
@@ -275,10 +313,12 @@ signals:
   void currentFilePathChanged();
   void documentTitleChanged();
   void modifiedChanged();
+  void agentBusyChanged();
   void lastModifiedChanged();
   void lastErrorChanged();
   void autosaveEnabledChanged();
   void documentLoaded();
+  void documentLoadFinished(bool ok);
   void documentCreated();
   void fullWidthChanged();
   void contentRevisionChanged();
@@ -305,6 +345,25 @@ private:
   void setLastModified(const QDateTime &modified);
   bool setError(const QString &message);
   bool resetDocument(Document document);
+
+  // File reading, JSON parsing and Document construction are thread-safe and
+  // run on a QtConcurrent worker. Everything below applyParsedDocument() (the
+  // model reset and the signal emission) must stay on the model's thread.
+  struct ParsedDocument {
+    bool ok = false;
+    QString error;
+    Document document;
+    QString absolutePath;
+    QString createdAt;
+    QDateTime modified;
+    qint64 fileSize = 0;
+    qint64 fileMtimeMs = 0;
+  };
+  static ParsedDocument parseDocumentFile(const QString &path);
+  static QString resolveDocumentPath(const QString &path, QString *error);
+  bool parsedDocumentIsCurrent(const ParsedDocument &parsed) const;
+  bool applyParsedDocument(ParsedDocument parsed);
+
   static QString folderForPath(const QString &path);
   struct PatchOp {
     enum class Type { Insert, Remove, Move, Update };
@@ -369,6 +428,7 @@ private:
 
   void invalidateStructureCaches();
   void cleanupOrphanedAttachments();
+  void invalidateAttachmentScanCache();
   void loadKnownAttachmentPaths();
   void saveKnownAttachmentPaths();
   void rememberAttachmentDocumentPath(const QString &path);
@@ -401,6 +461,13 @@ private:
   // Save As outside the documents root silently deletes that file's images.
   QSet<QString> m_knownAttachmentPaths;
 
+  // Per-document signatures and referenced image names from the last
+  // attachment sweep. Unchanged documents reuse their references on later
+  // autosaves instead of being read and parsed again.
+  QHash<QString, qint64> m_attachmentDocSizes;
+  QHash<QString, qint64> m_attachmentDocMtimes;
+  QHash<QString, QSet<QString>> m_attachmentRefsByDocument;
+
   QString m_createdAt;
   QString m_documentFolder;
   QDateTime m_lastModified;
@@ -412,6 +479,13 @@ private:
   QByteArray m_lastSavedData;
   QString m_lastSavedPath;
 
+  // Monotonic load id: an async parse that finishes after a newer load (or a
+  // close) is discarded instead of replacing the newer document.
+  quint64 m_loadRequestId = 0;
+  // Parses started by prewarmDocument()/loadDocumentAsync(), keyed by the
+  // resolved absolute path. loadDocument() consumes finished entries.
+  QHash<QString, QFuture<ParsedDocument>> m_prewarmedParses;
+
   // Numbered-list indices are cached and rebuilt lazily after any structural
   // or block-type change instead of being recomputed on every role lookup.
   mutable QVector<int> m_numberIndices;
@@ -421,6 +495,8 @@ private:
   // column is hovered or resized. Keep the child id lists cached and invalidate
   // them together with the rest of the structural caches.
   mutable QHash<QString, QStringList> m_columnChildren;
+
+  bool m_agentBusy = false;
 
   // Consecutive single-character edits in the same block are merged into one
   // history entry until a word boundary or a short pause is reached.

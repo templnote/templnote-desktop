@@ -26,6 +26,8 @@ Item {
 
   readonly property int cursorPosition: editor.cursorPosition
   readonly property string editorText: editor.text
+  // Model text without the displayed ```lang / ``` fence lines.
+  readonly property string cleanBody: parseEditorText(editor.text).body
   readonly property bool isFocused: editor.activeFocus
   readonly property real firstLineHeight: 22
 

@@ -33,8 +33,14 @@ public:
     // Refresh memory stats (emits statsChanged if updated)
     Q_INVOKABLE void refresh();
 
-    // Log current memory consumption to qDebug
+    // Log current memory consumption to qDebug. Samples a fresh snapshot, so
+    // it does not report cached QML-facing stats that may be stale.
     Q_INVOKABLE void logCurrent(const QString &context = QString()) const;
+
+    // One-shot snapshot log: reads process memory directly and leaves the
+    // cached stats (and statsChanged signal) untouched. Useful in benchmarks
+    // and hot paths where a QML property refresh is unnecessary.
+    static void logSnapshot(const QString &context = QString());
 
 signals:
     void statsChanged();

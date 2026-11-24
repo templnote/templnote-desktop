@@ -66,7 +66,7 @@ Column {
       }
 
       Text {
-        text: "Version 0.1.0"
+        text: "Version 0.3.1"
         color: Theme.textFaint
         font.pixelSize: 11
       }

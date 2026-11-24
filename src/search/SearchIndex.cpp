@@ -5,6 +5,7 @@
 #include "storage/AppPaths.h"
 #include "../storage/DocumentListModel.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -18,16 +19,132 @@
 #include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
+#include <QThreadStorage>
 #include <QVariantMap>
 #include <QtConcurrent>
 #include <algorithm>
 #include <atomic>
+#include <iterator>
+#include <memory>
 #include <utility>
 
 namespace Templnote {
 namespace {
 constexpr int kFlushDelayMs = 350;
 constexpr int kMaxResults = 200;
+// An async cache hit may lag the index by at most this long after a write.
+// Synchronous search() is never served from a stale generation.
+constexpr qint64 kCacheGraceMs = 2000;
+constexpr int kMaxHighlightRanges = 64;
+
+// Bumped when the database file itself is deleted and recreated (corrupt-file
+// recovery). Pooled connections opened against the old file are then dropped
+// on their next use; a normal rebuild only deletes rows and needs no bump.
+std::atomic<quint64> &databaseEpoch() {
+  static std::atomic<quint64> epoch{0};
+  return epoch;
+}
+
+// SQLite connections must be created and used on the same thread. Both the
+// single-threaded writer pool and the (multi-threaded) concurrent reader pool
+// therefore keep their connections in thread-local storage: the first call on
+// a thread creates one, every subsequent batch/search on that thread reuses it.
+// Connection names are globally unique so they never collide with the GUI
+// thread's own SearchIndex connection or with another index's pools.
+class ThreadSqlConnections {
+public:
+  ~ThreadSqlConnections() {
+    for (Connection &connection : m_connections) {
+      if (connection.database.isOpen())
+        connection.database.close();
+    }
+    m_connections.clear();
+
+    // At process teardown thread-local destructors can run after Qt's SQL
+    // drivers are gone. Leaving a uniquely named registration behind then is
+    // harmless; removing it at that point is not.
+    if (QCoreApplication::instance()) {
+      for (const QString &name : std::as_const(m_names))
+        QSqlDatabase::removeDatabase(name);
+    }
+  }
+
+  QSqlDatabase connection(const QString &databasePath, bool readOnly,
+                          quint64 epoch) {
+    const QString key = QStringLiteral("%1|%2|%3")
+                            .arg(readOnly ? 1 : 0)
+                            .arg(databasePath)
+                            .arg(QString::number(epoch));
+
+    const auto found = m_connections.constFind(key);
+    if (found != m_connections.constEnd() && found->epoch == epoch &&
+        found->database.isOpen()) {
+      return found->database;
+    }
+
+    // A recovered database has a new inode. Dispose of connections that were
+    // opened for an older file before creating one for the current epoch.
+    for (auto it = m_connections.begin(); it != m_connections.end();) {
+      if (it->epoch == epoch) {
+        ++it;
+        continue;
+      }
+
+      if (it->database.isOpen())
+        it->database.close();
+
+      const QString staleName = it->name;
+      it = m_connections.erase(it);
+      m_names.removeAll(staleName);
+      if (QCoreApplication::instance())
+        QSqlDatabase::removeDatabase(staleName);
+    }
+
+    static std::atomic<quint64> counter{0};
+    const QString name =
+        QStringLiteral("templnote_search_%1_%2")
+            .arg(readOnly ? QStringLiteral("reader") : QStringLiteral("writer"))
+            .arg(QString::number(counter.fetch_add(1, std::memory_order_relaxed)));
+
+    QSqlDatabase db =
+        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+    db.setDatabaseName(databasePath);
+    if (readOnly)
+      db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+
+    if (!db.open()) {
+      qWarning() << "SearchIndex: could not open pooled connection" << name;
+      db = QSqlDatabase();
+      if (QCoreApplication::instance())
+        QSqlDatabase::removeDatabase(name);
+      return {};
+    }
+
+    // Set once per connection rather than on every search/write batch.
+    QSqlQuery pragma(db);
+    pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
+
+    m_connections.insert(key, Connection{db, name, epoch});
+    m_names.append(name);
+    return db;
+  }
+
+private:
+  struct Connection {
+    QSqlDatabase database;
+    QString name;
+    quint64 epoch = 0;
+  };
+
+  QHash<QString, Connection> m_connections;
+  QStringList m_names;
+};
+
+QThreadStorage<ThreadSqlConnections> &threadSqlConnections() {
+  static QThreadStorage<ThreadSqlConnections> storage;
+  return storage;
+}
 
 QString escapeLike(QString value) {
   value.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
@@ -686,124 +803,78 @@ void performIncrementalSync(QSqlDatabase &db, const QString &root,
 }
 
 void executeClearIndex(const QString &databasePath) {
-  static std::atomic<quint64> clearCounter{0};
+  QSqlDatabase db = threadSqlConnections().localData().connection(
+      databasePath, /*readOnly=*/false,
+      databaseEpoch().load(std::memory_order_relaxed));
 
-  const QString connectionName =
-      QStringLiteral("templnote_search_clear_%1")
-          .arg(clearCounter.fetch_add(1));
+  if (!db.isOpen())
+    return;
 
-  {
-    QSqlDatabase db =
-        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-    db.setDatabaseName(databasePath);
-
-    if (db.open()) {
-      QSqlQuery pragma(db);
-      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
-
-      QSqlQuery query(db);
-      query.exec(QStringLiteral("DELETE FROM search_index"));
-      query.exec(QStringLiteral("DELETE FROM search_rows"));
-      query.exec(QStringLiteral("DELETE FROM search_meta"));
-    }
-
-    db.close();
-  }
-
-  QSqlDatabase::removeDatabase(connectionName);
+  QSqlQuery query(db);
+  query.exec(QStringLiteral("DELETE FROM search_index"));
+  query.exec(QStringLiteral("DELETE FROM search_rows"));
+  query.exec(QStringLiteral("DELETE FROM search_meta"));
 }
 
 void executeIncrementalSync(const QString &databasePath, const QString &root,
                             const QString &currentDocumentPath,
                             const QString &currentDocumentTitle,
                             const QVector<WriteBlock> &currentBlocks) {
-  static std::atomic<quint64> syncCounter{0};
+  QSqlDatabase db = threadSqlConnections().localData().connection(
+      databasePath, /*readOnly=*/false,
+      databaseEpoch().load(std::memory_order_relaxed));
 
-  const QString connectionName =
-      QStringLiteral("templnote_search_sync_%1")
-          .arg(syncCounter.fetch_add(1));
-
-  {
-    QSqlDatabase db =
-        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connectionName);
-    db.setDatabaseName(databasePath);
-
-    if (db.open()) {
-      QSqlQuery pragma(db);
-      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
-      performIncrementalSync(db, root, currentDocumentPath,
-                             currentDocumentTitle, currentBlocks);
-    }
-
-    db.close();
+  if (db.isOpen()) {
+    performIncrementalSync(db, root, currentDocumentPath, currentDocumentTitle,
+                           currentBlocks);
   }
-
-  QSqlDatabase::removeDatabase(connectionName);
 }
 
 bool executeWriteBatch(const QString &databasePath, const QVector<WriteOp> &ops) {
-  static std::atomic<quint64> connectionCounter{0};
-
-  const QString connectionName =
-      QStringLiteral("templnote_search_write_%1")
-          .arg(connectionCounter.fetch_add(1));
+  QSqlDatabase db = threadSqlConnections().localData().connection(
+      databasePath, /*readOnly=*/false,
+      databaseEpoch().load(std::memory_order_relaxed));
 
   bool ok = false;
 
-  {
-    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
-                                               connectionName);
-    db.setDatabaseName(databasePath);
+  if (db.isOpen() && db.transaction()) {
+    bool batchOk = true;
 
-    if (db.open()) {
-      QSqlQuery pragma(db);
-      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
-
-      if (db.transaction()) {
-        bool batchOk = true;
-
-        for (const WriteOp &op : ops) {
-          switch (op.type) {
-          case WriteOp::Type::Upsert:
-            batchOk = row_upsertBlock(db, op.path, op.title, op.blockId,
-                                      op.text);
-            break;
-          case WriteOp::Type::Remove:
-            batchOk = row_removeBlock(db, op.path, op.blockId);
-            break;
-          case WriteOp::Type::Replace:
-            batchOk = row_replaceDocument(db, op.path, op.title, op.blocks,
-                                          op.updateMeta);
-            break;
-          case WriteOp::Type::FileReplace:
-            batchOk = replaceFromFile(db, op.path);
-            break;
-          case WriteOp::Type::RemoveDocument:
-            batchOk = row_removeDocument(db, op.path);
-            break;
-          case WriteOp::Type::RemovePrefix:
-            batchOk = row_removePathPrefix(db, op.path);
-            break;
-          case WriteOp::Type::Rename:
-            batchOk = row_renamePath(db, op.path, op.newPath);
-            break;
-          }
-
-          if (!batchOk)
-            break;
-        }
-
-        ok = batchOk && db.commit();
-
-        if (!ok)
-          db.rollback();
+    for (const WriteOp &op : ops) {
+      switch (op.type) {
+      case WriteOp::Type::Upsert:
+        batchOk = row_upsertBlock(db, op.path, op.title, op.blockId, op.text);
+        break;
+      case WriteOp::Type::Remove:
+        batchOk = row_removeBlock(db, op.path, op.blockId);
+        break;
+      case WriteOp::Type::Replace:
+        batchOk = row_replaceDocument(db, op.path, op.title, op.blocks,
+                                      op.updateMeta);
+        break;
+      case WriteOp::Type::FileReplace:
+        batchOk = replaceFromFile(db, op.path);
+        break;
+      case WriteOp::Type::RemoveDocument:
+        batchOk = row_removeDocument(db, op.path);
+        break;
+      case WriteOp::Type::RemovePrefix:
+        batchOk = row_removePathPrefix(db, op.path);
+        break;
+      case WriteOp::Type::Rename:
+        batchOk = row_renamePath(db, op.path, op.newPath);
+        break;
       }
+
+      if (!batchOk)
+        break;
     }
 
-    db.close();
-  }
+    ok = batchOk && db.commit();
 
-  QSqlDatabase::removeDatabase(connectionName);
+    if (!ok)
+      db.rollback();
+  }
 
   if (!ok)
     qWarning() << "SearchIndex: background write batch failed";
@@ -827,6 +898,7 @@ SearchIndex::SearchIndex(const QString &documentsRoot,
       m_documentsRoot(QDir::cleanPath(documentsRoot)),
       m_databasePath(databasePath) {
   qRegisterMetaType<SearchOutcome>("Templnote::SearchIndex::SearchOutcome");
+  m_cacheClock.start();
 
   if (!openDatabase()) {
     qWarning() << "SearchIndex: could not open the search database";
@@ -1023,6 +1095,10 @@ bool SearchIndex::resetDatabaseFile() {
     QFile::remove(path + QStringLiteral("-wal"));
     QFile::remove(path + QStringLiteral("-shm"));
   }
+
+  // Pooled reader/writer connections still point at the deleted file. Their
+  // next use recreates them against the new one.
+  databaseEpoch().fetch_add(1, std::memory_order_relaxed);
 
   return openDatabase();
 }
@@ -1267,24 +1343,79 @@ void SearchIndex::onPathRemoved(const QString &path) {
   syncIncrementalAsync();
 }
 
+QString SearchIndex::pendingKey(const QString &path, const QString &blockId) {
+  // U+001F cannot occur in a path or a block id, so path-only (full document)
+  // and path+block keys cannot collide.
+  return path + QChar(0x1F) + blockId;
+}
+
+void SearchIndex::pendingRebuildIndex() {
+  m_pendingIndex.clear();
+  m_pendingIndex.reserve(m_pending.size());
+
+  for (int i = 0; i < m_pending.size(); ++i) {
+    const PendingOp &op = m_pending.at(i);
+    const QString blockId =
+        op.type == PendingOp::Type::FullDocument ? QString() : op.blockId;
+    m_pendingIndex.insert(pendingKey(op.path, blockId), i);
+  }
+}
+
+void SearchIndex::pendingAppend(const PendingOp &op) {
+  const QString blockId =
+      op.type == PendingOp::Type::FullDocument ? QString() : op.blockId;
+  m_pendingIndex.insert(pendingKey(op.path, blockId), m_pending.size());
+  m_pending.append(op);
+}
+
+void SearchIndex::pendingInsert(int index, const PendingOp &op) {
+  // Inserting shifts every later index; only used for the rare retry of a
+  // full reindex that must run ahead of newer block edits. Rebuilding the
+  // small hash is simpler and cheaper than patching every stale index.
+  m_pending.insert(index, op);
+  pendingRebuildIndex();
+}
+
+void SearchIndex::pendingCompact(const QVector<int> &removeIndices) {
+  if (removeIndices.isEmpty())
+    return;
+
+  QVector<PendingOp> compacted;
+  compacted.reserve(m_pending.size() - removeIndices.size());
+
+  int next = 0;
+  for (int i = 0; i < m_pending.size(); ++i) {
+    if (next < removeIndices.size() && removeIndices.at(next) == i) {
+      ++next;
+      continue;
+    }
+    compacted.append(m_pending.at(i));
+  }
+
+  m_pending = std::move(compacted);
+  pendingRebuildIndex();
+}
+
+void SearchIndex::pendingClear() {
+  m_pending.clear();
+  m_pendingIndex.clear();
+}
+
 void SearchIndex::queueBlockUpsert(const QString &path, const QString &title,
                                    const QString &blockId,
                                    const QString &text) {
   // Collapse repeated edits of the same block before the flush fires. This is
   // what keeps typing from enqueueing one SQL operation per keystroke.
-  for (PendingOp &op : m_pending) {
-    if (op.path != path)
-      continue;
+  if (m_pendingIndex.contains(pendingKey(path, QString())))
+    return;
 
-    if (op.type == PendingOp::Type::FullDocument)
-      return;
-
-    if (op.blockId == blockId) {
-      op.type = PendingOp::Type::Upsert;
-      op.title = title;
-      op.text = text;
-      return;
-    }
+  if (const auto it = m_pendingIndex.constFind(pendingKey(path, blockId));
+      it != m_pendingIndex.cend()) {
+    PendingOp &op = m_pending[*it];
+    op.type = PendingOp::Type::Upsert;
+    op.title = title;
+    op.text = text;
+    return;
   }
 
   PendingOp op;
@@ -1293,52 +1424,46 @@ void SearchIndex::queueBlockUpsert(const QString &path, const QString &title,
   op.title = title;
   op.blockId = blockId;
   op.text = text;
-  m_pending.append(op);
+  pendingAppend(op);
 }
 
 void SearchIndex::queueBlockRemove(const QString &path,
                                    const QString &blockId) {
-  for (PendingOp &op : m_pending) {
-    if (op.path != path)
-      continue;
+  if (m_pendingIndex.contains(pendingKey(path, QString())))
+    return;
 
-    if (op.type == PendingOp::Type::FullDocument)
-      return;
-
-    if (op.blockId == blockId) {
-      op.type = PendingOp::Type::Remove;
-      op.text.clear();
-      return;
-    }
+  if (const auto it = m_pendingIndex.constFind(pendingKey(path, blockId));
+      it != m_pendingIndex.cend()) {
+    PendingOp &op = m_pending[*it];
+    op.type = PendingOp::Type::Remove;
+    op.text.clear();
+    return;
   }
 
   PendingOp op;
   op.type = PendingOp::Type::Remove;
   op.path = path;
   op.blockId = blockId;
-  m_pending.append(op);
+  pendingAppend(op);
 }
 
 void SearchIndex::queueFullDocument(const QString &path) {
-  for (const PendingOp &op : std::as_const(m_pending)) {
-    if (op.type == PendingOp::Type::FullDocument && op.path == path)
-      return;
-  }
+  if (m_pendingIndex.contains(pendingKey(path, QString())))
+    return;
 
   // A full reindex supersedes any queued block operations for this document.
-  m_pending.erase(std::remove_if(m_pending.begin(), m_pending.end(),
-                                 [&path](const PendingOp &op) {
-                                   return op.path == path &&
-                                          op.type !=
-                                              PendingOp::Type::FullDocument;
-                                 }),
-                  m_pending.end());
+  QVector<int> remove;
+  for (int i = 0; i < m_pending.size(); ++i) {
+    if (m_pending.at(i).path == path)
+      remove.append(i);
+  }
+  pendingCompact(remove);
 
   PendingOp op;
   op.type = PendingOp::Type::FullDocument;
   op.path = path;
   op.title = QFileInfo(path).completeBaseName();
-  m_pending.append(op);
+  pendingAppend(op);
 }
 
 void SearchIndex::scheduleFlush() {
@@ -1375,16 +1500,18 @@ void SearchIndex::flushPending() {
   if (m_pending.isEmpty() || !m_db.isOpen())
     return;
 
-  const QVector<PendingOp> pending = m_pending;
-  m_pending.clear();
+  // Share the snapshot with the retry callback instead of copying the whole
+  // batch a second time. It is immutable from here on.
+  const auto pending = std::make_shared<QVector<PendingOp>>(m_pending);
+  pendingClear();
 
   // Snapshot everything the worker needs. A full reindex of the open document
   // must read the model on the GUI thread; file-backed reindexes can read the
   // file on the worker.
   QVector<WriteOp> ops;
-  ops.reserve(pending.size());
+  ops.reserve(pending->size());
 
-  for (const PendingOp &op : pending) {
+  for (const PendingOp &op : *pending) {
     WriteOp write;
     write.path = op.path;
     write.title = op.title;
@@ -1447,7 +1574,7 @@ void SearchIndex::flushPending() {
               m_flushRetryCount = 0;
               m_flushTimer.setInterval(kFlushDelayMs);
             } else {
-              requeuePending(pending);
+              requeuePending(*pending);
               ++m_flushRetryCount;
 
               const int shift = qMin(m_flushRetryCount, 6);
@@ -1479,55 +1606,47 @@ void SearchIndex::requeuePending(const QVector<PendingOp> &ops) {
     // arrived in the meantime: those edits are retried separately, while
     // skipping the full pass would leave the document partially indexed.
     // Whole-document removals are handled by discardPending() and never
-    // appear here, so only another full reindex supersedes this op.
-    bool superseded = false;
+    // appear here, so only another full reindex supersedes this op. The hash
+    // answers both "is there a full reindex for this path" and "is this block
+    // already queued" in constant time.
+    const bool fullQueued =
+        m_pendingIndex.contains(pendingKey(op.path, QString()));
 
-    for (const PendingOp &current : std::as_const(m_pending)) {
-      if (current.path != op.path)
+    if (op.type == PendingOp::Type::FullDocument) {
+      if (fullQueued)
         continue;
-
-      if (op.type == PendingOp::Type::FullDocument) {
-        if (current.type == PendingOp::Type::FullDocument) {
-          superseded = true;
-          break;
-        }
-        continue;
-      }
-
-      if (current.type == PendingOp::Type::FullDocument ||
-          current.blockId == op.blockId) {
-        superseded = true;
-        break;
-      }
-    }
-
-    if (superseded)
+    } else if (fullQueued ||
+               m_pendingIndex.contains(pendingKey(op.path, op.blockId))) {
       continue;
+    }
 
     if (op.type == PendingOp::Type::FullDocument) {
       // A retried full reindex must run before block edits that arrived while
       // the failed batch was in flight. Appending it would let a file-backed
       // FileReplace rebuild from stale disk content and wipe those newer
       // edits, so insert ahead of the first queued op for the same document.
-      auto insertAt = std::find_if(m_pending.begin(), m_pending.end(),
-                                   [&op](const PendingOp &current) {
-                                     return current.path == op.path;
-                                   });
-      m_pending.insert(insertAt, op);
+      const auto insertAt = std::find_if(m_pending.begin(), m_pending.end(),
+                                         [&op](const PendingOp &current) {
+                                           return current.path == op.path;
+                                         });
+      pendingInsert(static_cast<int>(std::distance(m_pending.begin(), insertAt)),
+                    op);
     } else {
-      m_pending.append(op);
+      pendingAppend(op);
     }
   }
 }
 
 void SearchIndex::discardPending(const QString &pathPrefix) {
-  m_pending.erase(std::remove_if(m_pending.begin(), m_pending.end(),
-                                 [&pathPrefix](const PendingOp &op) {
-                                   return op.path == pathPrefix ||
-                                          op.path.startsWith(pathPrefix +
-                                                             QLatin1Char('/'));
-                                 }),
-                  m_pending.end());
+  const QString childPrefix = pathPrefix + QLatin1Char('/');
+
+  QVector<int> remove;
+  for (int i = 0; i < m_pending.size(); ++i) {
+    const QString &path = m_pending.at(i).path;
+    if (path == pathPrefix || path.startsWith(childPrefix))
+      remove.append(i);
+  }
+  pendingCompact(remove);
 }
 
 void SearchIndex::syncIncremental() {
@@ -1570,8 +1689,10 @@ void SearchIndex::syncIncremental() {
   const QString databasePath = m_databasePath;
 
   QFuture<void> future = QtConcurrent::run(
-      &m_writePool, [databasePath, root, currentPath, currentTitle,
-                     currentBlocks]() {
+      &m_writePool,
+      [databasePath, root = std::move(root), currentPath = std::move(currentPath),
+       currentTitle = std::move(currentTitle),
+       currentBlocks = std::move(currentBlocks)]() {
         executeIncrementalSync(databasePath, root, currentPath, currentTitle,
                                currentBlocks);
       });
@@ -1643,8 +1764,10 @@ void SearchIndex::syncIncrementalAsync() {
   const QString databasePath = m_databasePath;
 
   watcher->setFuture(QtConcurrent::run(
-      &m_writePool, [databasePath, root, currentPath, currentTitle,
-                     currentBlocks]() {
+      &m_writePool,
+      [databasePath, root = std::move(root), currentPath = std::move(currentPath),
+       currentTitle = std::move(currentTitle),
+       currentBlocks = std::move(currentBlocks)]() {
         executeIncrementalSync(databasePath, root, currentPath, currentTitle,
                                currentBlocks);
       }));
@@ -1673,10 +1796,37 @@ void SearchIndex::rebuild() {
       &m_writePool, [databasePath]() { executeClearIndex(databasePath); }));
 }
 
+void SearchIndex::deliverSearchOutcome(quint64 token,
+                                       const SearchOutcome &outcome) {
+  // All callers are queued onto the GUI thread, so no lock is needed. A reply
+  // for a superseded token must not overwrite results of a newer query.
+  if (m_lastDeliveredToken && token < *m_lastDeliveredToken)
+    return;
+
+  m_lastDeliveredToken = token;
+  emit searchFinished(token, outcome);
+}
+
 void SearchIndex::invalidateSearchCache() {
-  m_searchCache.clear();
-  m_searchCacheOrder.clear();
+  // Do not clear every entry on each indexUpdated()/live edit: that threw away
+  // all 24 cached queries on every keystroke. Entries are generation-tagged
+  // instead and discarded lazily by the lookup paths below.
   ++m_cacheGeneration;
+}
+
+bool SearchIndex::cacheEntryIsFresh(const CachedSearch &entry) const {
+  return entry.generation == m_cacheGeneration;
+}
+
+bool SearchIndex::cacheEntryWithinGrace(const CachedSearch &entry) const {
+  // Tradeoff: an async reply can lag the index by at most kCacheGraceMs after
+  // the entry was produced, which keeps typing bursts from re-running FTS5 for
+  // an unchanged query. Because the age is absolute (the clock is never
+  // restarted), continuous edits cannot extend the grace period indefinitely;
+  // search() deliberately has no grace so callers needing current data are
+  // always exact.
+  return entry.generation != m_cacheGeneration && m_cacheClock.isValid() &&
+         m_cacheClock.elapsed() - entry.ageMs < kCacheGraceMs;
 }
 
 void SearchIndex::cacheSearchResult(const QString &query,
@@ -1687,7 +1837,10 @@ void SearchIndex::cacheSearchResult(const QString &query,
   if (!m_searchCache.contains(query))
     m_searchCacheOrder.append(query);
 
-  m_searchCache.insert(query, cached);
+  CachedSearch stored = cached;
+  stored.generation = m_cacheGeneration;
+  stored.ageMs = m_cacheClock.elapsed();
+  m_searchCache.insert(query, stored);
 
   constexpr int kCacheSize = 24;
   while (m_searchCacheOrder.size() > kCacheSize)
@@ -1732,6 +1885,11 @@ SearchIndex::SearchOutcome SearchIndex::executeSearch(const QSqlDatabase &db,
   if (terms.isEmpty() || !db.isOpen())
     return outcome;
 
+  // Tokenize/fold the query once instead of once per result row.
+  const HighlightTerms highlight = prepareHighlightTerms(terms);
+  if (highlight.needles.isEmpty())
+    return outcome;
+
   QSqlQuery sql(db);
   sql.prepare(QStringLiteral(
       "SELECT document_path, document_title, block_id, block_text, "
@@ -1757,7 +1915,7 @@ SearchIndex::SearchOutcome SearchIndex::executeSearch(const QSqlDatabase &db,
     result.blockText = sql.value(3).toString();
     result.rank = sql.value(4).toDouble();
 
-    result.ranges = matchRanges(result.blockText, terms);
+    result.ranges = matchRanges(result.blockText, highlight);
     if (result.ranges.isEmpty())
       continue;
 
@@ -1782,57 +1940,39 @@ SearchIndex::SearchOutcome SearchIndex::executeSearch(const QSqlDatabase &db,
 SearchIndex::SearchOutcome
 SearchIndex::executeSearchInConnection(const QString &databasePath,
                                        const QString &query) {
-  static std::atomic<quint64> connectionCounter{0};
-  const QString name = QStringLiteral("templnote_search_reader_%1")
-                           .arg(connectionCounter.fetch_add(1));
+  // The connection is owned by this worker thread's ThreadSqlConnections, so
+  // searches reuse it instead of opening/closing SQLite on every keystroke.
+  const QSqlDatabase db = threadSqlConnections().localData().connection(
+      databasePath, /*readOnly=*/true,
+      databaseEpoch().load(std::memory_order_relaxed));
 
-  SearchOutcome outcome;
+  if (!db.isOpen())
+    return {};
 
-  // Keep the QSqlDatabase handle in an inner scope. Qt refuses to remove a
-  // connection while any handle to it is alive, so leaving `db` in scope here
-  // leaked one SQLite connection per search (a warning on every keystroke).
-  {
-    QSqlDatabase db =
-        QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
-    db.setDatabaseName(databasePath);
-    db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-
-    if (db.open()) {
-      QSqlQuery pragma(db);
-      pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
-      outcome = executeSearch(db, query);
-    }
-
-    db.close();
-  }
-
-  QSqlDatabase::removeDatabase(name);
-  return outcome;
+  return executeSearch(db, query);
 }
 
 void SearchIndex::searchAsync(const QString &query, quint64 token) {
   const QString key = query.simplified();
 
-  const auto emitOutcome = [this, token](const SearchOutcome &outcome) {
-    emit searchFinished(token, outcome);
-  };
-
   if (key.isEmpty() || !m_db.isOpen()) {
     QMetaObject::invokeMethod(
-        this, [emitOutcome]() { emitOutcome(SearchOutcome{}); },
+        this,
+        [this, token]() { deliverSearchOutcome(token, SearchOutcome{}); },
         Qt::QueuedConnection);
     return;
   }
 
   if (const auto cached = m_searchCache.constFind(key);
-      cached != m_searchCache.constEnd()) {
+      cached != m_searchCache.constEnd() &&
+      (cacheEntryIsFresh(*cached) || cacheEntryWithinGrace(*cached))) {
     SearchOutcome outcome{cached->results, cached->truncated};
     const quint64 generation = m_cacheGeneration;
     QMetaObject::invokeMethod(
         this,
-        [this, emitOutcome, outcome, generation]() {
+        [this, token, outcome, generation]() {
           if (generation == m_cacheGeneration)
-            emitOutcome(outcome);
+            deliverSearchOutcome(token, outcome);
         },
         Qt::QueuedConnection);
     return;
@@ -1855,7 +1995,7 @@ void SearchIndex::searchAsync(const QString &query, quint64 token) {
 
             cacheSearchResult(key,
                               CachedSearch{outcome.results, outcome.truncated});
-            emit searchFinished(token, outcome);
+            deliverSearchOutcome(token, outcome);
           });
 
   watcher->setFuture(
@@ -1874,8 +2014,11 @@ QVector<SearchIndex::Result> SearchIndex::search(const QString &query,
   if (key.isEmpty() || !m_db.isOpen())
     return results;
 
+  // Strict: only the current generation is usable here. Tests and callers of
+  // the synchronous API expect the result to reflect the latest completed
+  // write; the grace window applies to searchAsync() only.
   if (const auto cached = m_searchCache.constFind(key);
-      cached != m_searchCache.constEnd()) {
+      cached != m_searchCache.constEnd() && cacheEntryIsFresh(*cached)) {
     if (truncated)
       *truncated = cached->truncated;
     return cached->results;
@@ -1936,17 +2079,9 @@ QString SearchIndex::buildFtsQuery(const QStringList &terms) {
   return quoted.join(QStringLiteral(" AND "));
 }
 
-QVector<SearchIndex::MatchRange>
-SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
-  QVector<MatchRange> ranges;
-
-  if (text.isEmpty())
-    return ranges;
-
-  // Match a diacritic-folded copy (FTS5 folds accents) while keeping an offset
-  // map so the resulting ranges still address the original text exactly.
-  QVector<int> offsetMap;
-  const QString foldedText = foldForMatching(text, &offsetMap);
+SearchIndex::HighlightTerms
+SearchIndex::prepareHighlightTerms(const QStringList &terms) {
+  HighlightTerms prepared;
 
   for (const QString &term : terms) {
     // The FTS query tokenizes terms and matches token prefixes. Split the
@@ -1968,37 +2103,104 @@ SearchIndex::matchRanges(const QString &text, const QStringList &terms) {
       needles.append(token);
 
     for (const QString &needle : needles) {
-      const QString foldedNeedle = foldForMatching(needle);
+      const QString folded = foldForMatching(needle);
 
-      if (foldedNeedle.isEmpty())
+      if (folded.isEmpty())
         continue;
 
-      int from = 0;
-
-      while (from <= foldedText.length() - foldedNeedle.length()) {
-        const int start =
-            foldedText.indexOf(foldedNeedle, from, Qt::CaseInsensitive);
-
-        if (start < 0)
+      bool isAscii = true;
+      for (const QChar character : folded) {
+        if (character.unicode() > 0x7F) {
+          isAscii = false;
           break;
-
-        const int originalStart = offsetMap.value(start, start);
-        const int lastFolded = start + foldedNeedle.length() - 1;
-        const int originalEnd = offsetMap.value(lastFolded, lastFolded) + 1;
-        const int length = originalEnd - originalStart;
-
-        // Only a match at the beginning of a token is a real FTS prefix
-        // match; "edit" must not highlight the middle of "credit".
-        if (length > 0 &&
-            (originalStart == 0 ||
-             !isTokenCharacter(text.at(originalStart - 1)))) {
-          ranges.append({originalStart, length});
-          from = start + foldedNeedle.length();
-        } else {
-          from = start + 1;
         }
       }
+
+      prepared.needles.append(HighlightNeedle{folded, isAscii});
+      if (!isAscii)
+        prepared.allAscii = false;
     }
+  }
+
+  return prepared;
+}
+
+QVector<SearchIndex::MatchRange>
+SearchIndex::matchRanges(const QString &text, const HighlightTerms &terms) {
+  QVector<MatchRange> ranges;
+
+  // A punctuation-only query produces no needles: short-circuit before
+  // touching the haystack at all.
+  if (text.isEmpty() || terms.needles.isEmpty())
+    return ranges;
+
+  int shortestNeedle = text.size() + 1;
+  for (const HighlightNeedle &needle : terms.needles)
+    shortestNeedle = qMin(shortestNeedle, needle.folded.size());
+
+  if (shortestNeedle > text.size())
+    return ranges;
+
+  // When both sides are ASCII, folding would be a byte-for-byte copy and the
+  // offset map would be the identity. Search the original text directly and
+  // skip both allocations; only accented text needs the folded-copy fallback.
+  bool textIsAscii = true;
+  if (terms.allAscii) {
+    for (const QChar character : text) {
+      if (character.unicode() > 0x7F) {
+        textIsAscii = false;
+        break;
+      }
+    }
+  }
+  const bool useFastPath = terms.allAscii && textIsAscii;
+
+  QVector<int> offsetMap;
+  QString foldedText;
+  if (!useFastPath)
+    foldedText = foldForMatching(text, &offsetMap);
+
+  const QString &searchText = useFastPath ? text : foldedText;
+  const int searchLength = searchText.length();
+
+  for (const HighlightNeedle &needle : terms.needles) {
+    if (needle.folded.size() > searchLength)
+      continue;
+
+    int from = 0;
+
+    while (from <= searchLength - needle.folded.length() &&
+           ranges.size() < kMaxHighlightRanges) {
+      const int start =
+          searchText.indexOf(needle.folded, from, Qt::CaseInsensitive);
+
+      if (start < 0)
+        break;
+
+      int originalStart = start;
+      int originalEnd = start + needle.folded.length();
+
+      if (!useFastPath) {
+        originalStart = offsetMap.value(start, start);
+        const int lastFolded = start + needle.folded.length() - 1;
+        originalEnd = offsetMap.value(lastFolded, lastFolded) + 1;
+      }
+      const int length = originalEnd - originalStart;
+
+      // Only a match at the beginning of a token is a real FTS prefix
+      // match; "edit" must not highlight the middle of "credit".
+      if (length > 0 &&
+          (originalStart == 0 ||
+           !isTokenCharacter(text.at(originalStart - 1)))) {
+        ranges.append({originalStart, length});
+        from = start + needle.folded.length();
+      } else {
+        from = start + 1;
+      }
+    }
+
+    if (ranges.size() >= kMaxHighlightRanges)
+      break;
   }
 
   std::sort(ranges.begin(), ranges.end(),
