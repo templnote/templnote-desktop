@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project( Templnote
-  VERSION 0.3.1
+  VERSION 0.3.4
   DESCRIPTION "Local first AI-native text editor"
   LANGUAGES CXX
 )

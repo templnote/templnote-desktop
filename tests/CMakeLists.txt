@@ -492,6 +492,7 @@ qt_add_qml_module(tst_agentreview
         AgentReviewTest.qml
         SidebarPanelTest.qml
         ${TEST_QML_DIR}/Theme.qml
+        ${CMAKE_CURRENT_SOURCE_DIR}/../qml/settings/SettingsButton.qml
         ${SIDEBAR_DECORATION}
 )
 target_link_libraries(tst_agentreview PRIVATE

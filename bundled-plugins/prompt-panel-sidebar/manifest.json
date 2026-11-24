@@ -1,7 +1,7 @@
 {
   "id": "prompt-panel-sidebar",
   "name": "AI Prompt Panel (Sidebar)",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "AI prompt panel in a collapsible right sidebar, with a multi-model switcher, an inline composer, per-agent change review and a visible answer for prompts that need no edits.",
   "author": "Templnote",
   "bundled": true,

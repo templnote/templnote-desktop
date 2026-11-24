@@ -334,7 +334,7 @@ Item {
         bottomMargin: 18
       }
 
-      text: "v0.3.1"
+      text: "v0.3.4"
       color: Theme.textFaint
       font.pixelSize: 11
     }

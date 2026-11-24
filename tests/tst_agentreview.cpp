@@ -473,6 +473,8 @@ private slots:
       }
     }
     QVERIFY(toolBlock);
+    QVERIFY2(toolBlock->property("height").toInt() > 0,
+             "activity block delegate collapsed to zero height");
     QObject *detail = findVisualObject(toolBlock, QStringLiteral("activityDetail"));
     QVERIFY(detail);
     QVERIFY(!detail->property("visible").toBool());
@@ -575,6 +577,42 @@ private slots:
         findVisualObject(actionRow, QStringLiteral("feedbackUp")), "activate"));
     QCOMPARE(m_agent->positiveFeedback(), positive + 1);
     m_agent->setHasPending(false);
+
+    for (const QQmlError &warning : m_warnings) {
+      const QString text = warning.toString();
+      QVERIFY2(!text.contains(QStringLiteral("TypeError")) &&
+                   !text.contains(QStringLiteral("ReferenceError")),
+               qPrintable(text));
+    }
+  }
+
+  void conversationPopupCreatesNamedSession() {
+    QVariantMap session;
+    session.insert(QStringLiteral("id"), QStringLiteral("s1"));
+    session.insert(QStringLiteral("title"), QStringLiteral("Conversation"));
+    session.insert(QStringLiteral("running"), false);
+    session.insert(QStringLiteral("updated"), 0);
+    m_agent->setSessions(QVariantList{session, session});
+    QTest::qWait(50);
+
+    QObject *popup = m_root->findChild<QObject *>(QStringLiteral("chatListPopup"));
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTest::qWait(50);
+
+    QQuickItem *content = qobject_cast<QQuickWindow *>(m_root)->contentItem();
+    QObject *field = findVisualObject(content, QStringLiteral("newChatField"));
+    QVERIFY(field);
+    field->setProperty("text", QStringLiteral("My new chat"));
+    QTest::qWait(20);
+
+    const int created = m_agent->createSessionCount();
+    QObject *create = findVisualObject(content, QStringLiteral("createChatButton"));
+    QVERIFY(create);
+    QVERIFY(QMetaObject::invokeMethod(create, "activate"));
+    QCOMPARE(m_agent->createSessionCount(), created + 1);
+    QCOMPARE(m_agent->lastCreatedTitle(), QStringLiteral("My new chat"));
+    QVERIFY(!popup->property("opened").toBool());
 
     for (const QQmlError &warning : m_warnings) {
       const QString text = warning.toString();

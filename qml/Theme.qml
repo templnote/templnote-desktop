@@ -116,6 +116,23 @@ QtObject {
   readonly property color accentText: palette.accentText
   readonly property color danger: palette.danger
 
+  // ─── Shared control metrics ───
+  // Used by the AI panel and available to any other QML surface so buttons,
+  // cards, fields and labels keep the same rhythm across themes and sizes.
+  readonly property int spaceXs: 4
+  readonly property int spaceSm: 8
+  readonly property int spaceMd: 12
+  readonly property int spaceLg: 16
+  readonly property int radiusSm: 6
+  readonly property int radiusMd: 8
+  readonly property int radiusLg: 10
+  readonly property int controlHeight: 28
+  readonly property int buttonHeight: 32
+  readonly property int rowHeight: 44
+  readonly property int fontSize: 12
+  readonly property int fontSizeSmall: 10
+  readonly property int fontSizeTitle: 16
+
   function tint(color, alpha) {
     return Qt.rgba(color.r, color.g, color.b, alpha)
   }

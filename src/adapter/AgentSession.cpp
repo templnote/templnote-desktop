@@ -126,6 +126,13 @@ QVector<AgentRun> AgentSession::buildAgentRuns(int *skipped) const {
   if (runs.isEmpty()) {
     AgentRun run;
     run.id = QStringLiteral("ai-agent");
+    // Without a configured agent there is no persona steering tool use. Keep
+    // the default agent explicitly document-editing so prompts such as "write
+    // a story" call tools instead of pasting the story into the chat.
+    run.instructions = QStringLiteral(
+        "You are the editor of the open document. Carry out every content "
+        "request with document tools. Never write document content into the "
+        "chat answer; report briefly only after the document is updated.");
     run.instructionBlocks = {instructions};
     runs.append(run);
   }

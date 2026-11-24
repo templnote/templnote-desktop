@@ -63,6 +63,8 @@ public:
   int acceptAllCount() const { return m_acceptAllCount; }
   int rejectAllCount() const { return m_rejectAllCount; }
   int switchCount() const { return m_switchCount; }
+  int createSessionCount() const { return m_createSessionCount; }
+  QString lastCreatedTitle() const { return m_lastCreatedTitle; }
   void setRunning(bool value) {
     if (m_running == value)
       return;
@@ -219,7 +221,11 @@ public:
     return true;
   }
   Q_INVOKABLE bool removeSession(const QString &) { return true; }
-  Q_INVOKABLE QString createSession(const QString &) { return QString(); }
+  Q_INVOKABLE QString createSession(const QString &title) {
+    ++m_createSessionCount;
+    m_lastCreatedTitle = title;
+    return QStringLiteral("session-new");
+  }
   Q_INVOKABLE void renameSession(const QString &, const QString &) {}
 
 signals:
@@ -267,6 +273,8 @@ private:
   int m_acceptAllCount = 0;
   int m_rejectAllCount = 0;
   int m_switchCount = 0;
+  int m_createSessionCount = 0;
+  QString m_lastCreatedTitle;
   QVariantList m_steps;
   QVariantList m_transcript;
 };

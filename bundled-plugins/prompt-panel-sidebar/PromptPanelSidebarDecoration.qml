@@ -293,6 +293,119 @@ Rectangle {
   anchors.fill: parent
   color: Theme.background
 
+  // Shared building blocks for this panel. All metrics come from Theme so the
+  // controls stay aligned and adopt every light/dark theme without per-widget
+  // style copies.
+  component PanelLabel: Text {
+    color: Theme.text
+    font.pixelSize: Theme.fontSize
+    verticalAlignment: Text.AlignVCenter
+    wrapMode: Text.NoWrap
+    elide: Text.ElideRight
+  }
+
+  component PanelCaption: Text {
+    color: Theme.textMuted
+    font.pixelSize: Theme.fontSizeSmall
+    verticalAlignment: Text.AlignVCenter
+    elide: Text.ElideRight
+  }
+
+  component PanelCard: Rectangle {
+    radius: Theme.radiusLg
+    color: Theme.surface
+    border.width: 1
+    border.color: Theme.border
+  }
+
+  // Buttons reuse the app-wide SettingsButton style. Only the compact icon
+  // variant overrides sizing and label colour.
+  component PanelButton: SettingsButton { }
+
+  component PanelIconButton: SettingsButton {
+    id: iconButton
+    width: Theme.controlHeight
+    height: Theme.controlHeight
+    leftPadding: 0
+    rightPadding: 0
+    property color iconColor: Theme.textMuted
+    property bool accentFill: false
+    property bool dangerFill: false
+    property real buttonRadius: Theme.radiusSm
+    primary: accentFill
+    danger: dangerFill
+    textColor: (accentFill || dangerFill) ? Theme.accentText : iconColor
+    cornerRadius: buttonRadius
+  }
+
+  component PanelField: TextField {
+    height: Theme.buttonHeight
+    leftPadding: Theme.spaceSm
+    rightPadding: Theme.spaceSm
+    color: Theme.text
+    placeholderTextColor: Theme.textFaint
+    font.pixelSize: Theme.fontSize
+    selectionColor: Theme.accent
+    selectedTextColor: Theme.accentText
+    background: Rectangle {
+      radius: Theme.radiusMd
+      color: Theme.surfaceAlt
+      border.width: 1
+      border.color: parent.activeFocus ? Theme.accent : Theme.border
+    }
+  }
+
+  component PanelTextArea: TextArea {
+    color: Theme.text
+    placeholderTextColor: Theme.textFaint
+    font.pixelSize: Theme.fontSize
+    selectionColor: Theme.accent
+    selectedTextColor: Theme.accentText
+    wrapMode: TextEdit.Wrap
+    padding: 0
+    leftPadding: 0
+    rightPadding: 0
+    topPadding: 0
+    bottomPadding: 0
+    background: null
+  }
+
+  component PanelListRow: Item {
+    id: listRow
+    property string labelText: ""
+    property string badgeText: ""
+    property bool selected: false
+    property real leadingMargin: Theme.spaceMd
+    signal activated()
+
+    height: Theme.rowHeight
+    Rectangle {
+      anchors.fill: parent
+      radius: Theme.radiusMd
+      color: listRow.selected ? Theme.tint(Theme.accent, 0.12)
+                             : (rowMouse.containsMouse ? Theme.surfaceHover : "transparent")
+    }
+    PanelLabel {
+      anchors {
+        left: parent.left
+        leftMargin: listRow.leadingMargin
+        right: parent.right
+        rightMargin: listRow.leadingMargin + 28
+        verticalCenter: parent.verticalCenter
+      }
+      text: listRow.labelText + (listRow.badgeText.length > 0
+                                 ? "  (" + listRow.badgeText + ")" : "")
+      color: listRow.selected ? Theme.accent : Theme.text
+    }
+    MouseArea {
+      id: rowMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: listRow.activated()
+    }
+  }
+
   // --- HEADER ---
   Rectangle {
     id: headerBar
@@ -306,14 +419,15 @@ Rectangle {
     color: "transparent"
 
     Rectangle {
+      id: chatTitleButton
       anchors {
         left: parent.left
-        leftMargin: 12
+        leftMargin: Theme.spaceMd
         verticalCenter: parent.verticalCenter
       }
-      width: Math.min(190, parent.width - 120)
-      height: 28
-      radius: 8
+      width: Math.min(190, parent.width - 140)
+      height: Theme.controlHeight
+      radius: Theme.radiusMd
       color: chatMenuMouse.containsMouse ? Theme.surfaceAlt : "transparent"
       border.width: 1
       border.color: Theme.border
@@ -321,16 +435,16 @@ Rectangle {
       Text {
         anchors {
           left: parent.left
-          leftMargin: 10
+          leftMargin: Theme.spaceMd - 2
           verticalCenter: parent.verticalCenter
         }
+        width: parent.width - 30
         text: root.agent && root.agent.activeSessionTitle
               ? root.agent.activeSessionTitle : "New AI chat"
         color: Theme.text
-        font.pixelSize: 12
+        font.pixelSize: Theme.fontSize
         font.bold: true
         elide: Text.ElideRight
-        width: parent.width - 32
       }
       Text {
         anchors {
@@ -340,7 +454,7 @@ Rectangle {
         }
         text: "⌄"
         color: Theme.textMuted
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontSize + 1
       }
       MouseArea {
         id: chatMenuMouse
@@ -354,32 +468,31 @@ Rectangle {
       ToolTip.delay: 500
     }
 
-    Text {
+    PanelCaption {
+      id: statusLabel
       anchors {
         right: parent.right
-        rightMargin: 14
+        rightMargin: Theme.spaceMd
         verticalCenter: parent.verticalCenter
       }
-      width: Math.min(150, parent.width - 210)
+      width: Math.max(48, parent.width - chatTitleButton.width - 36)
       text: root.statusText
       color: root.errorMessage.length > 0 ? Theme.danger
              : root.agentRunning ? Theme.accent : Theme.textMuted
-      font.pixelSize: 10
-      elide: Text.ElideRight
       horizontalAlignment: Text.AlignRight
       Behavior on color { ColorAnimation { duration: 200 } }
     }
 
-    Rectangle {
+    PanelCard {
       objectName: "compactionChip"
       visible: root.contextCompacted
       anchors {
         right: parent.right
-        rightMargin: 14
+        rightMargin: Theme.spaceMd + 2
         bottom: parent.bottom
-        bottomMargin: 4
+        bottomMargin: Theme.spaceXs
       }
-      radius: 6
+      radius: Theme.radiusSm
       width: 110
       height: 16
       color: Theme.tint(Theme.accent, 0.12)
@@ -387,7 +500,7 @@ Rectangle {
         anchors.centerIn: parent
         text: "◇ context compacted"
         color: Theme.accent
-        font.pixelSize: 9
+        font.pixelSize: Theme.fontSizeSmall - 1
       }
     }
 
@@ -416,7 +529,8 @@ Rectangle {
     contentWidth: width
     // Explicit padding above the first turn and below the last one; the
     // composer is a separate surface, so the last message must not touch it.
-    contentHeight: conversationColumn.y + conversationColumn.implicitHeight + 24
+    contentHeight: conversationColumn.y + conversationColumn.implicitHeight +
+                   Theme.spaceLg + Theme.spaceSm
     clip: true
     flickableDirection: Flickable.VerticalFlick
     boundsBehavior: Flickable.StopAtBounds
@@ -424,10 +538,10 @@ Rectangle {
     Column {
       id: conversationColumn
       objectName: "conversationColumn"
-      width: parent.width - 28
-      x: 14
+      width: parent.width - (Theme.spaceMd + 2) * 2
+      x: Theme.spaceMd + 2
       y: 16
-      spacing: 16
+      spacing: Theme.spaceLg
 
       // Empty state: greeting and tappable suggestions.
       Item {
@@ -446,10 +560,10 @@ Rectangle {
           }
           spacing: 8
 
-          Rectangle {
+          PanelCard {
             width: 44
             height: 44
-            radius: 22
+            radius: width / 2
             color: Theme.surfaceAlt
             border.width: 1
             border.color: Theme.border
@@ -467,7 +581,7 @@ Rectangle {
           Text {
             text: "How can I help you today?"
             color: Theme.text
-            font.pixelSize: 16
+            font.pixelSize: Theme.fontSizeTitle
             font.bold: true
             topPadding: 10
             bottomPadding: 8
@@ -493,7 +607,7 @@ Rectangle {
                 width: 26
                 text: modelData.icon
                 color: Theme.textMuted
-                font.pixelSize: 14
+                font.pixelSize: Theme.fontSize + 2
                 horizontalAlignment: Text.AlignHCenter
               }
               Text {
@@ -505,7 +619,7 @@ Rectangle {
                 }
                 text: modelData.label
                 color: Theme.text
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize
                 elide: Text.ElideRight
               }
             }
@@ -541,10 +655,11 @@ Rectangle {
             Rectangle {
               objectName: "userBubble"
               visible: turn.role === "user"
-              width: Math.min(parent.width - 36,
-                              Math.max(80, userText.implicitWidth + 26))
-              height: Math.max(30, userText.implicitHeight + 16)
-              radius: 12
+              width: Math.min(parent.width - Theme.spaceLg * 2,
+                              Math.max(80, userText.implicitWidth + Theme.spaceLg * 2))
+              height: Math.max(Theme.controlHeight,
+                               userText.implicitHeight + Theme.spaceMd + Theme.spaceSm)
+              radius: Theme.radiusMd
               color: turn.kind === "steer" ? Theme.tint(Theme.accent, 0.12)
                                            : Theme.surfaceAlt
               border.width: 1
@@ -560,17 +675,17 @@ Rectangle {
                 }
                 text: (turn.kind === "steer" ? "↳ " : "") + (turn.text || "")
                 color: Theme.text
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize
                 wrapMode: Text.Wrap
               }
             }
 
-            Rectangle {
+            PanelCard {
               objectName: "systemNotice"
               visible: turn.role === "system"
               width: parent.width
               height: noticeTextItem.implicitHeight + 12
-              radius: 8
+              radius: Theme.radiusMd
               color: Theme.tint(Theme.accent, 0.08)
               Text {
                 id: noticeTextItem
@@ -578,7 +693,7 @@ Rectangle {
                 text: (turn.kind === "compaction" ? "◇ " :
                        turn.kind === "skill" ? "✦ " : "• ") + (turn.text || "")
                 color: Theme.textMuted
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontSizeSmall
                 wrapMode: Text.Wrap
               }
             }
@@ -586,7 +701,9 @@ Rectangle {
             Item {
               id: assistantRoot
               objectName: "assistantMessage"
-              visible: turn.role === "assistant"
+              visible: turn.role === "assistant" &&
+                       ((turn.text || "").length > 0 ||
+                        (turn.blocks && turn.blocks.length > 0))
               width: parent.width
               height: assistantInner.implicitHeight
               property bool feedbackUp: false
@@ -614,7 +731,7 @@ Rectangle {
                     property bool expanded: false
                     property int indent: Math.min(2, (block.depth || 0)) * 14
                     width: assistantInner.width
-                    height: blockInner.implicitHeight
+                    height: blockInner.height
 
                     Item {
                       id: blockInner
@@ -625,7 +742,7 @@ Rectangle {
                       }
                       height: blockShell.implicitHeight
 
-                      Rectangle {
+                      PanelCard {
                         id: blockShell
                         objectName: "activityBlock"
                         width: parent.width
@@ -634,7 +751,7 @@ Rectangle {
                           if (block.description || block.detail)
                             blockRow.expanded = !blockRow.expanded
                         }
-                        radius: 8
+                        radius: Theme.radiusMd
                         color: block.kind === "reasoning"
                                ? Theme.surface
                                : (block.status === "error"
@@ -677,7 +794,7 @@ Rectangle {
                               color: block.status === "error" ? Theme.danger
                                     : (block.status === "running" ? Theme.accent
                                                                   : Theme.text)
-                              font.pixelSize: 11
+                              font.pixelSize: Theme.fontSize - 1
                               font.bold: true
                               elide: Text.ElideRight
                             }
@@ -686,14 +803,14 @@ Rectangle {
                               text: (block.durationMs || 0) > 0
                                     ? ((block.durationMs / 1000).toFixed(1) + "s") : ""
                               color: Theme.textMuted
-                              font.pixelSize: 10
+                              font.pixelSize: Theme.fontSizeSmall
                             }
                             Text {
                               anchors.verticalCenter: parent.verticalCenter
                               text: (block.description || block.detail)
                                     ? (blockRow.expanded ? "⌃" : "⌄") : ""
                               color: Theme.textMuted
-                              font.pixelSize: 11
+                              font.pixelSize: Theme.fontSize - 1
                             }
                           }
 
@@ -704,7 +821,7 @@ Rectangle {
                             width: parent.width
                             text: block.description || ""
                             color: Theme.textMuted
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontSizeSmall
                             wrapMode: blockRow.expanded ? Text.Wrap : Text.NoWrap
                             elide: blockRow.expanded ? Text.ElideNone : Text.ElideRight
                             maximumLineCount: blockRow.expanded ? 0 : 1
@@ -717,7 +834,7 @@ Rectangle {
                             width: parent.width
                             text: block.detail || ""
                             color: Theme.textMuted
-                            font.pixelSize: 10
+                            font.pixelSize: Theme.fontSizeSmall
                             wrapMode: Text.WrapAnywhere
                           }
                         }
@@ -732,7 +849,7 @@ Rectangle {
                   visible: (turn.text || "").length > 0
                   text: root.markdownHtml(turn.text || "")
                   color: Theme.text
-                  font.pixelSize: 12
+                  font.pixelSize: Theme.fontSize
                   wrapMode: Text.Wrap
                   textFormat: Text.RichText
                   onLinkActivated: function (link) {
@@ -741,23 +858,23 @@ Rectangle {
                   }
                 }
 
-                Text {
+                PanelCaption {
                   objectName: "answerMeta"
-                  visible: (turn.durationMs || 0) > 0 || (turn.time || "").length > 0
+                  visible: (turn.text || "").length > 0 &&
+                           ((turn.durationMs || 0) > 0 || (turn.time || "").length > 0)
                   text: (turn.durationMs || 0) > 0
                         ? "Worked for " + Math.max(1, Math.round(turn.durationMs / 1000)) + "s"
                         : (turn.time || "")
                   color: Theme.textFaint
-                  font.pixelSize: 10
                 }
 
                 // Approval needed by a tool in this turn, inline with the work.
-                Rectangle {
+                PanelCard {
                   objectName: "inlinePermissionBanner"
                   visible: turn.streaming === true && root.permissionCount > 0
                   width: parent.width
-                  height: visible ? 34 : 0
-                  radius: 6
+                  height: visible ? Theme.buttonHeight + Theme.spaceXs : 0
+                  radius: Theme.radiusSm
                   color: Theme.tint(Theme.accent, 0.10)
                   border.width: 1
                   border.color: Theme.accent
@@ -769,14 +886,14 @@ Rectangle {
                       anchors.verticalCenter: parent.verticalCenter
                       text: "Needs approval: " + (root.firstPermission.action || "tool")
                       color: Theme.text
-                      font.pixelSize: 10
+                      font.pixelSize: Theme.fontSizeSmall
                       elide: Text.ElideRight
                     }
                     Text {
                       objectName: "inlineAllow"
                       text: "Allow"
                       color: Theme.accent
-                      font.pixelSize: 10
+                      font.pixelSize: Theme.fontSizeSmall
                       MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -789,7 +906,7 @@ Rectangle {
                     Text {
                       text: "Always"
                       color: Theme.accent
-                      font.pixelSize: 10
+                      font.pixelSize: Theme.fontSizeSmall
                       MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -803,7 +920,7 @@ Rectangle {
                       objectName: "inlineDeny"
                       text: "Deny"
                       color: Theme.textMuted
-                      font.pixelSize: 10
+                      font.pixelSize: Theme.fontSizeSmall
                       MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
@@ -823,7 +940,7 @@ Rectangle {
                   Text {
                     text: "Copy"
                     color: Theme.textMuted
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontSizeSmall
                     MouseArea {
                       anchors.fill: parent
                       cursorShape: Qt.PointingHandCursor
@@ -835,7 +952,7 @@ Rectangle {
                     visible: root.hasPendingChanges
                     text: "Show changes"
                     color: Theme.accent
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontSizeSmall
                     function activate() { root.revealReview() }
                     MouseArea {
                       anchors.fill: parent
@@ -847,7 +964,7 @@ Rectangle {
                     objectName: "regenerateChip"
                     text: "↻ Regenerate"
                     color: Theme.textMuted
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontSizeSmall
                     function activate() { if (root.agent) root.agent.regenerate() }
                     MouseArea {
                       anchors.fill: parent
@@ -859,7 +976,7 @@ Rectangle {
                     objectName: "feedbackUp"
                     text: assistantRoot.feedbackUp ? "✓ Good" : "Good"
                     color: assistantRoot.feedbackUp ? Theme.accent : Theme.textMuted
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontSizeSmall
                     function activate() {
                       assistantRoot.feedbackUp = !assistantRoot.feedbackUp
                       assistantRoot.feedbackDown = false
@@ -876,7 +993,7 @@ Rectangle {
                     objectName: "feedbackDown"
                     text: assistantRoot.feedbackDown ? "✓ Bad" : "Bad"
                     color: assistantRoot.feedbackDown ? Theme.danger : Theme.textMuted
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.fontSizeSmall
                     function activate() {
                       assistantRoot.feedbackDown = !assistantRoot.feedbackDown
                       assistantRoot.feedbackUp = false
@@ -912,13 +1029,13 @@ Rectangle {
             Text {
               text: "Working for " + root.elapsedSeconds + "s"
               color: Theme.accent
-              font.pixelSize: 11
+              font.pixelSize: Theme.fontSize - 1
               font.bold: true
             }
             Text {
               text: "›"
               color: Theme.textMuted
-              font.pixelSize: 13
+              font.pixelSize: Theme.fontSize + 1
             }
           }
 
@@ -946,7 +1063,7 @@ Rectangle {
               Rectangle {
                 visible: stepInfo.active
                 anchors.fill: parent
-                radius: 6
+                radius: Theme.radiusSm
                 color: Theme.tint(Theme.accent, 0.12)
               }
               Text {
@@ -959,7 +1076,7 @@ Rectangle {
                 text: stepInfo.kind === "agent" ? "✦"
                       : stepInfo.kind === "result" ? "✓" : "›"
                 color: stepInfo.active ? Theme.accent : Theme.textMuted
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize - 1
               }
               Text {
                 anchors {
@@ -970,7 +1087,7 @@ Rectangle {
                 }
                 text: (stepInfo.label || "") + (stepInfo.detail ? "  ▸" : "")
                 color: Theme.text
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize - 1
                 elide: Text.ElideRight
               }
               Text {
@@ -985,7 +1102,7 @@ Rectangle {
                 }
                 text: stepInfo.detail || ""
                 color: Theme.textMuted
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontSizeSmall
                 wrapMode: Text.WrapAnywhere
               }
             }
@@ -1002,20 +1119,18 @@ Rectangle {
         width: parent.width
         text: root.noticeText
         color: Theme.textMuted
-        font.pixelSize: 11
+        font.pixelSize: Theme.fontSize - 1
         elide: Text.ElideRight
       }
 
       // --- ERROR BANNER ---
-      Rectangle {
+      PanelCard {
         id: errorBanner
         objectName: "promptErrorBanner"
         visible: root.errorMessage.length > 0 && !root.hasLiveTurn
         width: parent.width
-        height: Math.min(120, Math.max(32, errorText.implicitHeight + 12))
-        radius: 8
+        height: Math.min(120, Math.max(Theme.buttonHeight, errorText.implicitHeight + 12))
         color: Theme.surfaceAlt
-        border.width: 1
         border.color: Theme.danger
 
         ToolTip.text: root.errorMessage
@@ -1039,30 +1154,20 @@ Rectangle {
           width: Math.max(120, errorBanner.width - 52)
           text: root.errorMessage
           color: Theme.danger
-          font.pixelSize: 11
+          font.pixelSize: Theme.fontSize - 1
           wrapMode: Text.Wrap
           textFormat: Text.PlainText
         }
-        Button {
+        PanelIconButton {
           id: dismissError
           objectName: "promptErrorDismiss"
           anchors {
             right: parent.right
-            rightMargin: 4
+            rightMargin: Theme.spaceXs
             verticalCenter: parent.verticalCenter
           }
-          width: 22
-          height: 22
-          padding: 0
+          iconColor: Theme.danger
           text: "×"
-          background: Rectangle { color: "transparent" }
-          contentItem: Text {
-            text: parent.text
-            color: Theme.danger
-            font.pixelSize: 15
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-          }
           onClicked: {
             if (root.agent)
               root.agent.clearErrors()
@@ -1072,44 +1177,48 @@ Rectangle {
 
       // Permission requests: approval is non-blocking; allowing saves a rule
       // and the model's repair round retries the call.
-      Rectangle {
+      PanelCard {
         objectName: "permissionBanner"
         visible: root.permissionCount > 0 && !root.hasLiveTurn
         width: parent.width
-        height: visible ? 46 : 0
-        radius: 8
+        height: visible ? Theme.buttonHeight + Theme.spaceMd * 2 : 0
         color: Theme.tint(Theme.accent, 0.10)
-        border.width: 1
         border.color: Theme.accent
         Row {
-          anchors { left: parent.left; right: parent.right; margins: 8 }
-          spacing: 8
-          Text {
-            width: parent.width - 190
+          anchors {
+            left: parent.left
+            right: parent.right
+            margins: Theme.spaceMd
+          }
+          spacing: Theme.spaceXs
+          PanelCaption {
+            width: Math.max(40, parent.width - 208)
             anchors.verticalCenter: parent.verticalCenter
             text: "Tool approval needed: " +
                   ((root.firstPermission.action || "tool") + " → " +
                    (root.firstPermission.resource || "*"))
             color: Theme.text
-            font.pixelSize: 11
-            elide: Text.ElideRight
+            font.pixelSize: Theme.fontSize - 1
           }
-          Button {
+          PanelButton {
+            width: 64
             text: "Allow"
             onClicked: {
               const req = root.firstPermission
               if (root.agent) root.agent.approveTool(req.id || "", false)
             }
           }
-          Button {
+          PanelButton {
             objectName: "allowAlwaysButton"
+            width: 64
             text: "Always"
             onClicked: {
               const req = root.firstPermission
               if (root.agent) root.agent.approveTool(req.id || "", true)
             }
           }
-          Button {
+          PanelButton {
+            width: 64
             text: "Deny"
             onClicked: {
               const req = root.firstPermission
@@ -1129,18 +1238,16 @@ Rectangle {
           property var info: (typeof modelData !== "undefined") ? modelData : model
           width: conversationColumn.width
           height: 30
-          Rectangle {
+          PanelCard {
             anchors.fill: parent
-            radius: 6
+            radius: Theme.radiusSm
             color: Theme.surfaceAlt
-            border.width: 1
-            border.color: Theme.border
           }
           Text {
-            anchors { left: parent.left; leftMargin: 8; verticalCenter: parent.verticalCenter }
+            anchors { left: parent.left; leftMargin: Theme.spaceSm; verticalCenter: parent.verticalCenter }
             text: (info.running ? "◌ " : "✓ ") + (info.title || "Subagent")
             color: info.running ? Theme.accent : Theme.text
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontSize - 1
           }
           MouseArea {
             anchors.fill: parent
@@ -1152,16 +1259,13 @@ Rectangle {
       }
 
       // --- RESULT / REVIEW CARD ---
-      Rectangle {
+      PanelCard {
         id: reviewCard
         objectName: "reviewCard"
         visible: root.agent && root.agent.hasPending && !root.agentRunning
         width: parent.width
         height: 42 + (root.showReviewDetails ? detailColumn.implicitHeight + 44 : 0)
-        radius: 10
         color: Theme.surfaceAlt
-        border.width: 1
-        border.color: Theme.border
 
         Column {
           anchors {
@@ -1174,60 +1278,37 @@ Rectangle {
 
           Row {
             width: parent.width
-            spacing: 8
-            Text {
+            spacing: Theme.spaceSm
+            PanelLabel {
+              id: reviewTitle
               anchors.verticalCenter: parent.verticalCenter
               text: "AI changes ready"
-              color: Theme.text
-              font.pixelSize: 12
               font.bold: true
+              elide: Text.ElideNone
             }
-            Text {
+            PanelCaption {
               anchors.verticalCenter: parent.verticalCenter
+              width: Math.max(60, parent.width - reviewTitle.implicitWidth - Theme.spaceSm)
               text: root.changedAgentCount + " agent(s) · "
                     + (root.agent ? (root.agent.pendingDiff || []).length : 0)
                     + " block(s)"
-              color: Theme.textMuted
-              font.pixelSize: 10
-              elide: Text.ElideRight
             }
           }
 
           Row {
             width: parent.width
-            spacing: 8
-            Button {
+            spacing: Theme.spaceSm
+            PanelButton {
               id: reviewToggle
               text: root.showReviewDetails ? "Hide changes" : "Show changes"
               onClicked: root.showReviewDetails = !root.showReviewDetails
-              background: Rectangle {
-                radius: 6
-                color: parent.hovered ? Theme.surfaceHover : Theme.surface
-                border.width: 1
-                border.color: Theme.border
-              }
-              contentItem: Text {
-                text: parent.text
-                color: Theme.text
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-              }
             }
-            Button {
+            PanelButton {
               id: undoChanges
               text: "Undo"
               onClicked: {
                 if (root.agent)
                   root.agent.reject()
-              }
-              background: Rectangle { color: "transparent" }
-              contentItem: Text {
-                text: parent.text
-                color: Theme.textMuted
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
               }
             }
           }
@@ -1265,21 +1346,21 @@ Rectangle {
                         ? "  •  " + modelData.edits + " edit(s)"
                         : "  •  no changes")
                   color: modelData.changed ? Theme.text : Theme.textMuted
-                  font.pixelSize: 11
+                  font.pixelSize: Theme.fontSize - 1
                   elide: Text.ElideRight
                 }
               }
             }
 
             Row {
-              spacing: 8
-              Button {
+              spacing: Theme.spaceSm
+              PanelButton {
                 objectName: "acceptAllButton"
                 text: "Accept all"
                 enabled: root.agent && !root.agentRunning
                 onClicked: if (root.agent) root.agent.acceptAll()
               }
-              Button {
+              PanelButton {
                 objectName: "rejectAllButton"
                 text: "Reject all"
                 enabled: root.agent && !root.agentRunning
@@ -1287,29 +1368,19 @@ Rectangle {
               }
             }
 
-            Button {
+            PanelButton {
               id: acceptButton
               objectName: "acceptButton"
               width: parent.width
+              primary: true
               text: "Accept " + root.acceptedAgentCount + " agent(s)"
               enabled: root.agent && !root.agentRunning && root.acceptedAgentCount > 0
               onClicked: {
                 if (root.agent.commit())
                   root.noticeText = ""
               }
-              background: Rectangle {
-                radius: 6
-                color: parent.hovered ? Qt.lighter(Theme.accent, 1.15) : Theme.accent
-              }
-              contentItem: Text {
-                text: parent.text
-                color: Theme.accentText
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-              }
             }
-            Button {
+            PanelButton {
               id: rejectButton
               objectName: "rejectButton"
               width: parent.width
@@ -1321,19 +1392,6 @@ Rectangle {
                 else
                   root.agent.reject()
               }
-              background: Rectangle {
-                radius: 6
-                color: parent.hovered ? Theme.surfaceHover : Theme.surface
-                border.width: 1
-                border.color: Theme.border
-              }
-              contentItem: Text {
-                text: parent.text
-                color: Theme.text
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-              }
             }
           }
         }
@@ -1342,48 +1400,33 @@ Rectangle {
       }
 
   // --- COMPOSER ---
-  Rectangle {
+  PanelCard {
     id: composer
 
     anchors {
       left: parent.left
       right: parent.right
       bottom: parent.bottom
-      leftMargin: 12
-      rightMargin: 12
-      bottomMargin: 12
+      leftMargin: Theme.spaceMd
+      rightMargin: Theme.spaceMd
+      bottomMargin: Theme.spaceMd
     }
     height: Math.min(168, 68 + promptInput.contentHeight)
-    radius: 14
     color: Theme.surfaceAlt
-    border.width: 1
-    border.color: Theme.border
 
-    TextArea {
+    PanelTextArea {
       id: promptInput
       objectName: "promptInput"
       anchors {
         top: parent.top
         left: parent.left
         right: parent.right
-        topMargin: 10
-        leftMargin: 12
-        rightMargin: 12
+        topMargin: Theme.spaceSm + 2
+        leftMargin: Theme.spaceMd
+        rightMargin: Theme.spaceMd
       }
-      height: Math.max(28, contentHeight)
-      font.pixelSize: 12
-      color: Theme.text
+      height: Math.max(Theme.controlHeight, contentHeight)
       placeholderText: "Ask Templnote anything…"
-      placeholderTextColor: Theme.textFaint
-      selectionColor: Theme.accent
-      selectedTextColor: Theme.accentText
-      wrapMode: TextEdit.Wrap
-      padding: 0
-      leftPadding: 0
-      rightPadding: 0
-      topPadding: 0
-      bottomPadding: 0
-      background: null
 
       Keys.onReturnPressed: function(event) {
         if (event.modifiers & Qt.ShiftModifier) {
@@ -1422,23 +1465,9 @@ Rectangle {
         }
         spacing: 2
 
-        Button {
+        PanelIconButton {
           id: addButton
-          width: 28
-          height: 28
-          padding: 0
           text: "+"
-          background: Rectangle {
-            radius: 8
-            color: addButton.hovered ? Theme.surfaceHover : "transparent"
-          }
-          contentItem: Text {
-            text: parent.text
-            color: Theme.textMuted
-            font.pixelSize: 18
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-          }
           onClicked: {
             const next = root.suggestions[(addButton.userData + 1) % root.suggestions.length]
             addButton.userData = (addButton.userData + 1) % root.suggestions.length
@@ -1452,7 +1481,7 @@ Rectangle {
           anchors.verticalCenter: parent.verticalCenter
           text: "◈"
           color: Theme.textMuted
-          font.pixelSize: 12
+          font.pixelSize: Theme.fontSize
           ToolTip.visible: privacyMouse.containsMouse
           ToolTip.text: "API keys stay on this device"
           ToolTip.delay: 500
@@ -1471,34 +1500,11 @@ Rectangle {
         }
         spacing: 4
 
-        Button {
+        PanelIconButton {
           id: modelButton
           objectName: "modelPickerButton"
-          height: 24
-          padding: 0
-          contentItem: Row {
-            spacing: 4
-            leftPadding: 8
-            rightPadding: 8
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: root.selectedModelKey.length > 0 ? root.selectedModel : "Auto"
-              color: Theme.textMuted
-              font.pixelSize: 11
-              elide: Text.ElideRight
-            }
-            Text {
-              anchors.verticalCenter: parent.verticalCenter
-              text: "⌄"
-              color: Theme.textMuted
-              font.pixelSize: 12
-            }
-          }
-          background: Rectangle {
-            radius: 6
-            color: modelButton.hovered || modelPicker.opened
-                  ? Theme.surfaceHover : "transparent"
-          }
+          width: Math.max(Theme.controlHeight, Math.min(130, root.width * 0.34))
+          text: (root.selectedModelKey.length > 0 ? root.selectedModel : "Auto") + "  ⌄"
           onClicked: {
             modelPicker.searchText = ""
             modelPicker.levelModelKey = ""
@@ -1507,39 +1513,22 @@ Rectangle {
           }
         }
 
-        Button {
+        PanelIconButton {
           id: skillsButton
           objectName: "skillsButton"
-          width: 24
-          height: 24
-          padding: 0
           text: "✦"
-          background: Rectangle { color: "transparent" }
-          contentItem: Text {
-            text: parent.text
-            color: Theme.textMuted
-            font.pixelSize: 14
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-          }
           ToolTip.visible: skillsButton.hovered
           ToolTip.text: "Load a skill"
           ToolTip.delay: 500
           onClicked: skillPicker.open()
         }
 
-        Button {
+        PanelIconButton {
           id: sendButton
           objectName: "sendButton"
-          width: 28
-          height: 28
-          padding: 0
-          background: Rectangle {
-            radius: 14
-            color: root.agentRunning ? Theme.danger
-                   : (sendButton.hovered ? Qt.lighter(Theme.accent, 1.15) : Theme.accent)
-            Behavior on color { ColorAnimation { duration: 150 } }
-          }
+          accentFill: !root.agentRunning
+          dangerFill: root.agentRunning
+          buttonRadius: width / 2
           onClicked: {
             if (root.agentRunning) {
               const text = promptInput.text.trim()
@@ -1607,12 +1596,7 @@ Rectangle {
 
     Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.45) }
 
-    background: Rectangle {
-      radius: 10
-      color: Theme.surface
-      border.width: 1
-      border.color: Theme.border
-    }
+    background: PanelCard { }
 
     contentItem: Item {
       id: pickerContent
@@ -1629,44 +1613,29 @@ Rectangle {
           height: 44
           color: "transparent"
 
-          Rectangle {
+          PanelField {
+            id: pickerSearch
+            objectName: "modelPickerSearch"
             anchors {
               left: parent.left
-              leftMargin: 12
+              leftMargin: Theme.spaceMd
               right: parent.right
-              rightMargin: 12
+              rightMargin: Theme.spaceMd
               verticalCenter: parent.verticalCenter
             }
-            height: 30
-            radius: 8
-            color: Theme.surfaceAlt
-            border.width: 1
-            border.color: pickerSearch.activeFocus ? Theme.accent : Theme.border
+            leftPadding: 28
+            placeholderText: "Search models"
+            onTextChanged: modelPicker.searchText = text
+          }
 
-            TextField {
-              id: pickerSearch
-              objectName: "modelPickerSearch"
-              anchors.fill: parent
-              leftPadding: 28
-              rightPadding: 8
-              placeholderText: "Search models"
-              placeholderTextColor: Theme.textFaint
-              color: Theme.text
-              font.pixelSize: 12
-              background: Item {}
-              onTextChanged: modelPicker.searchText = text
+          PanelCaption {
+            anchors {
+              left: pickerSearch.left
+              leftMargin: Theme.spaceSm
+              verticalCenter: pickerSearch.verticalCenter
             }
-
-            Text {
-              anchors {
-                left: parent.left
-                leftMargin: 9
-                verticalCenter: parent.verticalCenter
-              }
-              text: "\u2315"
-              color: Theme.textFaint
-              font.pixelSize: 16
-            }
+            text: "\u2315"
+            font.pixelSize: Theme.fontSizeTitle
           }
         }
 
@@ -1708,7 +1677,7 @@ Rectangle {
               width: 14
               text: modelData.key === root.selectedModelKey ? "\u2713" : ""
               color: Theme.accent
-              font.pixelSize: 13
+              font.pixelSize: Theme.fontSize + 1
             }
 
             Column {
@@ -1725,38 +1694,29 @@ Rectangle {
                 text: modelData.label
                 color: modelData.key === root.selectedModelKey
                       ? Theme.accent : Theme.text
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize
                 elide: Text.ElideRight
               }
               Text {
                 width: parent.width
                 text: modelData.providerName
                 color: Theme.textFaint
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontSizeSmall
                 elide: Text.ElideRight
               }
             }
 
-            Button {
+            PanelIconButton {
               id: levelButton
               anchors {
                 right: parent.right
-                rightMargin: 12
+                rightMargin: Theme.spaceMd
                 verticalCenter: parent.verticalCenter
               }
-              width: 16
-              height: 22
-              padding: 0
+              width: 22
               text: "\u203a"
               enabled: registry && registry.thinkingLevels(modelData.key).length > 1
-              background: Rectangle { color: "transparent" }
-              contentItem: Text {
-                text: parent.text
-                color: parent.enabled ? Theme.textMuted : "transparent"
-                font.pixelSize: 17
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-              }
+              iconColor: Theme.textMuted
               onClicked: {
                 modelPicker.activeModelKey = modelData.key
                 modelPicker.levelModelKey = modelData.key
@@ -1792,14 +1752,14 @@ Rectangle {
                       : (details.label || "")
               }
               color: Theme.text
-              font.pixelSize: 11
+              font.pixelSize: Theme.fontSize - 1
               elide: Text.ElideRight
             }
             Text {
               width: parent.width
               text: modelPicker.activeDetails.modalities || ""
               color: Theme.textMuted
-              font.pixelSize: 10
+              font.pixelSize: Theme.fontSizeSmall
               elide: Text.ElideRight
             }
           }
@@ -1807,7 +1767,7 @@ Rectangle {
       }
 
       // Thinking-level submenu, overlays the right side of the list.
-      Rectangle {
+      PanelCard {
         id: levelOverlay
         objectName: "modelLevelOverlay"
         visible: modelPicker.levelModelKey.length > 0
@@ -1819,8 +1779,6 @@ Rectangle {
         }
         width: 184
         color: Theme.surfaceAlt
-        border.width: 1
-        border.color: Theme.border
 
         Column {
           anchors.fill: parent
@@ -1831,7 +1789,7 @@ Rectangle {
             width: parent.width
             text: "Thinking level"
             color: Theme.textMuted
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontSize - 1
             font.bold: true
           }
 
@@ -1863,7 +1821,7 @@ Rectangle {
                 }
                 text: modelData.label
                 color: Theme.text
-                font.pixelSize: 11
+                font.pixelSize: Theme.fontSize - 1
               }
 
               Text {
@@ -1879,7 +1837,7 @@ Rectangle {
                          ? "\u2713" : ""
                 }
                 color: Theme.accent
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontSize
               }
             }
           }
@@ -1892,39 +1850,35 @@ Rectangle {
   Popup {
     id: skillPicker
     objectName: "skillPicker"
-    width: Math.min(320, root.width - 24)
-    height: Math.min(360, 60 + root.skillCount * 44)
-    x: 12
-    y: Math.max(20, composer.y - height - 8)
+    width: Math.min(320, root.width - Theme.spaceLg)
+    height: Math.min(360, 60 + root.skillCount * Theme.rowHeight)
+    x: Theme.spaceMd
+    y: Math.max(20, composer.y - height - Theme.spaceSm)
     modal: true
     focus: true
     padding: 0
-    background: Rectangle {
-      color: Theme.surface
-      border.color: Theme.border
-      border.width: 1
-      radius: 10
-    }
+    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.45) }
+    background: PanelCard { }
     contentItem: Column {
       anchors.fill: parent
-      Text {
+      anchors.margins: Theme.spaceMd
+      spacing: Theme.spaceXs
+
+      PanelLabel {
         width: parent.width
-        padding: 10
         text: "Skills"
-        color: Theme.text
         font.bold: true
-        font.pixelSize: 12
       }
       Repeater {
         id: skillListView
         model: root.skillList || []
-        ItemDelegate {
+        PanelListRow {
           objectName: "skillItem"
           property var info: (typeof modelData !== "undefined") ? modelData : model
           width: parent ? parent.width : 0
-          height: 44
-          text: info.name || info.id
-          onClicked: {
+          labelText: info.name || info.id
+          onActivated: {
             if (root.agent && root.agent.loadSkill(info.id))
               root.noticeText = "Loaded skill: " + (info.name || info.id)
             else
@@ -1940,99 +1894,155 @@ Rectangle {
   // header shows whichever one is currently selected.
   Popup {
     id: chatListPopup
-    width: Math.min(360, root.width - 24)
-    height: Math.min(480, 200 + (sessionList ? sessionList.count : 0) * 48)
-    x: root.width - width - 12
+    objectName: "chatListPopup"
+    width: Math.min(360, root.width - Theme.spaceLg)
+    // Height follows the row count so the card never leaves a dead empty area.
+    height: Math.min(root.height - 24,
+                     140 + Math.min(320,
+                                    (sessionList ? sessionList.count : 0) *
+                                    Theme.rowHeight))
+    x: root.width - width - Theme.spaceMd
     y: 44
     padding: 0
     modal: true
     focus: true
-    background: Rectangle {
-      color: Theme.surface
-      border.color: Theme.border
-      border.width: 1
-      radius: 10
-    }
+    Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.45) }
+    background: PanelCard { }
+
     contentItem: Column {
-      anchors.fill: parent
+      anchors {
+        fill: parent
+        margins: Theme.spaceMd
+      }
+      spacing: Theme.spaceXs
       clip: true
 
+      // Card header.
+      Item {
+        width: parent.width
+        height: Theme.controlHeight
+        PanelLabel {
+          anchors {
+            left: parent.left
+            verticalCenter: parent.verticalCenter
+          }
+          text: "Conversations"
+          font.bold: true
+        }
+        PanelIconButton {
+          anchors {
+            right: parent.right
+            verticalCenter: parent.verticalCenter
+          }
+          text: "✕"
+          onClicked: chatListPopup.close()
+        }
+      }
+
+      // Create a named conversation directly from the popup.
       Row {
         width: parent.width
-        height: 40
-        spacing: 4
-        TextField {
+        height: Theme.buttonHeight
+        spacing: Theme.spaceSm
+
+        PanelField {
+          id: newChatField
+          objectName: "newChatField"
+          width: parent.width - 80 - Theme.spaceSm
+          placeholderText: "New conversation name"
+          Keys.onReturnPressed: createChat.activate()
+        }
+        PanelButton {
+          id: createChat
+          objectName: "createChatButton"
+          width: 80
+          text: "Create"
+          enabled: root.agent && newChatField.text.trim().length > 0
+          function activate() {
+            if (!root.agent)
+              return
+            const name = newChatField.text.trim()
+            if (name.length > 0)
+              root.agent.createSession(name)
+            newChatField.text = ""
+            chatListPopup.close()
+            root.noticeText = ""
+          }
+          onClicked: activate()
+        }
+      }
+
+      // Rename the conversation that is currently open.
+      Row {
+        width: parent.width
+        height: Theme.buttonHeight
+        spacing: Theme.spaceSm
+
+        PanelField {
           id: renameField
-          width: parent.width - 84
-          height: 32
+          objectName: "renameField"
+          width: parent.width - 80 - Theme.spaceSm
           placeholderText: "Rename current chat"
           text: root.agent ? root.agent.activeSessionTitle : ""
+          Keys.onReturnPressed: renameChat.activate()
         }
-        Button {
-          width: 76
-          height: 32
+        PanelButton {
+          id: renameChat
+          width: 80
           text: "Rename"
           enabled: root.agent && renameField.text.trim().length > 0
-          onClicked: {
+          function activate() {
+            if (!root.agent)
+              return
             root.agent.renameSession(root.agent.activeSessionId,
                                      renameField.text.trim())
             renameField.text = ""
           }
+          onClicked: activate()
         }
       }
+
       Rectangle {
         width: parent.width
         height: 1
         color: Theme.border
       }
-      ItemDelegate {
-        width: parent.width
-        height: 40
-        text: "＋ New conversation"
-        onClicked: {
-          if (root.agent)
-            root.agent.createSession()
-          chatListPopup.close()
-          root.noticeText = ""
-        }
-      }
-      Rectangle {
-        width: parent.width
-        height: 1
-        color: Theme.border
-      }
+
       ListView {
         id: sessionList
         width: parent.width
-        height: Math.min(320, count * 44)
+        height: Math.min(320, count * Theme.rowHeight)
         model: (root.agent && root.agent.sessionsModel)
                ? root.agent.sessionsModel : ((root.agent && root.agent.sessions) || [])
         clip: true
-        delegate: ItemDelegate {
+        delegate: Item {
           id: sessionRow
           property var sessionInfo: (typeof modelData !== "undefined")
                                     ? modelData : model
           width: sessionList.width
-          height: 48
-          highlighted: sessionInfo.id === root.agent.activeSessionId
-          text: (sessionInfo.running ? "◌ " : "") +
-                (sessionInfo.title || "Conversation") +
-                (sessionInfo.unread ? "  (" + sessionInfo.unread + ")" : "")
-          onClicked: {
-            root.agent.switchSession(sessionInfo.id)
-            chatListPopup.close()
-            conversation.contentY = 0
+          height: Theme.rowHeight
+
+          PanelListRow {
+            anchors.fill: parent
+            leadingMargin: Theme.spaceSm
+            selected: sessionInfo.id === root.agent.activeSessionId
+            labelText: (sessionInfo.running ? "◌ " : "") +
+                       (sessionInfo.title || "Conversation")
+            badgeText: sessionInfo.unread ? String(sessionInfo.unread) : ""
+            onActivated: {
+              root.agent.switchSession(sessionInfo.id)
+              chatListPopup.close()
+              conversation.contentY = 0
+            }
           }
-          ToolButton {
+          PanelIconButton {
+            objectName: "removeSessionButton"
             anchors {
               right: parent.right
+              rightMargin: Theme.spaceXs
               verticalCenter: parent.verticalCenter
-              rightMargin: 6
             }
-            width: 28
-            height: 28
             text: "✕"
-            font.pixelSize: 11
             onClicked: {
               root.agent.removeSession(sessionRow.sessionInfo.id)
               chatListPopup.close()

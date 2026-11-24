@@ -1346,7 +1346,7 @@ void PluginTests::testBundledPromptPanelSidebarManifestVersion() {
   file.close();
   QVERIFY(doc.isObject());
   QCOMPARE(doc.object().value(QStringLiteral("version")).toString(),
-           QStringLiteral("1.3.0"));
+           QStringLiteral("1.4.0"));
 }
 
 QTEST_MAIN(PluginTests)

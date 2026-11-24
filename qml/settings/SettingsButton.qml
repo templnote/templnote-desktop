@@ -11,6 +11,9 @@ Button {
   property bool primary: false
   property bool danger: false
   property string accessibleName: text
+  // Overrides let compact icon buttons reuse this style without a copy.
+  property color textColor: (root.primary || root.danger) ? Theme.accentText : Theme.text
+  property real cornerRadius: 8
 
   height: 32
   leftPadding: 16
@@ -21,7 +24,7 @@ Button {
   Accessible.name: root.accessibleName
 
   background: Rectangle {
-    radius: 8
+    radius: root.cornerRadius
     color: {
       if (!root.enabled)
         return Theme.surfaceAlt
@@ -44,7 +47,7 @@ Button {
 
   contentItem: Text {
     text: root.text
-    color: (root.primary || root.danger) ? Theme.accentText : Theme.text
+    color: root.textColor
     font.pixelSize: 13
     font.bold: root.primary || root.danger
     horizontalAlignment: Text.AlignHCenter
