@@ -16,6 +16,7 @@ set(CMAKE_AUTOMOC ON)
 include(CTest)
 
 find_package(Qt6 6.12 REQUIRED COMPONENTS
+  Charts
   Core
   Concurrent
   Gui
@@ -47,6 +48,10 @@ set_source_files_properties(qml/Preferences.qml PROPERTIES
 )
 
 set_source_files_properties(qml/MarkdownSyntax.qml PROPERTIES
+  QT_QML_SINGLETON_TYPE TRUE
+)
+
+set_source_files_properties(qml/MathText.qml PROPERTIES
   QT_QML_SINGLETON_TYPE TRUE
 )
 
@@ -88,6 +93,9 @@ add_library(templnote_core STATIC
   src/bridge/LiveBridge.h
   src/bridge/LiveBridge.cpp
 
+  src/control/ControlServer.h
+  src/control/ControlServer.cpp
+
   src/model/BlockModel.cpp
   src/model/BlockModel.h
 
@@ -115,10 +123,12 @@ target_include_directories(templnote_core PUBLIC
 target_link_libraries(templnote_core PUBLIC
   templnote_domain
   templnote_engine
+  templnote_store
   Qt6::Core
   Qt6::Gui
   Qt6::Quick
   Qt6::Concurrent
+  Qt6::Network
   Qt6::Sql
 )
 
@@ -147,6 +157,7 @@ qt_add_qml_module(templnote
   qml/BlockSpacing.qml
   qml/Preferences.qml
   qml/MarkdownSyntax.qml
+  qml/MathText.qml
   qml/PaperSheet.qml
   qml/HomeScreen.qml
   qml/DocumentHeader.qml
@@ -157,6 +168,8 @@ qt_add_qml_module(templnote
   qml/ImageSourceMenu.qml
   qml/SearchBar.qml
   qml/SearchWindow.qml
+  qml/GraphView.qml
+  qml/BacklinksPanel.qml
   qml/ResultsList.qml
   qml/ResultPreview.qml
   qml/SelectionToolbar.qml
@@ -193,6 +206,9 @@ qt_add_qml_module(templnote
   qml/blocks/ImageBlock.qml
   qml/blocks/TableBlock.qml
   qml/blocks/ColumnsBlock.qml
+  qml/blocks/MathBlock.qml
+  qml/blocks/DiagramBlock.qml
+  qml/blocks/ChartBlock.qml
 
   qml/SearchService/SearchService.qml
   qml/SearchService/LocalSearchService.qml
@@ -270,6 +286,7 @@ qt_add_qml_module(templnote
 target_link_libraries(templnote PRIVATE
   templnote_core
   templnote_plugin_qml
+  Qt6::Charts
   Qt6::Core
   Qt6::QuickControls2
 )

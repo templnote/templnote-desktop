@@ -16,6 +16,7 @@
 #include "emoji/EmojiDatabase.h"
 #include "model/BlockModel.h"
 #include "bridge/LiveBridge.h"
+#include "control/ControlServer.h"
 #include "engine/ChangeFeed.h"
 #include "engine/EditorSession.h"
 #include "plugins/NetworkGuard.h"
@@ -25,6 +26,7 @@
 #include "search/SearchResultsModel.h"
 #include "storage/AppPaths.h"
 #include "storage/DocumentListModel.h"
+#include "store/DocumentStore.h"
 #include "tracking/MemoryTracker.h"
 
 namespace {
@@ -116,6 +118,13 @@ int main(int argc, char *argv[]) {
   WindowControls windowControls;
   Templnote::EmojiDatabase emojiDatabase;
 
+  // The live bridge and its store must outlive the QML engine that references
+  // them through context properties.
+  Templnote::Store::DocumentStore documentStore;
+  Templnote::LiveBridge liveBridge;
+  Templnote::ControlServer aiControl(&liveBridge,
+                                     Templnote::AppPaths::configDirectory());
+
   Templnote::Plugins::NetworkGuardFactory networkGuard;
   QQmlApplicationEngine engine;
   engine.setNetworkAccessManagerFactory(&networkGuard);
@@ -125,17 +134,30 @@ int main(int argc, char *argv[]) {
   auto *blockModel = new Templnote::BlockModel(&engine);
   blockModel->setAutosaveEnabled(true);
 
+  liveBridge.setStore(&documentStore);
+  liveBridge.setBlockModel(blockModel);
+
   engine.rootContext()->setContextProperty("ClipboardService", &clipboardHelper);
   engine.rootContext()->setContextProperty("windowControls", &windowControls);
   engine.rootContext()->setContextProperty("EmojiDatabase", &emojiDatabase);
   engine.rootContext()->setContextProperty("pluginManager", &pluginManager);
   engine.rootContext()->setContextProperty("pluginHost", &pluginHost);
   engine.rootContext()->setContextProperty("blockModel", blockModel);
+  engine.rootContext()->setContextProperty("liveBridge", &liveBridge);
 
   engine.loadFromModule("Templnote", "Main");
 
   if (engine.rootObjects().isEmpty())
     return -1;
+
+  // Harness control is always available: loopback-only and token-protected,
+  // with the token written to ai-control.json in the app config directory.
+  QString controlError;
+  if (!aiControl.start(0, &controlError))
+    qWarning() << "AI control endpoint failed to start:" << controlError;
+  else
+    qInfo() << "AI control endpoint:" << aiControl.port()
+            << "(token in ai-control.json)";
 
   return app.exec();
 }

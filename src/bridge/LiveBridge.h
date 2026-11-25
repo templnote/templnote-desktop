@@ -8,7 +8,9 @@
 #include "engine/ChangeFeed.h"
 #include "engine/EditorSession.h"
 #include "model/BlockModel.h"
+#include "store/DocumentStore.h"
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 
@@ -24,6 +26,9 @@ class LiveBridge : public QObject {
                  documentPathChanged)
   Q_PROPERTY(bool liveEnabled READ liveEnabled WRITE setLiveEnabled NOTIFY
                  liveEnabledChanged)
+  Q_PROPERTY(bool autoCommit READ autoCommit WRITE setAutoCommit NOTIFY
+                 autoCommitChanged)
+  Q_PROPERTY(int loadedRevision READ loadedRevision NOTIFY revisionCommitted)
 
 public:
   explicit LiveBridge(QObject *parent = nullptr);
@@ -39,6 +44,17 @@ public:
   bool liveEnabled() const { return m_liveEnabled; }
   void setLiveEnabled(bool enabled);
 
+  bool autoCommit() const { return m_autoCommit; }
+  void setAutoCommit(bool enabled);
+
+  int loadedRevision() const { return m_loadedRevision; }
+
+  // The store owns persistence. Without one, applyCommand stays in memory.
+  void setStore(Store::DocumentStore *store) { m_store = store; }
+
+  // Test seam: allow documents outside the user's documents directory.
+  void setAllowedRoot(const QString &root) { m_allowedRoot = root; }
+
   // Load the current documentPath into the session (from disk) and push it to
   // the view. Call once after both path and model are set.
   Q_INVOKABLE bool loadFromDisk();
@@ -47,21 +63,34 @@ public:
   Q_INVOKABLE bool applyCommand(const QJsonObject &commandJson);
   Q_INVOKABLE bool applyCommandJson(const QString &commandJson);
 
+  // Commit all accumulated ops as one transaction. Returns false on a CAS
+  // conflict or store error. Cancel reloads the last committed state.
+  Q_INVOKABLE bool commitPending(const QString &label = QStringLiteral("live-bridge"));
+  Q_INVOKABLE bool cancelPending();
+
 signals:
   void blockModelChanged();
   void documentPathChanged();
   void liveEnabledChanged();
+  void autoCommitChanged();
+  void revisionCommitted(int revision);
   void bridgeError(const QString &message);
 
 private:
   void pushToView();
+  bool isAllowedDocumentPath(const QString &path) const;
 
   Engine::EditorSession *m_session = nullptr;
   Engine::ChangeFeed *m_feed = nullptr;
   BlockModel *m_blockModel = nullptr;
+  Store::DocumentStore *m_store = nullptr;
   QString m_documentPath;
+  QString m_allowedRoot;
   bool m_liveEnabled = true;
+  bool m_autoCommit = true;
   bool m_syncing = false;
+  int m_loadedRevision = 0;
+  Engine::Patch m_pendingPatch;
   QJsonObject m_lastPatchJson;
 };
 

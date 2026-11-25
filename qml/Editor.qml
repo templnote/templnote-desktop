@@ -2253,7 +2253,8 @@ Item {
           }
 
           onEnterPressed: {
-            if (delegateRoot.blockType === 7 /* Divider */) {
+            if (delegateRoot.blockType === 7 /* Divider */
+                || (delegateRoot.blockType >= 14 && delegateRoot.blockType <= 16)) {
               const newId = root.insertParagraphAfter(delegateRoot.blockId)
               if (newId.length > 0)
                 root.requestFocusBlock(newId, 0)
@@ -2301,7 +2302,8 @@ Item {
             // null and the empty block would simply disappear on backspace.
             const previousId = root.previousEditableBlockId(delegateRoot.blockId)
 
-            if (currentType === 7 /* Divider */) {
+            if (currentType === 7 /* Divider */
+                || (currentType >= 14 && currentType <= 16)) {
               if (root.model.removeBlock(delegateRoot.blockId)) {
                 if (previousId.length > 0)
                   root.requestFocusBlock(previousId, -1)

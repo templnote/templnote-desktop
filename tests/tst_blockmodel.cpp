@@ -82,6 +82,25 @@ private slots:
     QCOMPARE(model.count(), 2);
   }
 
+  void richBlockTypesRoundTrip() {
+    BlockModel model;
+    const QVector<BlockType> types{BlockType::Math, BlockType::Diagram,
+                                   BlockType::Chart};
+    for (BlockType type : types) {
+      const QString id = model.appendBlock(static_cast<int>(type), QStringLiteral("x^2"));
+      QVERIFY(!id.isEmpty());
+      QCOMPARE(model.blockTypeAtRow(model.indexOfBlock(id)), static_cast<int>(type));
+    }
+
+    QJsonArray blocks = model.document().toJson().value(QStringLiteral("blocks")).toArray();
+    QStringList names;
+    for (const QJsonValue &value : blocks)
+      names.append(value.toObject().value(QStringLiteral("type")).toString());
+    QVERIFY(names.contains(QStringLiteral("math")));
+    QVERIFY(names.contains(QStringLiteral("diagram")));
+    QVERIFY(names.contains(QStringLiteral("chart")));
+  }
+
   void engineSeesHumanEdits() {
     BlockModel model;
     auto *engine = model.engineSession();

@@ -316,6 +316,26 @@ QtObject {
       })
     }
 
+    // Wiki links: [[Document Title]]. Kept before reference/shortcut links so
+    // the inner [Title] is not consumed as a shortcut reference.
+    const wikiRe = /\[\[([^\]]+)\]\]/g
+    while ((match = wikiRe.exec(text)) !== null) {
+      const target = match[1].trim()
+      tokens.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        kind: "wikiLink",
+        data: {
+          target: target,
+          label: match[1],
+          raw: match[0],
+          url: "wiki:" + target,
+          labelStart: match.index + 2,
+          labelEnd: match.index + 2 + match[1].length
+        }
+      })
+    }
+
     // Full and collapsed reference links.
     const refRe = /(!?)\[([^\]]*)\]\[([^\]]*)\]/g
     while ((match = refRe.exec(text)) !== null) {
@@ -566,11 +586,18 @@ QtObject {
     }
 
     case "math": {
-      const body = "<span style=\"font-family:monospace; font-style:italic\">" +
-                   escapeHtml(data.content) + "</span>"
+      const body = "<span style=\"font-family:'Segoe UI Symbol',serif\">" +
+                   MathText.toHtml(data.content) + "</span>"
       return syntaxVisible
           ? marker(data.delimiter) + body + marker(data.delimiter)
           : body
+    }
+
+    case "wikiLink": {
+      const label = escapeHtml(data.label)
+      const body = "<a href=\"wiki:" + escapeAttribute(data.target) + "\">" +
+                   label + "</a>"
+      return syntaxVisible ? marker("[[") + label + marker("]]") : body
     }
 
     case "code": {
@@ -757,6 +784,10 @@ QtObject {
       }
       case "image":
         result.push({ start: token.start, end: token.end, contentLen: 0 })
+        break
+      case "wikiLink":
+        result.push({ start: token.start, end: token.start + 2, contentLen: 0 })
+        result.push({ start: token.end - 2, end: token.end, contentLen: 0 })
         break
       case "code":
         result.push({ start: token.start, end: data.ticks.length + token.start,

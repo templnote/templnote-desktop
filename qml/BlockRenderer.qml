@@ -301,6 +301,12 @@ Item {
       return columnsComponent
     case 13: // BlockType::Column is only rendered inside ColumnsBlock
       return paragraphComponent
+    case 14: // BlockType::Math
+      return mathComponent
+    case 15: // BlockType::Diagram
+      return diagramComponent
+    case 16: // BlockType::Chart
+      return chartComponent
     default: // BlockType::Paragraph, and future types until implemented
       return paragraphComponent
     }
@@ -366,6 +372,21 @@ Item {
   Component {
     id: columnsComponent
     ColumnsBlock {}
+  }
+
+  Component {
+    id: mathComponent
+    MathBlock {}
+  }
+
+  Component {
+    id: diagramComponent
+    DiagramBlock {}
+  }
+
+  Component {
+    id: chartComponent
+    ChartBlock {}
   }
 
   Loader {

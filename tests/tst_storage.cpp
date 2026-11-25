@@ -3,6 +3,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -309,6 +312,42 @@ private slots:
     QCOMPARE(model.count(), 1);
     QCOMPARE(model.filePathAt(0),
              QFileInfo(directory.filePath("Real.templnote")).absoluteFilePath());
+  }
+
+  void backlinksAndGraphFollowWikiLinks() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+
+    auto writeNote = [&](const QString &name, const QString &text) {
+      QJsonObject block;
+      block.insert(QStringLiteral("id"), QStringLiteral("b1"));
+      block.insert(QStringLiteral("type"), QStringLiteral("paragraph"));
+      block.insert(QStringLiteral("text"), text);
+      QJsonArray blocks;
+      blocks.append(block);
+      QJsonObject doc;
+      doc.insert(QStringLiteral("format"), QStringLiteral("templnote"));
+      doc.insert(QStringLiteral("version"), 1);
+      doc.insert(QStringLiteral("blocks"), blocks);
+      QFile file(directory.filePath(name + QStringLiteral(".templnote")));
+      QVERIFY(file.open(QIODevice::WriteOnly));
+      file.write(QJsonDocument(doc).toJson(QJsonDocument::Compact));
+    };
+
+    writeNote(QStringLiteral("Alpha"), QStringLiteral("Link to [[Beta]]"));
+    writeNote(QStringLiteral("Beta"), QStringLiteral("Nothing here"));
+
+    DocumentListModel model(directory.path());
+    const QVariantList backlinks = model.backlinksFor(QStringLiteral("Beta"));
+    QCOMPARE(backlinks.size(), 1);
+    QCOMPARE(backlinks.first().toMap().value(QStringLiteral("title")).toString(),
+             QStringLiteral("Alpha"));
+
+    const QVariantList graph = model.linkGraph();
+    QCOMPARE(graph.size(), 1);
+    const QVariantMap data = graph.first().toMap();
+    QCOMPARE(data.value(QStringLiteral("nodes")).toList().size(), 2);
+    QCOMPARE(data.value(QStringLiteral("edges")).toList().size(), 1);
   }
 
   void createUntitledPathUsesModelDirectory() {

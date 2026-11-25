@@ -102,6 +102,17 @@ public:
   // the most recent request. The UI can safely call this on every keystroke.
   Q_INVOKABLE void searchEntriesAsync(const QString &query);
 
+  // Knowledge-base helpers. Documents are plain JSON files, so these scans
+  // stay cheap on a local library and avoid a separate link database.
+  // Each node map contains: path, title.
+  Q_INVOKABLE QVariantList allDocuments() const;
+
+  // Documents that contain [[target]] (case-insensitive), with a snippet.
+  Q_INVOKABLE QVariantList backlinksFor(const QString &target) const;
+
+  // Node/edge maps for a graph view. Edges follow [[Wiki Links]].
+  Q_INVOKABLE QVariantList linkGraph() const;
+
 signals:
   void countChanged();
   void directoryChanged();

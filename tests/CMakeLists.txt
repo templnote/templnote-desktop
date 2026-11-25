@@ -54,6 +54,21 @@ add_test(
     COMMAND tst_blockmodel
 )
 
+add_executable(tst_control
+    tst_control.cpp
+)
+
+target_link_libraries(tst_control PRIVATE
+    templnote_core
+    Qt6::Test
+    Qt6::Network
+)
+
+add_test(
+    NAME ControlTests
+    COMMAND tst_control
+)
+
 add_executable(tst_store
     tst_store.cpp
 )
@@ -150,6 +165,11 @@ set_source_files_properties(
     QT_QML_SINGLETON_TYPE TRUE
     QT_RESOURCE_ALIAS "qml/MarkdownSyntax.qml"
 )
+set_source_files_properties(
+    "${TEST_QML_DIR}/MathText.qml" PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE
+    QT_RESOURCE_ALIAS "qml/MathText.qml"
+)
 
 set_source_files_properties(
     "${TEST_QML_DIR}/shaders/paper.frag.qsb" PROPERTIES
@@ -188,6 +208,9 @@ foreach(qml_file
     blocks/ImageBlock.qml
     blocks/TableBlock.qml
     blocks/ColumnsBlock.qml
+    blocks/MathBlock.qml
+    blocks/DiagramBlock.qml
+    blocks/ChartBlock.qml
 )
     set_source_files_properties(
         "${TEST_QML_DIR}/${qml_file}" PROPERTIES
@@ -223,6 +246,7 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/BlockSpacing.qml
     ${TEST_QML_DIR}/Preferences.qml
     ${TEST_QML_DIR}/MarkdownSyntax.qml
+    ${TEST_QML_DIR}/MathText.qml
     ${TEST_QML_DIR}/Editor.qml
     ${TEST_QML_DIR}/PaperSheet.qml
     ${TEST_QML_DIR}/BlockRenderer.qml
@@ -243,6 +267,9 @@ qt_add_qml_module(tst_editor
     ${TEST_QML_DIR}/blocks/ImageBlock.qml
     ${TEST_QML_DIR}/blocks/TableBlock.qml
     ${TEST_QML_DIR}/blocks/ColumnsBlock.qml
+    ${TEST_QML_DIR}/blocks/MathBlock.qml
+    ${TEST_QML_DIR}/blocks/DiagramBlock.qml
+    ${TEST_QML_DIR}/blocks/ChartBlock.qml
 
     RESOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg
@@ -256,6 +283,7 @@ qt_add_qml_module(tst_editor
 
 target_link_libraries(tst_editor PRIVATE
     templnote_core
+    Qt6::Charts
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test

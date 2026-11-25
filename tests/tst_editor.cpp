@@ -2536,8 +2536,13 @@ private slots:
              qPrintable(html));
 
     html = render(QStringLiteral("$x^2$"), false);
-    QVERIFY2(html.contains(QStringLiteral("x^2")), qPrintable(html));
-    QVERIFY2(html.contains(QStringLiteral("monospace")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("<sup>2</sup>")), qPrintable(html));
+    QVERIFY2(html.contains(QStringLiteral("Segoe UI Symbol")), qPrintable(html));
+
+    html = render(QStringLiteral("[[Other Note]]"), false);
+    QVERIFY2(html.contains(QStringLiteral("wiki:Other%20Note"))
+                 || html.contains(QStringLiteral("wiki:Other Note")),
+             qPrintable(html));
 
     QVariantMap note;
     note.insert(QStringLiteral("label"), QStringLiteral("1"));

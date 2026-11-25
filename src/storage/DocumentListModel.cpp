@@ -6,12 +6,15 @@
 #include <QDebug>
 #include <QDir>
 #include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QVariantMap>
@@ -23,6 +26,75 @@
 #include <utility>
 
 namespace Templnote {
+namespace {
+
+struct LinkedDocument {
+  QString path;
+  QString title;
+  QString text;
+};
+
+QVector<LinkedDocument> readLinkedDocuments(const QString &root) {
+  QVector<LinkedDocument> out;
+  if (root.isEmpty())
+    return out;
+
+  QDirIterator it(root, QStringList{QStringLiteral("*.templnote")},
+                  QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    it.next();
+    QFile file(it.filePath());
+    if (!file.open(QIODevice::ReadOnly))
+      continue;
+    const QJsonDocument parsed = QJsonDocument::fromJson(file.readAll());
+    if (!parsed.isObject())
+      continue;
+
+    const QJsonObject doc = parsed.object();
+    QString text;
+    const QJsonArray blocks = doc.value(QStringLiteral("blocks")).toArray();
+    for (const QJsonValue &value : blocks) {
+      const QJsonObject block = value.toObject();
+      text.append(block.value(QStringLiteral("text")).toString());
+      text.append(QLatin1Char('\n'));
+      const QJsonObject meta = block.value(QStringLiteral("metadata")).toObject();
+      const QString plain = meta.value(QStringLiteral("plainText")).toString();
+      if (!plain.isEmpty()) {
+        text.append(plain);
+        text.append(QLatin1Char('\n'));
+      }
+    }
+
+    const QFileInfo info(it.filePath());
+    out.append({QDir::cleanPath(info.absoluteFilePath()),
+                info.completeBaseName(), text});
+  }
+  return out;
+}
+
+QStringList wikiTargetsIn(const QString &text) {
+  QStringList targets;
+  const QRegularExpression re(QStringLiteral("\\[\\[([^\\]]+)\\]\\]"));
+  auto matches = re.globalMatch(text);
+  while (matches.hasNext()) {
+    const QString target = matches.next().captured(1).trimmed();
+    if (!target.isEmpty() && !targets.contains(target, Qt::CaseInsensitive))
+      targets.append(target);
+  }
+  return targets;
+}
+
+QString snippetAround(const QString &text, const QString &needle) {
+  const int at = text.indexOf(needle, 0, Qt::CaseInsensitive);
+  if (at < 0)
+    return {};
+  const int start = qMax(0, at - 48);
+  const int length = qMin(text.size() - start, needle.length() + 96);
+  return text.mid(start, length).simplified();
+}
+
+} // namespace
+
 DocumentListModel::DocumentListModel(QObject *parent)
     : DocumentListModel(AppPaths::documentsDirectory(), parent) {}
 
@@ -857,5 +929,60 @@ void DocumentListModel::searchEntriesAsync(const QString &query) {
   watcher->setFuture(QtConcurrent::run([rootDirectory, needle, cancel]() {
     return searchEntriesInRoot(rootDirectory, needle, cancel.get());
   }));
+}
+
+QVariantList DocumentListModel::allDocuments() const {
+  QVariantList nodes;
+  for (const LinkedDocument &doc : readLinkedDocuments(m_rootDirectory)) {
+    nodes.append(QVariantMap{{QStringLiteral("path"), doc.path},
+                             {QStringLiteral("title"), doc.title}});
+  }
+  return nodes;
+}
+
+QVariantList DocumentListModel::backlinksFor(const QString &target) const {
+  QVariantList results;
+  const QString needle = QStringLiteral("[[%1]]").arg(target.trimmed());
+  if (target.trimmed().isEmpty())
+    return results;
+
+  for (const LinkedDocument &doc : readLinkedDocuments(m_rootDirectory)) {
+    if (!doc.text.contains(needle, Qt::CaseInsensitive))
+      continue;
+    results.append(QVariantMap{{QStringLiteral("path"), doc.path},
+                               {QStringLiteral("title"), doc.title},
+                               {QStringLiteral("snippet"),
+                                snippetAround(doc.text, needle)}});
+  }
+  return results;
+}
+
+QVariantList DocumentListModel::linkGraph() const {
+  const QVector<LinkedDocument> docs = readLinkedDocuments(m_rootDirectory);
+  QVariantList nodes;
+  QVariantList edges;
+  QHash<QString, QString> byTitle;
+
+  for (const LinkedDocument &doc : docs) {
+    nodes.append(QVariantMap{{QStringLiteral("path"), doc.path},
+                             {QStringLiteral("title"), doc.title}});
+    byTitle.insert(doc.title.toLower(), doc.path);
+  }
+
+  for (const LinkedDocument &doc : docs) {
+    for (const QString &target : wikiTargetsIn(doc.text)) {
+      const QString targetPath = byTitle.value(target.toLower());
+      if (targetPath.isEmpty() || targetPath == doc.path)
+        continue;
+      edges.append(QVariantMap{{QStringLiteral("source"), doc.path},
+                               {QStringLiteral("target"), targetPath},
+                               {QStringLiteral("label"), target}});
+    }
+  }
+
+  QVariantMap graph;
+  graph.insert(QStringLiteral("nodes"), nodes);
+  graph.insert(QStringLiteral("edges"), edges);
+  return QVariantList{graph};
 }
 } // namespace Templnote

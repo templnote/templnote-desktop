@@ -30,6 +30,35 @@ ApplicationWindow {
   // home surface instead of an empty editor.
   readonly property bool hasDocument: blockModel.currentFilePath.length > 0
 
+  // Number of agent-originated patches seen in this session. Shown as a small
+  // provenance badge so live AI writing is visible without a full panel.
+  property int aiChangeCount: 0
+
+  Connections {
+    target: liveBridge.feed
+    function onAgentChange(patch) {
+      window.aiChangeCount++
+    }
+  }
+
+  Rectangle {
+    z: 9999
+    visible: window.aiChangeCount > 0
+    anchors.top: parent.top
+    anchors.topMargin: 46
+    anchors.right: parent.right
+    anchors.rightMargin: 16
+    radius: 8
+    color: "#2d7d46"
+    Text {
+      anchors.centerIn: parent
+      padding: 8
+      color: "white"
+      text: "AI wrote " + window.aiChangeCount +
+            (window.aiChangeCount === 1 ? " change" : " changes")
+    }
+  }
+
   // Set once the user chose Save/Discard so the close handler lets the
   // window go through on the second pass.
   property bool allowClose: false
@@ -212,6 +241,12 @@ ApplicationWindow {
       documentList.currentFilePath = path
       documentList.refresh()
 
+      // Keep the authoritative live session on the document the user is
+      // looking at, so agent commands land in the open editor.
+      liveBridge.documentPath = path
+      if (path.length > 0)
+        liveBridge.loadFromDisk()
+
       // Remember the exact document so session restore does not have to guess
       // from modification times (and can find files inside subfolders). Clear
       // it on close too, otherwise "restore last session" reopens a document
@@ -279,6 +314,30 @@ ApplicationWindow {
     context: Qt.ApplicationShortcut
     enabled: !window.modalOpen && window.hasDocument
     onActivated: searchBar.open()
+  }
+
+  Shortcut {
+    sequence: "Ctrl+Shift+G"
+    context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen
+    onActivated: {
+      if (graphView.visible)
+        graphView.close()
+      else
+        graphView.open()
+    }
+  }
+
+  Shortcut {
+    sequence: "Ctrl+Shift+B"
+    context: Qt.ApplicationShortcut
+    enabled: !window.modalOpen && window.hasDocument
+    onActivated: {
+      if (backlinksPanel.visible)
+        backlinksPanel.close()
+      else
+        backlinksPanel.open(blockModel.documentTitle)
+    }
   }
 
   Shortcut {
@@ -627,6 +686,8 @@ ApplicationWindow {
       options: [
         { key: "find", label: "Find in document", shortcut: "Ctrl+/" },
         { key: "globalSearch", label: "Search all documents", shortcut: "Ctrl+Shift+/" },
+        { key: "graph", label: "Knowledge graph", shortcut: "Ctrl+Shift+G" },
+        { key: "backlinks", label: "Backlinks", shortcut: "Ctrl+Shift+B" },
         { key: "shortcuts", label: "Keyboard shortcuts", shortcut: "F1" },
         { key: "settings", label: "Settings", shortcut: "" }
       ]
@@ -647,6 +708,18 @@ ApplicationWindow {
               searchBar.close(false)
             searchWindow.open()
           }
+        } else if (key === "graph") {
+          if (graphView.visible)
+            graphView.close()
+          else
+            graphView.open()
+        } else if (key === "backlinks") {
+          if (!window.hasDocument)
+            return
+          if (backlinksPanel.visible)
+            backlinksPanel.close()
+          else
+            backlinksPanel.open(blockModel.documentTitle)
         } else if (key === "shortcuts") {
           shortcutsSheet.open()
         } else if (key === "settings") {
@@ -711,6 +784,24 @@ ApplicationWindow {
     // the explorer and window close.
     confirmUnsavedChanges: function(action) {
       window.confirmUnsavedChanges(action)
+    }
+  }
+
+  GraphView {
+    id: graphView
+    model: documentList
+    onDocumentRequested: function(path) {
+      graphView.close()
+      window.requestOpenDocument(path)
+    }
+  }
+
+  BacklinksPanel {
+    id: backlinksPanel
+    model: documentList
+    onDocumentRequested: function(path) {
+      backlinksPanel.close()
+      window.requestOpenDocument(path)
     }
   }
 
@@ -1201,7 +1292,10 @@ ApplicationWindow {
       }
     }
 
-    if (restored.length > 0)
+    if (restored.length > 0) {
       documentList.currentFilePath = restored
+      liveBridge.documentPath = restored
+      liveBridge.loadFromDisk()
+    }
   }
 }

@@ -18,17 +18,7 @@ namespace {
 // LiveBridge is reachable from QML/plugin contexts, so never let it read an
 // arbitrary file or block the GUI thread on a huge one.
 constexpr qint64 kMaxDocumentBytes = 32 * 1024 * 1024;
-
-bool isAllowedDocumentPath(const QString &path) {
-  if (path.isEmpty())
-    return false;
-  const QString root =
-      QFileInfo(AppPaths::documentsDirectory()).canonicalFilePath();
-  const QString candidate = QFileInfo(path).canonicalFilePath();
-  if (root.isEmpty() || candidate.isEmpty())
-    return false;
-  return candidate == root || candidate.startsWith(root + QLatin1Char('/'));
-}
+constexpr auto kRevisionKey = "tnRevision";
 } // namespace
 
 LiveBridge::LiveBridge(QObject *parent)
@@ -38,6 +28,7 @@ LiveBridge::LiveBridge(QObject *parent)
   connect(m_session, &Engine::EditorSession::patchApplied, this,
           [this](const Engine::Patch &patch) {
             m_lastPatchJson = patch.toJson();
+            m_pendingPatch.ops.append(patch.ops);
             pushToView();
           });
   connect(m_session, &Engine::EditorSession::remoteApplied, this,
@@ -68,6 +59,33 @@ void LiveBridge::setLiveEnabled(bool enabled) {
   emit liveEnabledChanged();
 }
 
+void LiveBridge::setAutoCommit(bool enabled) {
+  if (m_autoCommit == enabled)
+    return;
+  m_autoCommit = enabled;
+  emit autoCommitChanged();
+  if (enabled && !m_pendingPatch.ops.isEmpty())
+    commitPending();
+}
+
+bool LiveBridge::isAllowedDocumentPath(const QString &path) const {
+  if (path.isEmpty())
+    return false;
+  const QString candidate = QFileInfo(path).canonicalFilePath();
+  if (candidate.isEmpty())
+    return false;
+  if (!m_allowedRoot.isEmpty()) {
+    const QString root = QFileInfo(m_allowedRoot).canonicalFilePath();
+    return !root.isEmpty() &&
+           (candidate == root || candidate.startsWith(root + QLatin1Char('/')));
+  }
+  const QString root =
+      QFileInfo(AppPaths::documentsDirectory()).canonicalFilePath();
+  if (root.isEmpty())
+    return false;
+  return candidate == root || candidate.startsWith(root + QLatin1Char('/'));
+}
+
 bool LiveBridge::loadFromDisk() {
   if (m_documentPath.isEmpty()) {
     emit bridgeError(QStringLiteral("No document path set."));
@@ -92,11 +110,15 @@ bool LiveBridge::loadFromDisk() {
     emit bridgeError(error.errorString());
     return false;
   }
+  const QJsonObject object = doc.object();
   QString loadError;
-  if (!m_session->loadJson(doc.object(), &loadError)) {
+  if (!m_session->loadJson(object, &loadError)) {
     emit bridgeError(loadError);
     return false;
   }
+  m_loadedRevision = object.value(QLatin1String(kRevisionKey)).toInt(0);
+  m_pendingPatch = Engine::Patch{};
+  m_pendingPatch.actor = Engine::Actor::system();
   pushToView();
   return true;
 }
@@ -122,6 +144,8 @@ bool LiveBridge::applyCommand(const QJsonObject &commandJson) {
     emit bridgeError(result.error());
     return false;
   }
+  if (m_autoCommit)
+    return commitPending();
   return true;
 }
 
@@ -137,6 +161,33 @@ bool LiveBridge::applyCommandJson(const QString &commandJson) {
     return false;
   }
   return applyCommand(doc.object());
+}
+
+bool LiveBridge::commitPending(const QString &label) {
+  if (m_pendingPatch.ops.isEmpty())
+    return true;
+  if (!m_store) {
+    m_pendingPatch = Engine::Patch{};
+    return true;
+  }
+  const Engine::Patch patch = m_pendingPatch;
+  auto committed = m_store->commit(m_documentPath, m_loadedRevision,
+                                   m_session->toJson(), patch,
+                                   m_session->lamport(), label);
+  if (!committed.ok()) {
+    emit bridgeError(committed.error());
+    return false;
+  }
+  m_loadedRevision = committed.value().revision;
+  m_pendingPatch = Engine::Patch{};
+  emit revisionCommitted(m_loadedRevision);
+  return true;
+}
+
+bool LiveBridge::cancelPending() {
+  m_pendingPatch = Engine::Patch{};
+  setAutoCommit(true);
+  return loadFromDisk();
 }
 
 } // namespace Templnote

@@ -259,6 +259,176 @@ Item {
     saveTableData()
   }
 
+  // ---- Spreadsheet-style formulas -------------------------------------------
+  // Cells beginning with "=" are evaluated for display while the raw formula
+  // remains in the document. Supported: A1 refs, A1:B3 ranges, + - * / ( ),
+  // and SUM / AVG / MIN / MAX / COUNT.
+
+  function columnLetter(index) {
+    var n = index + 1
+    var result = ""
+    while (n > 0) {
+      n--
+      result = String.fromCharCode(65 + (n % 26)) + result
+      n = Math.floor(n / 26)
+    }
+    return result
+  }
+
+  function columnFromLetter(letters) {
+    var value = 0
+    for (var i = 0; i < letters.length; ++i)
+      value = value * 26 + (letters.charCodeAt(i) - 64)
+    return value - 1
+  }
+
+  function rawCellValue(row, col) {
+    if (row < 0 || row >= rowsData.length || col < 0 || col >= columnsData.length)
+      return ""
+    const r = rowsData[row]
+    const id = columnsData[col].id
+    return (r.cells && r.cells[id] !== undefined) ? String(r.cells[id]) : ""
+  }
+
+  function numericCellValue(row, col, depth) {
+    const raw = rawCellValue(row, col)
+    if (!raw)
+      return 0
+    if (raw.charAt(0) === "=" && depth < 8)
+      return Number(evaluateFormula(raw, depth + 1))
+    const value = Number(raw)
+    return isNaN(value) ? 0 : value
+  }
+
+  function rangeValues(ref, depth) {
+    const parts = ref.split(":")
+    if (parts.length !== 2)
+      return []
+    const a = /^([A-Z]+)(\d+)$/.exec(parts[0].toUpperCase())
+    const b = /^([A-Z]+)(\d+)$/.exec(parts[1].toUpperCase())
+    if (!a || !b)
+      return []
+    const c1 = columnFromLetter(a[1]), c2 = columnFromLetter(b[1])
+    const r1 = Number(a[2]) - 1, r2 = Number(b[2]) - 1
+    const values = []
+    for (var r = Math.min(r1, r2); r <= Math.max(r1, r2); ++r) {
+      for (var c = Math.min(c1, c2); c <= Math.max(c1, c2); ++c)
+        values.push(numericCellValue(r, c, depth))
+    }
+    return values
+  }
+
+  function evalArithmetic(source, depth) {
+    const tokens = String(source).match(/[A-Z]+\d+|\d+(?:\.\d+)?|[()+\-*/]/g) || []
+    const output = []
+    const ops = []
+    const prec = { "+": 1, "-": 1, "*": 2, "/": 2 }
+    tokens.forEach(function(token) {
+      if (/^[A-Z]+\d+$/.test(token) || /^\d/.test(token)) {
+        output.push(token)
+      } else if (token === "(") {
+        ops.push(token)
+      } else if (token === ")") {
+        while (ops.length > 0 && ops[ops.length - 1] !== "(")
+          output.push(ops.pop())
+        if (ops.length > 0)
+          ops.pop()
+      } else {
+        while (ops.length > 0 && ops[ops.length - 1] !== "("
+               && (prec[ops[ops.length - 1]] || 0) >= prec[token])
+          output.push(ops.pop())
+        ops.push(token)
+      }
+    })
+    while (ops.length > 0)
+      output.push(ops.pop())
+
+    const stack = []
+    output.forEach(function(token) {
+      if (/^[A-Z]+\d+$/.test(token)) {
+        const m = /^([A-Z]+)(\d+)$/.exec(token)
+        stack.push(numericCellValue(Number(m[2]) - 1,
+                                    columnFromLetter(m[1]), depth))
+      } else if (/^\d/.test(token)) {
+        stack.push(Number(token))
+      } else if (token === "-") {
+        const b = stack.pop()
+        if (stack.length === 0)
+          stack.push(-b)
+        else
+          stack.push(stack.pop() - b)
+      } else {
+        const b = stack.pop(), a = stack.pop()
+        if (token === "+") stack.push(a + b)
+        else if (token === "*") stack.push(a * b)
+        else if (token === "/") stack.push(b === 0 ? 0 : a / b)
+      }
+    })
+    return stack.length > 0 ? stack[stack.length - 1] : 0
+  }
+
+  function evaluateFormula(source, depth) {
+    var s = String(source || "").trim()
+    if (s.charAt(0) === "=")
+      s = s.substring(1)
+    if (!s)
+      return 0
+    const currentDepth = depth || 0
+
+    const funcRe = /\b(SUM|AVG|AVERAGE|MIN|MAX|COUNT)\s*\(([^()]*)\)/g
+    for (var pass = 0; pass < 8; ++pass) {
+      funcRe.lastIndex = 0
+      if (!funcRe.test(s))
+        break
+      funcRe.lastIndex = 0
+      s = s.replace(funcRe, function(_, name, args) {
+        const values = []
+        args.split(",").forEach(function(arg) {
+          const trimmed = arg.trim()
+          if (!trimmed)
+            return
+          if (trimmed.indexOf(":") > 0)
+            rangeValues(trimmed, currentDepth + 1).forEach(function(v) { values.push(v) })
+          else
+            values.push(Number(evaluateFormula(trimmed, currentDepth + 1)))
+        })
+        let result = 0
+        if (name === "SUM" || name === "AVG" || name === "AVERAGE") {
+          values.forEach(function(v) { result += v })
+          if (name !== "SUM" && values.length > 0)
+            result /= values.length
+        } else if (name === "MIN") {
+          result = values.length ? Math.min.apply(null, values) : 0
+        } else if (name === "MAX") {
+          result = values.length ? Math.max.apply(null, values) : 0
+        } else if (name === "COUNT") {
+          result = values.length
+        }
+        return String(result)
+      })
+    }
+
+    const value = evalArithmetic(s, currentDepth + 1)
+    return isNaN(value) ? 0 : value
+  }
+
+  function displayValue(rowIndex, colId) {
+    const raw = rawCellValue(rowIndex, columnIndexForId(colId))
+    if (!raw || raw.charAt(0) !== "=")
+      return raw
+    const value = evaluateFormula(raw, 0)
+    return Math.abs(value - Math.round(value)) < 0.0001
+           ? String(Math.round(value))
+           : value.toFixed(2)
+  }
+
+  function columnIndexForId(id) {
+    for (var i = 0; i < columnsData.length; ++i)
+      if (columnsData[i].id === id)
+        return i
+    return -1
+  }
+
   // Row and Column Mutations
   function addColumn(afterIndex) {
     var newId = "c" + Date.now().toString(36) + Math.random().toString(36).substring(2, 5)
@@ -768,11 +938,15 @@ Item {
 
                     // Re-read this cell's value after its column id or row data changes.
                     function refreshCellText() {
-                      if (cellTextEdit.activeFocus || !rowModel || !rowModel.cells || !colId)
+                      if (!rowModel || !rowModel.cells || !colId)
                         return
-                      var newVal = rowModel.cells[colId] || ""
-                      if (cellTextEdit.text !== newVal)
-                        cellTextEdit.text = newVal
+                      var raw = rowModel.cells[colId] || ""
+                      // Formula cells show their result until focused, then
+                      // reveal the raw expression for editing.
+                      var shown = (cellTextEdit.activeFocus || raw.charAt(0) !== "=")
+                                  ? raw : root.displayValue(rowDelegate.index, colId)
+                      if (cellTextEdit.text !== shown)
+                        cellTextEdit.text = shown
                     }
 
                     function highlightRanges() {
@@ -954,11 +1128,7 @@ Item {
                       onSelectionStartChanged: notifySelection()
                       onSelectionEndChanged: notifySelection()
 
-                      Component.onCompleted: {
-                        if (rowModel && rowModel.cells && colId) {
-                          text = rowModel.cells[colId] || ""
-                        }
-                      }
+                      Component.onCompleted: cellRoot.refreshCellText()
 
                       Connections {
                         target: root
@@ -982,6 +1152,7 @@ Item {
                           root.focusedCol = cellRoot.index
                           updateCaretGeometry()
                           notifySelection()
+                          Qt.callLater(cellRoot.refreshCellText)
                         } else {
                           if (root.focusedRow === rowDelegate.index && root.focusedCol === cellRoot.index) {
                             root.hasCellActiveFocus = false
@@ -989,6 +1160,7 @@ Item {
                             root.focusedCol = -1
                           }
                           root.selectionChanged(false, 0, 0, 0)
+                          Qt.callLater(cellRoot.refreshCellText)
                         }
                       }
 

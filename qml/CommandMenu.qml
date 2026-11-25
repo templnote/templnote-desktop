@@ -8,14 +8,14 @@ Rectangle {
   property int selectedIndex: 0
   readonly property var selectedCommand: filtered.count > 0 ? filtered.get(selectedIndex) : null
   signal commandSelected(var command)
-  readonly property int maxVisibleItems: 6
+  readonly property int maxVisibleItems: 8
   readonly property int itemRowHeight: 30
   readonly property int itemRowSpacing: 1
   readonly property int headerHeight: 40
   readonly property int bottomPadding: 8
   readonly property int pickerHeight: 132
 
-  // The 17 commands are created once. rebuild() only rewrites the ListModel
+  // The commands are created once. rebuild() only rewrites the ListModel
   // when the set of matching commands actually changes, so typing a character
   // that leaves the same matches visible causes no model churn.
   readonly property var allCommands: [
@@ -35,7 +35,10 @@ Rectangle {
     {label: "Image", detail: "Upload or embed with a link", shortcut: "/image", type: 8, level: 0},
     {label: "Callout", detail: "Make writing stand out", shortcut: "[!NOTE]", type: 10, level: 0},
     {label: "Table", detail: "Add a flexible table", shortcut: "/table", type: 11, level: 0},
-    {label: "Columns", detail: "Side-by-side columns", shortcut: "Layout", type: 12, level: 0}
+    {label: "Columns", detail: "Side-by-side columns", shortcut: "Layout", type: 12, level: 0},
+    {label: "Math", detail: "Render LaTeX equations", shortcut: "/math", type: 14, level: 0},
+    {label: "Diagram", detail: "Mermaid-style flowchart", shortcut: "/diagram", type: 15, level: 0},
+    {label: "Chart", detail: "Line, bar, pie or scatter", shortcut: "/chart", type: 16, level: 0}
   ]
   property string lastMatchKey: ""
 
