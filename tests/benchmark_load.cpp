@@ -48,7 +48,7 @@ private:
 
     void measurePhases(const QString &path) {
         QFile file(path);
-        file.open(QIODevice::ReadOnly);
+        QVERIFY(file.open(QIODevice::ReadOnly));
 
         QElapsedTimer timer;
         timer.start();

@@ -69,6 +69,8 @@ target_link_libraries(templnote_store PUBLIC
 add_library(templnote_sync STATIC
   src/sync/SyncManager.h
   src/sync/SyncManager.cpp
+  src/tracking/ScopedTimer.h
+  src/tracking/ScopedTimer.cpp
 )
 target_include_directories(templnote_sync PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src

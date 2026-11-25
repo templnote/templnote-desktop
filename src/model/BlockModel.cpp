@@ -211,8 +211,9 @@ public:
     if (m_parentFilter == parentId)
       return;
 
+    beginFilterChange();
     m_parentFilter = parentId;
-    invalidateFilter();
+    endFilterChange();
   }
 
 protected:

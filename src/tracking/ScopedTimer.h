@@ -12,6 +12,8 @@
 
 namespace Templnote {
 
+Q_DECLARE_LOGGING_CATEGORY(templnoteBenchmark)
+
 // Scoped RAII timer for micro-benchmarking and performance tracking
 class ScopedTimer {
 public:
@@ -39,9 +41,10 @@ public:
             if (m_onFinish) {
                 m_onFinish(m_elapsedMs);
             } else {
-                qInfo().noquote() << QStringLiteral("[BENCHMARK] %1: %2 ms")
-                                         .arg(m_operationName)
-                                         .arg(m_elapsedMs, 0, 'f', 3);
+                qCDebug(templnoteBenchmark).noquote()
+                    << QStringLiteral("[BENCHMARK] %1: %2 ms")
+                           .arg(m_operationName)
+                           .arg(m_elapsedMs, 0, 'f', 3);
             }
         }
         // Always report the duration recorded on completion, not the time that
@@ -66,9 +69,10 @@ public:
         timer.start();
         fn();
         const double ms = static_cast<double>(timer.nsecsElapsed()) / 1e6;
-        qInfo().noquote() << QStringLiteral("[BENCHMARK] %1: %2 ms")
-                                 .arg(operationName)
-                                 .arg(ms, 0, 'f', 3);
+        qCDebug(templnoteBenchmark).noquote()
+            << QStringLiteral("[BENCHMARK] %1: %2 ms")
+                   .arg(operationName)
+                   .arg(ms, 0, 'f', 3);
         return ms;
     }
 };

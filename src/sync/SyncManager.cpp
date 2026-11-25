@@ -222,8 +222,9 @@ void SyncManager::sendOps(QTcpSocket *socket) {
   // stream does not flood the log.
   ScopedTimer timing(QStringLiteral("SyncManager::sendOps"), [](double ms) {
     if (ms >= 1.0)
-      qInfo().noquote() << QStringLiteral("[SYNC_TIMING] sendOps: %1 ms")
-                               .arg(ms, 0, 'f', 3);
+      qCDebug(Templnote::templnoteBenchmark).noquote()
+          << QStringLiteral("[SYNC_TIMING] sendOps: %1 ms")
+                 .arg(ms, 0, 'f', 3);
   });
 
   const QVector<Engine::Op> allOps = m_state->opSet(); // implicit sharing, cheap
@@ -302,8 +303,9 @@ void SyncManager::broadcast() {
 void SyncManager::onReadyRead() {
   ScopedTimer timing(QStringLiteral("SyncManager::onReadyRead"), [](double ms) {
     if (ms >= 1.0)
-      qInfo().noquote() << QStringLiteral("[SYNC_TIMING] onReadyRead: %1 ms")
-                               .arg(ms, 0, 'f', 3);
+      qCDebug(Templnote::templnoteBenchmark).noquote()
+          << QStringLiteral("[SYNC_TIMING] onReadyRead: %1 ms")
+                 .arg(ms, 0, 'f', 3);
   });
   if (m_stopped)
     return;

@@ -1,4 +1,6 @@
 #include <QGuiApplication>
+#include <QLoggingCategory>
+#include <QWindow>
 #include <QQmlApplicationEngine>
 #include <QQmlNetworkAccessManagerFactory>
 #include <QNetworkAccessManager>
@@ -35,9 +37,35 @@ public:
     QGuiApplication::clipboard()->setText(text);
   }
 };
+
+// Exposes QWindow's native move/resize operations to the frameless QML title
+// bar so dragging and edge-resizing keep Aero Snap and Windows window behaviour.
+class WindowControls : public QObject {
+  Q_OBJECT
+public:
+  explicit WindowControls(QObject *parent = nullptr) : QObject(parent) {}
+
+  Q_INVOKABLE void startMove(QObject *object) {
+    if (auto *w = qobject_cast<QWindow *>(object))
+      w->startSystemMove();
+  }
+
+  Q_INVOKABLE void startResize(QObject *object, int edges) {
+    if (auto *w = qobject_cast<QWindow *>(object))
+      w->startSystemResize(static_cast<Qt::Edges>(edges));
+  }
+};
 }
 
 int main(int argc, char *argv[]) {
+  // The native Windows style does not allow overriding control backgrounds or
+  // content items; Fusion does, and keeps the custom theme working.
+  if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE"))
+    qputenv("QT_QUICK_CONTROLS_STYLE", "Fusion");
+
+  // Qt 6.12's QQmlSettings emits a false-positive connect warning on Windows.
+  QLoggingCategory::setFilterRules(QStringLiteral("qt.core.qobject.connect=false"));
+
   QGuiApplication app(argc, argv);
 
   QGuiApplication::setApplicationName("Templnote");
@@ -85,6 +113,7 @@ int main(int argc, char *argv[]) {
   Templnote::PluginManager pluginManager;
   Templnote::PluginHost pluginHost(&pluginManager);
   ClipboardHelper clipboardHelper;
+  WindowControls windowControls;
   Templnote::EmojiDatabase emojiDatabase;
 
   Templnote::Plugins::NetworkGuardFactory networkGuard;
@@ -97,6 +126,7 @@ int main(int argc, char *argv[]) {
   blockModel->setAutosaveEnabled(true);
 
   engine.rootContext()->setContextProperty("ClipboardService", &clipboardHelper);
+  engine.rootContext()->setContextProperty("windowControls", &windowControls);
   engine.rootContext()->setContextProperty("EmojiDatabase", &emojiDatabase);
   engine.rootContext()->setContextProperty("pluginManager", &pluginManager);
   engine.rootContext()->setContextProperty("pluginHost", &pluginHost);

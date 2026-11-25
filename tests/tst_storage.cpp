@@ -333,7 +333,11 @@ private slots:
     QVERIFY(!cache.isEmpty());
     QVERIFY(documents != config);
     QVERIFY(documents != cache);
+#ifndef Q_OS_WIN
+    // Qt maps AppConfigLocation and AppLocalDataLocation to the same folder
+    // on Windows; they are distinct on the other platforms.
     QVERIFY(config != cache);
+#endif
     QVERIFY(AppPaths::autosaveDirectory().startsWith(cache));
   }
 

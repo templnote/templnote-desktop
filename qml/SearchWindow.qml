@@ -117,20 +117,31 @@ Item {
     }
   }
 
-  Connections {
-    target: root.blockModel
+  // The model is assigned by the host after this component is created, so
+  // defer the Connections until the binding is non-null.
+  Component {
+    id: blockModelConnections
 
-    // A reply computed for a different document must never paint highlights
-    // in the one that is now open. Loading a new document inside accept()
-    // happens before the request's token is allocated, so it cannot cancel
-    // its own in-flight scan.
-    function onCurrentFilePathChanged() {
-      ++root.acceptToken
-      root.acceptPending = false
-      root.pendingAccept = false
-      root.pendingAcceptFallbacks = 0
-      pendingAcceptFallback.stop()
+    Connections {
+      target: root.blockModel
+
+      // A reply computed for a different document must never paint highlights
+      // in the one that is now open. Loading a new document inside accept()
+      // happens before the request's token is allocated, so it cannot cancel
+      // its own in-flight scan.
+      function onCurrentFilePathChanged() {
+        ++root.acceptToken
+        root.acceptPending = false
+        root.pendingAccept = false
+        root.pendingAcceptFallbacks = 0
+        pendingAcceptFallback.stop()
+      }
     }
+  }
+
+  Loader {
+    active: root.blockModel !== null
+    sourceComponent: blockModelConnections
   }
 
   Timer {

@@ -367,8 +367,10 @@ Rectangle {
     }
   }
 
+  QtObject { id: noTarget }
+
   Connections {
-    target: root.documentList ? root.documentList : null
+    target: root.documentList ? root.documentList : noTarget
 
     function onSearchCompleted(query, results) {
       root.applySearchResults(query, results)

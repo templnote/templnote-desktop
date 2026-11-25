@@ -10,7 +10,7 @@ QtObject {
   id: root
 
   property Settings settings: Settings {
-    id: settings
+    id: store
 
     category: "preferences"
 
@@ -35,19 +35,19 @@ QtObject {
     property string fpsOverlayPosition: "Top-Right"
   }
 
-  property alias restoreLastSession: settings.restoreLastSession
-  property alias lastDocumentPath: settings.lastDocumentPath
+  property alias restoreLastSession: store.restoreLastSession
+  property alias lastDocumentPath: store.lastDocumentPath
 
-  property alias expandExplorerOnLaunch: settings.expandExplorerOnLaunch
-  property alias columnCount: settings.columnCount
-  property alias settingsActiveSection: settings.settingsActiveSection
+  property alias expandExplorerOnLaunch: store.expandExplorerOnLaunch
+  property alias columnCount: store.columnCount
+  property alias settingsActiveSection: store.settingsActiveSection
 
-  property alias fontFamily: settings.fontFamily
-  property alias lineWidth: settings.lineWidth
+  property alias fontFamily: store.fontFamily
+  property alias lineWidth: store.lineWidth
 
-  property alias showBlockDebugBorders: settings.showBlockDebugBorders
-  property alias showBlockTypeBadge: settings.showBlockTypeBadge
-  property alias showDragDropBounds: settings.showDragDropBounds
-  property alias showFpsOverlay: settings.showFpsOverlay
-  property alias fpsOverlayPosition: settings.fpsOverlayPosition
+  property alias showBlockDebugBorders: store.showBlockDebugBorders
+  property alias showBlockTypeBadge: store.showBlockTypeBadge
+  property alias showDragDropBounds: store.showDragDropBounds
+  property alias showFpsOverlay: store.showFpsOverlay
+  property alias fpsOverlayPosition: store.fpsOverlayPosition
 }

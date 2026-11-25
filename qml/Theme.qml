@@ -48,7 +48,7 @@ QtObject {
   })
 
   property Settings settings: Settings {
-    id: settings
+    id: store
 
     category: "appearance"
 
@@ -56,8 +56,8 @@ QtObject {
     property string scheme: "tokyo-night"
   }
 
-  property alias mode: settings.mode
-  property alias scheme: settings.scheme
+  property alias mode: store.mode
+  property alias scheme: store.scheme
 
   readonly property bool systemDark: Application.styleHints.colorScheme === Qt.ColorScheme.Dark
   readonly property bool isDark: mode === "dark" || (mode === "system" && systemDark)

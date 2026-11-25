@@ -61,16 +61,27 @@ Item {
   // in the worker snapshot instead of re-sending (and re-lowercasing) the
   // whole corpus on every revision. Structural changes cannot be patched, so
   // they mark the cache stale and the next query rebuilds it.
-  Connections {
-    target: root.cachedModel
+  // Only create the connections once there is a real model; a Connections with
+  // a null target logs a warning at component creation time.
+  Component {
+    id: cachedModelConnections
 
-    function onDataChanged(topLeft, bottomRight, roles) {
-      root.updateCachedRows(root.cachedModel, topLeft.row, bottomRight.row,
-                            roles)
+    Connections {
+      target: root.cachedModel
+
+      function onDataChanged(topLeft, bottomRight, roles) {
+        root.updateCachedRows(root.cachedModel, topLeft.row, bottomRight.row,
+                              roles)
+      }
+      function onRowsInserted() { root.invalidateCache() }
+      function onRowsRemoved() { root.invalidateCache() }
+      function onModelReset() { root.invalidateCache() }
     }
-    function onRowsInserted() { root.invalidateCache() }
-    function onRowsRemoved() { root.invalidateCache() }
-    function onModelReset() { root.invalidateCache() }
+  }
+
+  Loader {
+    active: root.cachedModel !== null
+    sourceComponent: cachedModelConnections
   }
 
   function invalidateCache() {

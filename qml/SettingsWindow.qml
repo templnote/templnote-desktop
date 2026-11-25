@@ -128,14 +128,6 @@ Item {
     scroller.contentY = Math.max(0, Math.min(y, maxContentY))
   }
 
-  Connections {
-    target: pageLoader
-
-    function onItemChanged() {
-      Qt.callLater(refreshFocusTargets)
-    }
-  }
-
   Keys.onTabPressed: function(event) {
     if (!root.visible)
       return
@@ -455,6 +447,14 @@ Item {
 
         width: scroller.width
         source: root.currentSection.file
+      }
+
+      Connections {
+        target: pageLoader
+
+        function onItemChanged() {
+          Qt.callLater(refreshFocusTargets)
+        }
       }
     }
   }

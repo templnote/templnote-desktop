@@ -95,6 +95,7 @@ Item {
 
   Connections {
     target: typeof pluginManager !== "undefined" ? pluginManager : null
+    enabled: typeof pluginManager !== "undefined" && pluginManager !== null
 
     function onDependenciesRequired(id, deps) {
       root.dependencyNotice = "Auto-enabled dependencies for " + id + ": " + deps.join(", ")

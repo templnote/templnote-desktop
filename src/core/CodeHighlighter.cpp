@@ -339,10 +339,12 @@ void CodeHighlighter::highlightBlock(const QString &text) {
 
       const QRegularExpressionMatch endMatch = nextMatchOutside(
           m_commentEndPattern, startMatch.capturedEnd(), strings, {});
-      const int closeStart =
-          endMatch.hasMatch() ? endMatch.capturedStart() : text.size();
+      const int closeStart = endMatch.hasMatch()
+                                 ? static_cast<int>(endMatch.capturedStart())
+                                 : static_cast<int>(text.size());
 
-      blockCommentSpans.append({startMatch.capturedStart(), closeStart});
+      blockCommentSpans.append(
+          {static_cast<int>(startMatch.capturedStart()), closeStart});
 
       if (!endMatch.hasMatch())
         break;

@@ -20,6 +20,12 @@ ApplicationWindow {
          : "Templnote"
   color: Theme.background
 
+  // Draw our own title bar instead of the native Windows one. Keep the window
+  // hints so taskbar grouping, the system menu and the close gesture still work.
+  flags: Qt.Window | Qt.WindowSystemMenuHint |
+         Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint |
+         Qt.WindowCloseButtonHint | Qt.FramelessWindowHint
+
   // True while a document is loaded. When false the workspace shows the blank
   // home surface instead of an empty editor.
   readonly property bool hasDocument: blockModel.currentFilePath.length > 0
@@ -289,6 +295,179 @@ ApplicationWindow {
     }
   }
 
+  // Custom title bar replaces the native Windows title bar.
+  Rectangle {
+    id: titleBar
+
+    anchors {
+      top: parent.top
+      left: parent.left
+      right: parent.right
+    }
+    height: 32
+    z: 10
+    color: Theme.surfaceAlt
+
+    MouseArea {
+      id: titleDrag
+
+      z: 1
+
+      anchors {
+        top: parent.top
+        left: parent.left
+        right: windowButtons.left
+        bottom: parent.bottom
+      }
+      onPressed: windowControls.startMove(window)
+      onDoubleClicked: {
+        if (window.visibility === Window.Maximized)
+          window.showNormal()
+        else
+          window.showMaximized()
+      }
+    }
+
+    Image {
+      anchors {
+        left: parent.left
+        leftMargin: 10
+        verticalCenter: parent.verticalCenter
+      }
+      width: 16
+      height: 16
+      source: "qrc:/qt/qml/Templnote/assets/logo.png"
+      sourceSize.width: 32
+      sourceSize.height: 32
+      fillMode: Image.PreserveAspectFit
+      smooth: true
+    }
+
+    Text {
+      anchors {
+        left: parent.left
+        leftMargin: 34
+        right: windowButtons.left
+        rightMargin: 8
+        verticalCenter: parent.verticalCenter
+      }
+      text: window.title
+      color: Theme.text
+      font.pixelSize: 12
+      elide: Text.ElideRight
+    }
+
+    Row {
+      id: windowButtons
+
+      z: 2
+
+      anchors {
+        right: parent.right
+        verticalCenter: parent.verticalCenter
+      }
+
+      Button {
+        width: 32
+        height: 32
+        flat: true
+        padding: 0
+        text: "−"
+        font.pixelSize: 16
+        Accessible.name: "Minimize"
+        onClicked: window.showMinimized()
+      }
+
+      Button {
+        width: 32
+        height: 32
+        flat: true
+        padding: 0
+        text: window.visibility === Window.Maximized ? "❐" : "□"
+        font.pixelSize: 12
+        Accessible.name: "Maximize or restore"
+        onClicked: {
+          if (window.visibility === Window.Maximized)
+            window.showNormal()
+          else
+            window.showMaximized()
+        }
+      }
+
+      Button {
+        width: 32
+        height: 32
+        flat: true
+        padding: 0
+        text: "×"
+        font.pixelSize: 16
+        Accessible.name: "Close"
+        onClicked: window.close()
+      }
+    }
+
+    Rectangle {
+      anchors {
+        left: parent.left
+        right: parent.right
+        bottom: parent.bottom
+      }
+      height: 1
+      color: Theme.border
+    }
+  }
+
+  // Frameless windows have no native resize borders; restore them with thin
+  // native-resize strips along the content edges.
+  Item {
+    anchors.fill: contentRoot
+    z: 5
+
+    MouseArea {
+      anchors {
+        top: parent.top
+        left: parent.left
+        bottom: parent.bottom
+      }
+      width: 4
+      cursorShape: Qt.SizeHorCursor
+      onPressed: windowControls.startResize(window, Qt.LeftEdge)
+    }
+
+    MouseArea {
+      anchors {
+        top: parent.top
+        right: parent.right
+        bottom: parent.bottom
+      }
+      width: 4
+      cursorShape: Qt.SizeHorCursor
+      onPressed: windowControls.startResize(window, Qt.RightEdge)
+    }
+
+    MouseArea {
+      anchors {
+        left: parent.left
+        right: parent.right
+        bottom: parent.bottom
+      }
+      height: 4
+      cursorShape: Qt.SizeVerCursor
+      onPressed: windowControls.startResize(window, Qt.BottomEdge)
+    }
+  }
+
+  Item {
+    id: contentRoot
+
+    anchors {
+      top: titleBar.bottom
+      left: parent.left
+      right: parent.right
+      bottom: parent.bottom
+    }
+  }
+
   NavigationRail {
     id: navigationRail
 
@@ -296,9 +475,9 @@ ApplicationWindow {
     explorerExpanded: fileExplorer.expanded
 
     anchors {
-      top: parent.top
+      top: contentRoot.top
       left: parent.left
-      bottom: parent.bottom
+      bottom: contentRoot.bottom
     }
     onExplorerToggleRequested: {
       fileExplorer.expanded = !fileExplorer.expanded
@@ -319,9 +498,9 @@ ApplicationWindow {
     modalOpen: window.modalOpen
 
     anchors {
-      top: parent.top
+      top: contentRoot.top
       left: navigationRail.right
-      bottom: parent.bottom
+      bottom: contentRoot.bottom
     }
 
     onDeleteRequested: function(path, name, isFolder) {
@@ -362,10 +541,10 @@ ApplicationWindow {
       : Math.min(width - 64, 820)
 
     anchors {
-      top: parent.top
+      top: contentRoot.top
       left: fileExplorer.right
       right: parent.right
-      bottom: parent.bottom
+      bottom: contentRoot.bottom
     }
 
     Rectangle {
