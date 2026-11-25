@@ -1,6 +1,6 @@
 #pragma once
 
-// Persistent, revisioned document storage for headless agents and multi-user
+// Persistent, revisioned document storage for the headless CLI and multi-user
 // sync. Documents remain plain .templnote JSON files (the user can still open
 // them in a text editor); revision/actor metadata is stored in a SQLite
 // journal next to the cache so the file format stays backward compatible.
@@ -56,7 +56,7 @@ public:
   Engine::Result<CommitResult> restore(const QString &path,
                                        const QString &snapshotId);
 
-  // Full patch journal (for provenance / "what did the AI change").
+  // Full patch journal (for provenance / "who changed what").
   struct PatchEntry {
     int sequence = 0;
     QString path;

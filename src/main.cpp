@@ -10,10 +10,6 @@
 #include <qguiapplication.h>
 #include <qqmlapplicationengine.h>
 
-#include "adapter/AgentService.h"
-#include "ai/AgentRegistry.h"
-#include "ai/ProviderRegistry.h"
-#include "ai/SecretStore.h"
 #include "core/CodeHighlighter.h"
 #include "emoji/EmojiDatabase.h"
 #include "model/BlockModel.h"
@@ -88,10 +84,6 @@ int main(int argc, char *argv[]) {
   // objects exposed via setContextProperty must outlive the engine.
   Templnote::PluginManager pluginManager;
   Templnote::PluginHost pluginHost(&pluginManager);
-  Templnote::AI::ProviderRegistry providerRegistry;
-  providerRegistry.detectLocalProviders();
-  Templnote::AI::AgentRegistry agentRegistry;
-  agentRegistry.load();
   ClipboardHelper clipboardHelper;
   Templnote::EmojiDatabase emojiDatabase;
 
@@ -99,21 +91,16 @@ int main(int argc, char *argv[]) {
   QQmlApplicationEngine engine;
   engine.setNetworkAccessManagerFactory(&networkGuard);
 
-  // One editor model, shared by the UI and the in-process AI agent. Creating it
-  // in C++ lets the agent seed its preview session from the live document.
+  // The editor model is created in C++ so it can be shared with the engine
+  // bridge and outlive the QML engine that references it.
   auto *blockModel = new Templnote::BlockModel(&engine);
   blockModel->setAutosaveEnabled(true);
-  auto *agentService = new Templnote::AI::AgentService(
-      blockModel, &pluginManager, &providerRegistry, &agentRegistry, &engine);
 
   engine.rootContext()->setContextProperty("ClipboardService", &clipboardHelper);
   engine.rootContext()->setContextProperty("EmojiDatabase", &emojiDatabase);
   engine.rootContext()->setContextProperty("pluginManager", &pluginManager);
   engine.rootContext()->setContextProperty("pluginHost", &pluginHost);
-  engine.rootContext()->setContextProperty("providerManager", &providerRegistry);
-  engine.rootContext()->setContextProperty("agentManager", &agentRegistry);
   engine.rootContext()->setContextProperty("blockModel", blockModel);
-  engine.rootContext()->setContextProperty("agentService", agentService);
 
   engine.loadFromModule("Templnote", "Main");
 

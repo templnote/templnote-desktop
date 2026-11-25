@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 project( Templnote
   VERSION 0.3.4
-  DESCRIPTION "Local first AI-native text editor"
+  DESCRIPTION "Local first text editor"
   LANGUAGES CXX
 )
 
@@ -23,7 +23,6 @@ find_package(Qt6 6.12 REQUIRED COMPONENTS
   QuickControls2
   Sql
   Network
-  HttpServer
   Test)
 
 qt_standard_project_setup(REQUIRES 6.12)
@@ -33,7 +32,6 @@ qt_policy(SET QTP0004 NEW)
 # Reusable plugin SDK (git submodule pinned to an SDK tag). Kept as a separate
 # project so the same source can be consumed by other Qt frontends.
 add_subdirectory(third_party/templnote-plugins/sdk)
-add_subdirectory(third_party/templnote-ai)
 add_subdirectory(third_party/templnote-editor)
 
 set_source_files_properties(qml/Theme.qml PROPERTIES
@@ -122,59 +120,18 @@ target_link_libraries(templnote_core PUBLIC
   Qt6::Sql
 )
 
-# Engine-side AI ports. Non-GUI: usable by the desktop app and the headless
-# daemon alike.
-add_library(templnote_ai_adapters STATIC
-  src/adapter/AIEngineAdapters.h
-  src/adapter/AIEngineAdapters.cpp
-)
-target_include_directories(templnote_ai_adapters PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_link_libraries(templnote_ai_adapters PUBLIC
-  templnote_ai
-  templnote_engine
-  templnote_plugin_core
-  Qt6::Core
-)
-
-# Desktop-only adapter: the AI service mirrors pipeline results into the QML
-# BlockModel. This is the only AI code coupled to the GUI layer.
-add_library(templnote_desktop_adapter STATIC
-  src/adapter/AgentService.h
-  src/adapter/AgentService.cpp
-  src/adapter/AgentSession.h
-  src/adapter/AgentSession.cpp
-  src/adapter/PanelListModel.h
-  src/adapter/PanelListModel.cpp
-)
-target_include_directories(templnote_desktop_adapter PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/src/ai
-)
-target_link_libraries(templnote_desktop_adapter PUBLIC
-  templnote_core
-  templnote_ai
-  templnote_ai_adapters
-  templnote_plugin_core
-  Qt6::Core
-)
-
 qt_add_executable(templnote
   src/main.cpp
 )
 
-# Headless agent daemon — QCoreApplication only, no GUI / QML.
+# Headless CLI daemon — QCoreApplication only, no GUI / QML.
 add_executable(templnote-headless
   src/headless/main.cpp
 )
 target_link_libraries(templnote-headless PRIVATE
   templnote_store
   templnote_engine
-  templnote_sync
-  templnote_ai
-  templnote_ai_adapters
   Qt6::Core
-  Qt6::Network
   Qt6::Sql
 )
 
@@ -215,9 +172,6 @@ qt_add_qml_module(templnote
   qml/settings/DeveloperSettings.qml
   qml/settings/PluginsSettings.qml
   qml/settings/DeclarativePluginSettings.qml
-  qml/settings/AISettings.qml
-  qml/settings/AIModelsSettings.qml
-  qml/settings/AgentsSettings.qml
   qml/settings/SettingToggle.qml
   qml/settings/SettingSwitch.qml
   qml/settings/SettingsButton.qml
@@ -254,9 +208,6 @@ qt_add_qml_module(templnote
   bundled-plugins/paper-background/manifest.json
   bundled-plugins/paper-background/PaperBackgroundDecoration.qml
   bundled-plugins/paper-background/PaperBackgroundSettings.qml
-  bundled-plugins/prompt-panel-sidebar/manifest.json
-  bundled-plugins/prompt-panel-sidebar/PromptPanelSidebarDecoration.qml
-  bundled-plugins/prompt-panel-sidebar/PromptPanelSettings.qml
 
   qml/shaders/paper.frag.qsb
   qml/shaders/edgefade.frag.qsb
@@ -266,8 +217,6 @@ qt_add_qml_module(templnote
   assets/emoji/shortcodes-github.json
   assets/emoji/LICENSE
   assets/logo.png
-  assets/icons/ic_fluent_panel_right_20_filled.svg
-  assets/icons/ic_fluent_panel_right_20_regular.svg
   assets/icons/ic_fluent_folder_20_regular.svg
   assets/icons/ic_fluent_image_20_regular.svg
   assets/icons/ic_fluent_settings_20_regular.svg
@@ -277,7 +226,6 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_document_folder_20_regular.svg
   assets/icons/ic_fluent_arrow_sort_20_regular.svg
   assets/icons/ic_fluent_search_20_regular.svg
-  assets/icons/ic_fluent_chat_sparkle_20_regular.svg
   assets/icons/ic_fluent_add_20_regular.svg
   assets/icons/ic_fluent_align_space_evenly_horizontal_20_regular.svg
   assets/icons/ic_fluent_chevron_double_down_20_filled.svg
@@ -286,9 +234,7 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_panel_left_contract_20_filled.svg
   assets/icons/ic_fluent_panel_left_expand_20_filled.svg
   assets/icons/ic_fluent_animal_cat_20_regular.svg
-  assets/icons/ic_fluent_send_16_regular.svg
   assets/icons/ic_fluent_library_20_regular.svg
-  assets/icons/ic_fluent_lightbulb_sparkle_20_regular.svg
   assets/icons/ic_fluent_delete_20_regular.svg
   assets/icons/ic_fluent_edit_20_regular.svg
   assets/icons/ic_fluent_chevron_left_20_regular.svg
@@ -299,7 +245,6 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_globe_search_20_regular.svg
   assets/icons/ic_fluent_re_order_dots_vertical_20_regular.svg
   assets/icons/ic_fluent_re_order_dots_horizontal_20_regular.svg
-  assets/icons/ic_fluent_mic_pulse_20_regular.svg
   assets/icons/ic_fluent_chevron_down_20_regular.svg
   assets/icons/ic_fluent_copy_20_regular.svg
   assets/icons/ic_fluent_text_bold_20_regular.svg
@@ -318,13 +263,10 @@ qt_add_qml_module(templnote
   assets/icons/ic_fluent_checkbox_unchecked_20_regular.svg
   assets/icons/ic_fluent_text_quote_20_regular.svg
   assets/icons/ic_fluent_line_horizontal_1_20_regular.svg
-  assets/icons/ic_fluent_lightbulb_20_regular.svg
 )
 
 target_link_libraries(templnote PRIVATE
   templnote_core
-  templnote_ai
-  templnote_desktop_adapter
   templnote_plugin_qml
   Qt6::Core
   Qt6::QuickControls2

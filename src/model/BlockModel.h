@@ -31,11 +31,6 @@ class BlockModel : public QAbstractListModel {
       QString documentTitle READ documentTitle NOTIFY documentTitleChanged)
   Q_PROPERTY(bool isModified READ isModified NOTIFY modifiedChanged)
 
-  // True while an AI agent is streaming edits into the document. The editor
-  // makes its text input read-only during this window so the streamed snapshot
-  // cannot race with user keystrokes.
-  Q_PROPERTY(bool agentBusy READ agentBusy WRITE setAgentBusy NOTIFY
-                 agentBusyChanged)
   Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
   Q_PROPERTY(
       QDateTime lastModified READ lastModified NOTIFY lastModifiedChanged)
@@ -105,20 +100,6 @@ public:
   Q_INVOKABLE QString duplicateBlock(const QString &id);
 
   Q_INVOKABLE bool updateBlockText(const QString &id, const QString &text);
-
-  // Applies a single streamed text step from an AI agent. Unlike a normal edit
-  // it does not enter undo history, mark the document dirty or schedule
-  // autosave: the agent's preview session remains the source of truth until
-  // the user accepts the changes.
-  Q_INVOKABLE bool applyStreamedText(const QString &id, const QString &text);
-
-  bool agentBusy() const { return m_agentBusy; }
-  void setAgentBusy(bool busy);
-
-  // Used by the agent service to persist a reviewed snapshot or a revert.
-  // Implemented out of line because engine-applied snapshots reset the saved
-  // state id, so the dirty flag has to be restored explicitly.
-  void markAgentDocumentModified();
 
   Q_INVOKABLE bool changeBlockType(const QString &id, int type,
                                    int headdingLevel = 0);
@@ -206,7 +187,7 @@ public:
   const Document &document() const;
 
   // The authoritative engine session (shares this model's Document). Exposed
-  // so agents, plugins and tests can observe/apply patches.
+  // so plugins and tests can observe/apply patches.
   Engine::EditorSession *engineSession() const {
     return const_cast<Engine::EditorSession *>(&m_engineSession);
   }
@@ -280,12 +261,6 @@ public:
   Q_INVOKABLE bool applyRemoteDocument(const QJsonObject &documentJson,
                                        const QJsonObject &patchJson);
 
-  // Applies a document snapshot produced by an agent's preview session and
-  // marks the model dirty (so autosave persists it). Unlike applyRemoteDocument
-  // this is intended for AI-originated edits in the open document.
-  Q_INVOKABLE bool applyAgentDocument(const QJsonObject &documentJson,
-                                      const QJsonObject &patchJson);
-
   // Replaces the current document with a single empty paragraph and saves it
   // to `path`. Used by FileExplorer for "New document".
   Q_INVOKABLE bool createDocument(const QString &path);
@@ -313,7 +288,6 @@ signals:
   void currentFilePathChanged();
   void documentTitleChanged();
   void modifiedChanged();
-  void agentBusyChanged();
   void lastModifiedChanged();
   void lastErrorChanged();
   void autosaveEnabledChanged();
@@ -495,8 +469,6 @@ private:
   // column is hovered or resized. Keep the child id lists cached and invalidate
   // them together with the rest of the structural caches.
   mutable QHash<QString, QStringList> m_columnChildren;
-
-  bool m_agentBusy = false;
 
   // Consecutive single-character edits in the same block are merged into one
   // history entry until a word boundary or a short pause is reached.

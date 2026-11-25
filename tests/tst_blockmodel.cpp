@@ -105,26 +105,6 @@ private slots:
     QCOMPARE(feed.count(), 2);
   }
 
-  void streamedTextDoesNotMarkDirty() {
-    BlockModel model;
-    const QString id = model.blockIdAt(0);
-
-    int changes = 0;
-    connect(&model, &QAbstractItemModel::dataChanged, &model,
-            [&changes] { ++changes; });
-
-    QVERIFY(model.applyStreamedText(id, QStringLiteral("Hel")));
-    QVERIFY(model.applyStreamedText(id, QStringLiteral("Hello")));
-    QCOMPARE(model.document().findBlock(id)->text, QStringLiteral("Hello"));
-    QVERIFY(changes >= 2);
-    QVERIFY(!model.isModified());
-
-    model.setAgentBusy(true);
-    QVERIFY(model.agentBusy());
-    model.setAgentBusy(false);
-    QVERIFY(!model.agentBusy());
-  }
-
   void engineAndModelShareDocument() {
     BlockModel model;
     const QString id = model.blockIdAt(0);
@@ -139,11 +119,11 @@ private slots:
     auto *engine = model.engineSession();
     const QString id = model.blockIdAt(0);
     const auto result = engine->apply(Engine::Command::setText(
-        id, QStringLiteral("From agent")));
+        id, QStringLiteral("From remote")));
     QVERIFY(result.ok());
     // LiveBridge pushes engine patches via applyRemoteDocument; simulate it.
     QVERIFY(model.applyRemoteDocument(engine->toJson(), result.value().toJson()));
-    QCOMPARE(model.document().findBlock(id)->text, QStringLiteral("From agent"));
+    QCOMPARE(model.document().findBlock(id)->text, QStringLiteral("From remote"));
   }
 
   void exposesQmlRoles() {
@@ -966,30 +946,6 @@ private slots:
     QVERIFY(model.undo());
     QCOMPARE(model.document().blockAt(0)->text, QStringLiteral("a"));
     QVERIFY(!model.isModified());
-  }
-
-  void applyingAgentSnapshotRestoresDirtyState() {
-    QTemporaryDir directory;
-    QVERIFY(directory.isValid());
-
-    BlockModel model;
-    QVERIFY(model.createDocument(directory.filePath(QStringLiteral("Agent"))));
-    QVERIFY(!model.isModified());
-
-    QJsonObject json = model.document().toJson();
-    QJsonArray blocks = json.value(QStringLiteral("blocks")).toArray();
-    QVERIFY(!blocks.isEmpty());
-
-    QJsonObject block = blocks.first().toObject();
-    block.insert(QStringLiteral("text"), QStringLiteral("agent text"));
-    blocks[0] = block;
-    json.insert(QStringLiteral("blocks"), blocks);
-
-    QVERIFY(model.applyAgentDocument(json, QJsonObject{}));
-    QCOMPARE(model.document().blockAt(0)->text, QStringLiteral("agent text"));
-    // The engine-applied snapshot resets the saved-state ids; the model must
-    // still restore the dirty flag so autosave writes the agent edit back.
-    QVERIFY(model.isModified());
   }
 
   void noOpSaveSkipsAttachmentSweep() {

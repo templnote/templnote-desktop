@@ -43,23 +43,6 @@ Item {
     const revision = pluginManager.stateRevision
     return pluginManager.canUninstall(root.selectedPluginId)
   }
-  // Agent-authored plugins cannot be enabled until the user explicitly
-  // approves them here. No agent tool or remote endpoint can set this flag.
-  property bool detailNeedsApproval: {
-    if (!pluginManager || root.selectedPluginId.length === 0) return false
-    const revision = pluginManager.stateRevision
-    return pluginManager.needsApproval(root.selectedPluginId)
-  }
-  property string detailAgentFilesText: {
-    if (!pluginManager || root.selectedPluginId.length === 0) return ""
-    const revision = pluginManager.stateRevision
-    const files = pluginManager.pluginFiles(root.selectedPluginId)
-    let out = ""
-    for (const key of Object.keys(files))
-      out += "── " + key + " ──\n" + files[key] + "\n\n"
-    return out
-  }
-
   function resetUninstallUi() {
     root.confirmingUninstall = false
     root.uninstallError = ""
@@ -304,65 +287,6 @@ Item {
 
         Accessible.role: Accessible.StaticText
         Accessible.name: text
-      }
-
-      // User consent gate for AI-authored plugins. The model can create files
-      // but can never enable them; only this button grants approval.
-      Rectangle {
-        width: parent.width
-        visible: root.detailNeedsApproval
-        radius: 8
-        color: Theme.surfaceAlt
-        border.width: 1
-        border.color: Theme.border
-
-        Column {
-          anchors.margins: 12
-          anchors.fill: parent
-          spacing: 8
-
-          Text {
-            width: parent.width
-            text: "This plugin was written by an AI agent. Review its files before approving; approval allows it to load QML inside the app."
-            color: Theme.text
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-
-            Accessible.role: Accessible.StaticText
-            Accessible.name: text
-          }
-
-          Flickable {
-            width: parent.width
-            height: 120
-            clip: true
-            contentHeight: agentFileText.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-
-            Text {
-              id: agentFileText
-              width: parent.width
-              text: root.detailAgentFilesText
-              color: Theme.textMuted
-              font.pixelSize: 11
-              font.family: "monospace"
-              wrapMode: Text.WrapAnywhere
-
-              Accessible.role: Accessible.StaticText
-              Accessible.name: "Agent-written plugin source"
-            }
-          }
-
-          Button {
-            text: "Approve plugin"
-            height: 32
-            activeFocusOnTab: true
-            onClicked: pluginManager.approvePlugin(root.selectedPluginId)
-
-            Accessible.role: Accessible.Button
-            Accessible.name: text
-          }
-        }
       }
 
       // Non-modal, inline two-step uninstall confirmation. Only shown for

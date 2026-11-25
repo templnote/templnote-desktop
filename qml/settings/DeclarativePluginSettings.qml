@@ -4,8 +4,6 @@ import Templnote
 
 // Generic settings renderer for plugins that declare `settings.fields` in
 // their manifest instead of shipping a hand-written Settings QML component.
-// This is what lets an AI agent create a plugin with settings without having
-// to author a full QML page.
 Column {
   id: root
 

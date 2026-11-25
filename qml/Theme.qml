@@ -117,8 +117,8 @@ QtObject {
   readonly property color danger: palette.danger
 
   // ─── Shared control metrics ───
-  // Used by the AI panel and available to any other QML surface so buttons,
-  // cards, fields and labels keep the same rhythm across themes and sizes.
+  // Available to every QML surface so buttons, cards, fields and labels keep
+  // the same rhythm across themes and sizes.
   readonly property int spaceXs: 4
   readonly property int spaceSm: 8
   readonly property int spaceMd: 12

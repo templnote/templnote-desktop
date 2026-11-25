@@ -38,9 +38,6 @@ jobs:
         with:
           version: "6.12.1"
           cache: true
-          # HttpServer (and its WebSockets dependency) are add-on modules
-          # required by this project and the templnote-ai submodule.
-          modules: 'qthttpserver qtwebsockets'
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -60,7 +57,6 @@ jobs:
           if grep -r -n '#include "model/\|#include <QGui\|#include <QQuick\|#include <QJSValue' \
               src/store src/sync \
               third_party/templnote-editor/src \
-              third_party/templnote-ai/src \
               third_party/templnote-plugins/sdk/src/core; then
             echo "ERROR: GUI include found in a reusable library"
             exit 1

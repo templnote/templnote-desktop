@@ -2,8 +2,8 @@
 
 // LiveBridge connects the headless engine to the QML editor. An EditorSession
 // (owned here) is the authoritative document; every patch it produces is
-// pushed into the BlockModel so an open editor sees changes live. AI agents and
-// remote users apply patches through the session, never through the QML view.
+// pushed into the BlockModel so an open editor sees changes live. Remote users
+// apply patches through the session, never through the QML view.
 
 #include "engine/ChangeFeed.h"
 #include "engine/EditorSession.h"
@@ -43,7 +43,7 @@ public:
   // the view. Call once after both path and model are set.
   Q_INVOKABLE bool loadFromDisk();
 
-  // Apply a command through the session. Exposed to QML and agents.
+  // Apply a command through the session. Exposed to QML.
   Q_INVOKABLE bool applyCommand(const QJsonObject &commandJson);
   Q_INVOKABLE bool applyCommandJson(const QString &commandJson);
 

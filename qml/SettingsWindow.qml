@@ -61,24 +61,6 @@ Item {
       file: "settings/EditorSettings.qml"
     },
     {
-      key: "ai",
-      title: "AI Providers",
-      description: "Connect providers and manage API keys",
-      file: "settings/AISettings.qml"
-    },
-    {
-      key: "models",
-      title: "Models",
-      description: "Choose which models appear in the model picker",
-      file: "settings/AIModelsSettings.qml"
-    },
-    {
-      key: "agents",
-      title: "Agents",
-      description: "Create agents and choose which ones work on your documents",
-      file: "settings/AgentsSettings.qml"
-    },
-    {
       key: "plugins",
       title: "Plugins",
       description: "Extend Templnote with plugins",

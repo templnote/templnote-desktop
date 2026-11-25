@@ -276,7 +276,7 @@ BlockModel::BlockModel(QObject *parent) : QAbstractListModel(parent) {
                                        "Your local-first writing environment"));
 
   // The engine operates on the same Document. Every edit now goes through a
-  // Command, so agents, journal, sync and undo all see the human's changes.
+  // Command, so the journal, sync and undo all see the human's changes.
   m_engineSession.setDocumentState(&m_engineState);
   m_engineSession.setActor(Engine::Actor::human());
   m_engineSession.setLightweightHistory(true);
@@ -869,29 +869,6 @@ bool BlockModel::updateBlockText(const QString &id, const QString &text) {
 
   markModified();
   return true;
-}
-
-bool BlockModel::applyStreamedText(const QString &id, const QString &text) {
-  const bool previous = m_applyingRemote;
-  m_applyingRemote = true;
-  const bool ok = updateBlockText(id, text);
-  m_applyingRemote = previous;
-  return ok;
-}
-
-void BlockModel::setAgentBusy(bool busy) {
-  if (m_agentBusy == busy)
-    return;
-  m_agentBusy = busy;
-  emit agentBusyChanged();
-}
-
-void BlockModel::markAgentDocumentModified() {
-  // applyRemoteDocument() resets the model's state ids to "saved" (the engine
-  // owns the snapshot). Bumping the id is what makes the normal dirty check
-  // see the agent's edit and re-arm autosave.
-  m_currentStateId = ++m_stateCounter;
-  markModified();
 }
 
 QString BlockModel::splitBlock(const QString &id, int position,
@@ -2277,7 +2254,7 @@ bool BlockModel::applyRemoteDocument(const QJsonObject &documentJson,
 
   // Fast path: when the block ids and their order are unchanged, apply only
   // the fields that differ. This emits dataChanged (not a model reset), so
-  // QML delegates and the user's caret survive an AI/remote edit in progress.
+  // QML delegates and the user's caret survive a remote edit in progress.
   bool sameStructure = document.count() == m_document.count();
   if (sameStructure) {
     for (int i = 0; i < document.count(); ++i) {
@@ -2333,18 +2310,6 @@ bool BlockModel::applyRemoteDocument(const QJsonObject &documentJson,
 
   emit remotePatchApplied(patchJson);
   return true;
-}
-
-bool BlockModel::applyAgentDocument(const QJsonObject &documentJson,
-                                    const QJsonObject &patchJson) {
-  const bool ok = applyRemoteDocument(documentJson, patchJson);
-  if (ok) {
-    // Agent edits are real edits. applyRemoteDocument() resets the saved-state
-    // ids, so bump first or markModified() would see an unchanged document and
-    // leave autosave disabled for the agent's snapshot.
-    markAgentDocumentModified();
-  }
-  return ok;
 }
 
 bool BlockModel::createDocument(const QString &path) {

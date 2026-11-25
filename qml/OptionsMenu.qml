@@ -33,13 +33,10 @@ Item {
   property bool globalSearchActive: false
   property bool fullWidthActive: false
 
-  property bool promptPanelOpen: false
-
   signal optionTriggered(string key)
   signal searchRequested()
   signal globalSearchRequested()
   signal toggleFullWidthRequested()
-  signal togglePromptPanelRequested()
 
   property var previousFocus: null
 
@@ -94,11 +91,11 @@ Item {
 
     anchors {
       top: parent.top
-      right: panelToggle.left
+      right: parent.right
       // Matches the document header's 10px top offset. The trigger is the
       // same height as the header's title row so both lines stay centered.
       topMargin: 10
-      rightMargin: 6
+      rightMargin: 20
     }
 
     width: 28
@@ -142,58 +139,6 @@ Item {
 
     ToolTip.visible: triggerMouse.containsMouse && !root.menuOpen
     ToolTip.text: "Options"
-    ToolTip.delay: 500
-  }
-
-  // Sits to the right of the options button and toggles the right-side AI
-  // prompt panel. Filled icon = open, regular icon = closed.
-  Rectangle {
-    id: panelToggle
-
-    anchors {
-      top: parent.top
-      right: parent.right
-      topMargin: 10
-      rightMargin: 20
-    }
-
-    width: 28
-    height: 28
-    radius: 8
-    color: panelMouse.containsMouse || root.promptPanelOpen
-           ? Theme.surfaceHover
-           : "transparent"
-
-    Behavior on color {
-      ColorAnimation {
-        duration: 150
-        easing.type: Easing.OutQuad
-      }
-    }
-
-    IconImage {
-      anchors.centerIn: parent
-      width: 20
-      height: 20
-      source: root.promptPanelOpen
-              ? "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_panel_right_20_filled.svg"
-              : "qrc:/qt/qml/Templnote/assets/icons/ic_fluent_panel_right_20_regular.svg"
-      sourceSize.width: 20
-      sourceSize.height: 20
-      color: root.promptPanelOpen ? Theme.accent : Theme.textMuted
-    }
-
-    MouseArea {
-      id: panelMouse
-
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      onClicked: root.togglePromptPanelRequested()
-    }
-
-    ToolTip.visible: panelMouse.containsMouse
-    ToolTip.text: root.promptPanelOpen ? "Close AI panel" : "Open AI panel"
     ToolTip.delay: 500
   }
 

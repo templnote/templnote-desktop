@@ -20,7 +20,6 @@ QtObject {
 
     // Interface
     property bool expandExplorerOnLaunch: true
-    property bool promptPanelOpen: false
     property int columnCount: 2
     property string settingsActiveSection: "appearance"
 
@@ -40,7 +39,6 @@ QtObject {
   property alias lastDocumentPath: settings.lastDocumentPath
 
   property alias expandExplorerOnLaunch: settings.expandExplorerOnLaunch
-  property alias promptPanelOpen: settings.promptPanelOpen
   property alias columnCount: settings.columnCount
   property alias settingsActiveSection: settings.settingsActiveSection
 

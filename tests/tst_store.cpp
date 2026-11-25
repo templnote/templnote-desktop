@@ -74,11 +74,11 @@ private slots:
     store.initialize(path, s.toJson()); // revision 1
 
     auto r = s.apply(Command::setText(QStringLiteral("b1"),
-                                      QStringLiteral("AI edit")));
+                                      QStringLiteral("remote edit")));
     QVERIFY(r.ok());
 
     auto commit = store.commit(path, 1, s.toJson(), r.value(), s.lamport(),
-                               QStringLiteral("agent-write"));
+                               QStringLiteral("remote-write"));
     QVERIFY2(commit.ok(), qPrintable(commit.error()));
     QCOMPARE(commit.value().revision, 2);
     QCOMPARE(store.currentRevision(path), 2);
@@ -96,7 +96,7 @@ private slots:
     const QJsonArray blocks = loaded.value().document
                                   .value(QStringLiteral("blocks")).toArray();
     QCOMPARE(blocks.first().toObject().value(QStringLiteral("text")).toString(),
-             QStringLiteral("AI edit"));
+             QStringLiteral("remote edit"));
   }
 
   void testJournalAndSnapshots() {
@@ -119,7 +119,7 @@ private slots:
                                        QStringLiteral("v2")));
     QVERIFY(r1.ok());
     QVERIFY(store.commit(path, 1, s.toJson(), r1.value(), s.lamport(),
-                         QStringLiteral("writer-agent")).ok());
+                         QStringLiteral("writer-remote")).ok());
 
     auto r2 = s.apply(Command::setText(QStringLiteral("b1"),
                                        QStringLiteral("v3")));
@@ -194,7 +194,7 @@ private slots:
     QVERIFY(store.vacuum());
   }
 
-  void testAgentProvenance() {
+  void testRemoteProvenance() {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     const QString path = dir.filePath(QStringLiteral("doc.templnote"));
@@ -210,7 +210,7 @@ private slots:
     store.initialize(path, s.toJson());
 
     Command cmd = Command::setText(QStringLiteral("b1"),
-                                   QStringLiteral("written by AI"));
+                                   QStringLiteral("written by remote"));
     cmd.actor = Actor::pipeline(QStringLiteral("pipeline-1"),
                                 QStringLiteral("Write"));
     auto r = s.apply(cmd);

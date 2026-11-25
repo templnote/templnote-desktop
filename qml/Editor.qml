@@ -1005,17 +1005,6 @@ Item {
     }
   }
 
-  // After an agent run is accepted or rejected the document is restored to a
-  // snapshot, which recreates delegates. Put the caret back where it was.
-  Connections {
-    target: typeof agentService !== "undefined" ? agentService : null
-
-    function onRestoreEditorCaret(blockId, position) {
-      if (blockId.length > 0)
-        root.requestFocusBlock(blockId, position)
-    }
-  }
-
   // oldSourceRow is a row of the source model, never a delegate's ListView
   // index: a column child's local index identifies an unrelated top-level
   // block once converted through blockIdAtVisibleRow().

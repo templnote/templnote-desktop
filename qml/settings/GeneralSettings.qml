@@ -60,7 +60,7 @@ Column {
       }
 
       Text {
-        text: "Local first AI-native text editor"
+        text: "Local first text editor"
         color: Theme.textMuted
         font.pixelSize: 12
       }
